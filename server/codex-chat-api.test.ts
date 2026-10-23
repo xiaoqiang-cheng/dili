@@ -9,7 +9,7 @@ import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import type { AppState, Delivery, Group, GroupDetail, GroupMessage, Session } from '../shared/types.ts';
-import type { CodexChatSnapshot, CodexChatSubmission } from '../shared/chat.ts';
+import type { CodexChatSnapshot, CodexChatSubmission, AgentChatSettings } from '../shared/chat.ts';
 
 async function freePort() {
   const probe = createServer();
@@ -425,4 +425,62 @@ test('Claude graphical starts preserve empty-session and fork identities across 
   const written = await start(source.id);
   assert.equal(written.nativeSessionId, blank.nativeSessionId);
   assert.equal(written.claudeUnwritten, undefined);
+});
+
+for (const backend of ['codex', 'claude'] as const) test(`${backend} settings use native choices, confirmed changes, version and busy guards`, { timeout: 30_000 }, async t => {
+  const fixture = await launch(t), { request, snapshot } = fixture;
+  const contact = await request<Session>('/api/sessions', 'POST', { backend, title: 'Settings contract', cwd: fixture.directory }, 201);
+  const path = `/api/sessions/${contact.id}/chat/settings`;
+  await request(path, 'GET', undefined, 409);
+  const started = await request<Session>(`/api/sessions/${contact.id}/start`, 'POST', { mode: 'chat' });
+  let settings = await request<AgentChatSettings>(path);
+  assert.equal(settings.nativeSessionId, started.nativeSessionId);
+  assert.ok(settings.models.some(choice => choice.id === 'fixture-alternative'));
+  assert.ok(!settings.disabledReason);
+  const old = settings.version;
+  settings = await request<AgentChatSettings>(path, 'POST', { version: old, field: 'model', value: 'fixture-alternative' });
+  assert.equal(settings.model, 'fixture-alternative');
+  assert.notEqual(settings.version, old);
+  await request(path, 'POST', { version: old, field: 'model', value: settings.models[0].id }, 409);
+  await request(path, 'POST', { version: settings.version, field: 'model', value: 'invented-model' }, 409);
+  await request(path, 'POST', { version: settings.version, field: 'model', value: 'fixture-denied' }, 409);
+  const afterRejection = await request<AgentChatSettings>(path);
+  assert.equal(afterRejection.model, 'fixture-alternative', 'Native rejection must not update displayed state');
+  assert.equal(afterRejection.version, settings.version);
+  settings = await request<AgentChatSettings>(path, 'POST', { version: settings.version, field: 'permission', value: backend === 'claude' ? 'plan' : 'untrusted' });
+  assert.equal(settings.permission, backend === 'claude' ? 'plan' : 'untrusted');
+  await request(`/api/sessions/${contact.id}/chat/messages`, 'POST', { requestId: randomUUID(), text: 'HOLD', model: 'ignored-value' }, 400);
+  await request(`/api/sessions/${contact.id}/chat/messages`, 'POST', { requestId: randomUUID(), text: 'HOLD' });
+  await until(async () => !!(await snapshot(contact.id)).activeTurnId, 'Native HOLD did not start');
+  assert.ok((await request<AgentChatSettings>(path)).disabledReason);
+  await request(path, 'POST', { version: settings.version, field: 'permission', value: backend === 'claude' ? 'default' : 'on-request' }, 409);
+  await request(`/api/sessions/${contact.id}/chat/interrupt`, 'POST', {});
+  await until(async () => !(await snapshot(contact.id)).activeTurnId, 'Interrupt did not release setting guard');
+  if (backend === 'codex') {
+    const calls = (await fixture.calls()) as { method: string; params: Record<string, unknown> }[];
+    const updates = calls.filter(call => call.method === 'thread/settings/update');
+    assert.equal(updates.length, 3, 'Rejected local settings must never reach native mutation');
+    assert.ok(updates.every(call => call.params.sandbox === undefined && call.params.sandboxPolicy === undefined && call.params.permissions === undefined));
+    assert.ok(updates.some(call => call.params.approvalPolicy === 'untrusted'));
+  } else {
+    const calls = (await readFile(join(fixture.directory, 'claude-calls.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(calls.filter(call => call.request?.subtype === 'set_model').length, 2);
+    assert.ok(calls.some(call => call.request?.subtype === 'set_permission_mode' && call.request.mode === 'plan'));
+    await request(path, 'POST', { version: settings.version, field: 'model', value: 'fixture-no-ack' }, 409);
+    const uncertain = await request<AgentChatSettings>(path);
+    assert.equal(uncertain.model, null, 'An empty native success envelope cannot confirm the effective model');
+    assert.notEqual(uncertain.version, settings.version);
+    settings = uncertain;
+  }
+  const beforeRestart = settings.version;
+  await request(`/api/sessions/${contact.id}/stop`, 'POST', {});
+  const reopened = await request<Session>(`/api/sessions/${contact.id}/start`, 'POST', { mode: 'chat' });
+  assert.equal(reopened.nativeSessionId, started.nativeSessionId);
+  const fresh = await request<AgentChatSettings>(path);
+  assert.notEqual(fresh.version, beforeRestart, 'Reopening an executor must invalidate old settings forms');
+  await request(path, 'POST', { version: beforeRestart, field: 'model', value: 'fixture-alternative' }, 409);
+  const competing = await Promise.all((backend === 'claude' ? ['plan', 'acceptEdits'] : ['on-request', 'never']).map(value => request<AgentChatSettings | { error: string }>(path, 'POST', { version: fresh.version, field: 'permission', value }, [200, 409])));
+  assert.equal(competing.filter(result => 'version' in result).length, 1, 'Only one mutation from the same settings version may succeed');
+  const confirmed = await request<AgentChatSettings>(path);
+  assert.equal(confirmed.permission, (competing.find(result => 'version' in result) as AgentChatSettings).permission);
 });

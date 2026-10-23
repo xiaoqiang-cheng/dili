@@ -61,12 +61,20 @@ if (args[0] !== 'app-server') {
       if (message.method === 'initialize') socket.clientName = params.clientInfo?.name;
       else if (message.method === 'thread/start') {
         thread = { id: crypto.randomUUID(), cwd: params.cwd, status: { type: 'idle' }, turns: [], forkedFromId: null, canAcceptDirectInput: true };
-        threads.set(thread.id, thread); socket.threadId = thread.id; result = { thread };
+        thread.settings = { model: 'fixture-model', approvalPolicy: params.approvalPolicy || 'on-request', approvalsReviewer: params.approvalsReviewer || 'user' };
+        threads.set(thread.id, thread); socket.threadId = thread.id; result = { thread, ...thread.settings };
       } else if (message.method === 'thread/resume' || message.method === 'thread/read') {
         thread = threads.get(params.threadId);
         if (!thread) { send(socket, { id: message.id, error: { code: -1, message: 'Unknown fixture thread' } }); return; }
         if (message.method === 'thread/resume') socket.threadId = thread.id;
-        result = { thread };
+        result = { thread, ...thread.settings };
+      } else if (message.method === 'model/list') {
+        result = { data: [{ model: 'fixture-model', displayName: 'Fixture Model' }, { model: 'fixture-alternative', displayName: 'Fixture Alternative' }, { model: 'fixture-denied', displayName: 'Native denied' }], nextCursor: null };
+      } else if (message.method === 'thread/settings/update') {
+        thread = threads.get(params.threadId);
+        if (params.model === 'fixture-denied') { send(socket, { id: message.id, error: { code: -1, message: 'Native policy denied model' } }); return; }
+        for (const field of ['model', 'approvalPolicy', 'approvalsReviewer']) if (params[field] !== undefined) thread.settings[field] = params[field];
+        emit(thread.id, 'thread/settings/updated', { threadSettings: thread.settings });
       } else if (message.method === 'thread/name/set') {
         thread = threads.get(params.threadId); if (thread) thread.name = params.name;
       } else if (message.method === 'thread/turns/list') {
@@ -77,7 +85,7 @@ if (args[0] !== 'app-server') {
       } else if (message.method === 'thread/fork') {
         const parent = threads.get(params.threadId);
         thread = structuredClone(parent); thread.id = crypto.randomUUID(); thread.cwd = params.cwd || parent.cwd; thread.forkedFromId = parent.id; thread.status = { type: 'idle' };
-        threads.set(thread.id, thread); socket.threadId = thread.id; result = { thread };
+        threads.set(thread.id, thread); socket.threadId = thread.id; result = { thread, ...thread.settings };
       } else if (message.method === 'turn/start') {
         thread = threads.get(params.threadId); socket.threadId = thread.id;
         const input = params.input.filter(item => item.type === 'text').map(item => item.text).join('\n');

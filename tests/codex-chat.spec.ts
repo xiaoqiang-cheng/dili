@@ -807,3 +807,48 @@ test('a late image upload merges into a reopened draft without replacing new att
   await expect(page.getByLabel('给 Codex 发送消息')).toHaveValue('新的草稿');
   expect(app.requests.filter(item=>item.path === 'messages')).toEqual([]);
 });
+
+for (const backend of ['codex', 'claude'] as const) test(`${backend} unified native settings preserve drafts, confirm changes, handle rejection and fit mobile`, async ({ page }) => {
+  const app = await fixture(page, backend);
+  let nativeSettings = { nativeSessionId: 'exact-native-thread', version: 'settings-1', model: 'native-model', models: [{ id: 'native-model', label: 'Native Model' }, { id: 'native-other', label: 'Native Other', description: 'Native-provided choice' }], permission: 'native-default', permissions: [{ id: 'native-default', label: 'Native Default' }, { id: 'native-plan', label: 'Native Plan' }], scope: '当前原生执行器的设置' };
+  const updates: unknown[] = [];
+  let denied = false;
+  await page.route(`**/api/sessions/${app.contact.id}/chat/settings`, async route => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: nativeSettings });
+    const body = route.request().postDataJSON(); updates.push(body);
+    if (denied) return route.fulfill({ status: 409, json: { error: 'Native policy denied model' } });
+    nativeSettings = { ...nativeSettings, version: 'settings-2', [body.field]: body.value };
+    await route.fulfill({ json: nativeSettings });
+  });
+  await app.open();
+  const input = page.getByLabel(`给 ${backend === 'claude' ? 'Claude' : 'Codex'} 发送消息`);
+  await input.fill('保留我的草稿');
+  await page.getByRole('button', { name: '会话设置', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '会话设置', exact: true });
+  await expect(dialog.getByLabel('模型', { exact: true })).toHaveValue('native-model');
+  await dialog.getByLabel('模型', { exact: true }).selectOption('native-other');
+  await dialog.getByRole('button', { name: '应用模型', exact: true }).click();
+  await expect(dialog).toContainText('原生设置已确认');
+  expect(updates).toEqual([{ version: 'settings-1', field: 'model', value: 'native-other' }]);
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+  await expect(input).toHaveValue('保留我的草稿');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await input.fill('/model'); await input.press('Enter');
+  await expect(dialog).toBeVisible();
+  await expect(input).toHaveValue('');
+  expect(app.requests.filter(item => item.path === 'messages')).toHaveLength(0);
+  denied = true;
+  await dialog.getByLabel('模型', { exact: true }).selectOption('native-model');
+  await dialog.getByRole('button', { name: '应用模型', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('Native policy denied model');
+  await expect(dialog.getByLabel('模型', { exact: true })).toHaveCount(0);
+  await dialog.getByRole('button', { name: '刷新原生设置', exact: true }).click();
+  await expect(dialog.getByLabel('模型', { exact: true })).toHaveValue('native-other');
+  const bounds = await dialog.boundingBox(); expect(bounds).toBeTruthy(); expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+  await page.screenshot({ path: `artifacts/${backend}-native-settings-mobile.png` });
+  await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0);
+  await app.patch({ activeTurnId: 'native-active-turn' });
+  await page.getByRole('button', { name: '会话工具', exact: true }).click();
+  await page.getByRole('button', { name: '会话设置', exact: true }).click();
+  await expect(dialog.getByLabel('模型', { exact: true })).toBeDisabled();
+});

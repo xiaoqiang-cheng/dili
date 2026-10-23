@@ -1,7 +1,9 @@
 import type { Backend, SessionStatus } from '../../shared/types.ts';
-import type { AgentChatAnswer, AgentChatHistoryPage, AgentChatSnapshot } from '../../shared/chat.ts';
+import type { AgentChatAnswer, AgentChatHistoryPage, AgentChatSnapshot, AgentChatSettings, AgentChatSettingsUpdate } from '../../shared/chat.ts';
 
 export interface AgentChatAdapter {
+  readChatSettings(sessionId: string): Promise<AgentChatSettings>;
+  updateChatSettings(sessionId: string, update: AgentChatSettingsUpdate): Promise<AgentChatSettings>;
   readChat(sessionId: string): Promise<AgentChatSnapshot>;
   chatSnapshot(sessionId: string): AgentChatSnapshot | undefined;
   readChatHistory(sessionId: string, cursor: string): Promise<AgentChatHistoryPage>;

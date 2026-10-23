@@ -46,6 +46,8 @@ export const ROUTES: Route[] = [
   { method: 'GET', path: '/api/sessions/:id/chat', access: 'read' },
   { method: 'GET', path: '/api/sessions/:id/chat/events', access: 'read' },
   { method: 'GET', path: '/api/sessions/:id/chat/history', access: 'read' },
+  { method: 'GET', path: '/api/sessions/:id/chat/settings', access: 'read' },
+  { method: 'POST', path: '/api/sessions/:id/chat/settings', access: 'owner' },
   { method: 'GET', path: '/api/sessions/:id/chat/submissions/:requestId', access: 'read' },
 
   { method: 'POST', path: '/api/sessions/:id/start', access: 'write' },

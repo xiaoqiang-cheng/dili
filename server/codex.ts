@@ -12,7 +12,8 @@ import type { SessionStatus } from '../shared/types.js';
 import { validateNativeId } from './adapters.js';
 import { OwnedProcess } from './owned-process.ts';
 import { sameDirectory } from './paths.ts';
-import type { CodexChatAnswer, CodexChatHistoryPage, CodexChatSnapshot } from '../shared/chat.ts';
+import type { CodexChatAnswer, CodexChatHistoryPage, CodexChatSnapshot, AgentChatSettings, AgentChatSettingsUpdate } from '../shared/chat.ts';
+import { checkSettingsUpdate, settingsError, settingsVersion } from './agents/settings.ts';
 import { CodexChatState, nativeChatAnswer, nativeChatRequest, type NativeChatRequest } from './codex-chat.ts';
 
 export interface CodexNativeSession {
@@ -118,6 +119,73 @@ async function availablePort(requested: number): Promise<number> {
  * identity, Fork and status. Permission overrides apply only to opted-in contacts.
  */
 export class CodexBridge {
+  private readonly nativeSettings = new Map<string, Record<string, unknown>>();
+  private readonly settingsViews = new Map<string, AgentChatSettings>();
+  private readonly changingSettings = new Set<string>();
+  private captureSettings(id: string, value: unknown) {
+    if (!value || typeof value !== 'object') return;
+    const row = value as Record<string, unknown>;
+    this.nativeSettings.set(id, { model: row.model, approvalPolicy: row.approvalPolicy, approvalsReviewer: row.approvalsReviewer });
+  }
+  async readChatSettings(id: string): Promise<AgentChatSettings> {
+    const connection = this.observers.get(id);
+    if (!connection || connection.closed || !this.chat.get(id)?.connected) return settingsError('请先连接 Codex 图形会话');
+    const [response, native] = await Promise.all([
+      this.call(connection, 'model/list', { limit: 100 }),
+      // thread/read omits effective settings in current app-server versions.
+      // Resume the retained observer with no policy overrides or history replay.
+      this.call(connection, 'thread/resume', { threadId: id, excludeTurns: true }),
+    ]);
+    if (this.observers.get(id) !== connection || connection.closed) return settingsError('原生连接已变化，请重新打开设置');
+    if (native.error) throw this.rpcError(native, '无法回读原生会话设置');
+    const thread = (native.result as { thread?: Thread })?.thread;
+    if (thread?.id !== id) return settingsError('原生设置返回了不同会话，请重新连接');
+    this.captureSettings(id, native.result);
+    const data = (response.result as { data?: { model: string; displayName: string; description?: string; hidden?: boolean }[] })?.data;
+    const models = Array.isArray(data) ? data.filter(row => !row.hidden && typeof row.model === 'string').slice(0, 100).map(row => ({ id: row.model, label: row.displayName || row.model, description: row.description })) : [];
+    const raw = this.nativeSettings.get(id) ?? {};
+    const policy = raw.approvalPolicy, reviewer = raw.approvalsReviewer;
+    const permission = policy === 'on-request' && reviewer === 'auto_review' ? 'auto_review' : typeof policy === 'string' && (reviewer === 'user' || reviewer === undefined) ? policy : null;
+    const settings = settingsVersion(this.settingsViews.get(id), {
+      nativeSessionId: id, model: typeof raw.model === 'string' ? raw.model : null, models, permission,
+      ...(permission === null && policy !== undefined ? { permissionLabel: '自定义原生审批策略' } : {}),
+      permissions: typeof policy === 'string' || (policy && typeof policy === 'object') ? [
+        { id: 'untrusted', label: '谨慎审批', description: '不可信操作由你审批；保留当前沙箱' },
+        { id: 'on-request', label: '按需审批', description: '由 Agent 请求审批；保留当前沙箱' },
+        ...(typeof reviewer === 'string' ? [{ id: 'auto_review', label: '自动审核', description: '由 Codex 审核请求；保留当前沙箱' }] : []),
+        { id: 'never', label: '不请求审批', description: '无法在当前沙箱执行的操作直接失败' },
+      ] : [],
+      ...(!models.length ? { modelReason: '当前 Codex 未返回可用模型列表，请检查 CLI 版本或原生配置' } : {}),
+      ...(policy === undefined ? { permissionReason: '当前 Codex 未报告审批设置，请升级 CLI 后重试' } : {}),
+      ...(thread.status?.type !== 'idle' || this.changingSettings.has(id) || this.sendingPrompts.has(id) || this.chat.get(id)?.activeTurnId || this.chat.get(id)?.requests.length ? { disabledReason: '请等待当前任务、审批或设置修改结束；原生状态未确认时不可修改' } : {}),
+      scope: '作用于当前原生线程；审批切换保留现有沙箱和文件／网络权限。',
+    });
+    this.settingsViews.set(id, settings);
+    return settings;
+  }
+  async updateChatSettings(id: string, update: AgentChatSettingsUpdate): Promise<AgentChatSettings> {
+    const current = await this.readChatSettings(id);
+    checkSettingsUpdate(current, update);
+    const connection = this.observers.get(id)!;
+    // A second request can finish its model/list while the first one is saving.
+    if (this.changingSettings.has(id) || this.sendingPrompts.has(id) || this.chat.get(id)?.activeTurnId || this.chat.get(id)?.requests.length) return settingsError('原生会话正在处理任务或设置，请稍后重试');
+    this.changingSettings.add(id);
+    try {
+      const response = await this.call(connection, 'thread/settings/update', { threadId: id, ...(update.field === 'model' ? { model: update.value } : { approvalPolicy: update.value === 'auto_review' ? 'on-request' : update.value, ...(this.nativeSettings.get(id)?.approvalsReviewer !== undefined ? { approvalsReviewer: update.value === 'auto_review' ? 'auto_review' : 'user' } : {}) }) });
+      if (response.error) throw this.rpcError(response, '当前 Codex 不支持或拒绝了设置修改');
+      if (connection.closed || this.observers.get(id) !== connection) return settingsError('原生连接已变化，请刷新确认设置');
+      // Metadata-only native readback; never replay history or auto-mode overrides.
+      const readback = await this.call(connection, 'thread/resume', { threadId: id, excludeTurns: true });
+      if (readback.error) throw this.rpcError(readback, '设置已提交，但无法回读确认，请刷新');
+      const result = readback.result as { thread?: Thread };
+      if (result?.thread?.id !== id || connection.closed || this.observers.get(id) !== connection) return settingsError('设置回读身份已变化，请刷新确认');
+      this.captureSettings(id, result);
+      if (update.field === 'permission') this.executionModes.set(id, 'default');
+    } finally { this.changingSettings.delete(id); }
+    const confirmed = await this.readChatSettings(id);
+    if (confirmed[update.field] !== update.value) return settingsError('原生设置未确认目标值，请刷新检查实际设置');
+    return confirmed;
+  }
   private readonly executionModes = new Map<string, ExecutionMode>();
   private autoPermissions(mode?: ExecutionMode): Record<string, string> {
     return mode === 'auto' ? { approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandbox: 'workspace-write' } : {};
@@ -264,7 +332,7 @@ export class CodexBridge {
     if (!this.ready || !connection || connection.closed || connection.ws.readyState !== WebSocket.OPEN) throw rejected('Codex 会话尚未连接，请先打开图形会话');
     const snapshot = this.chat.get(id);
     if (!snapshot?.connected) throw rejected('Codex 会话仍在连接，请等待原生恢复完成');
-    if (this.sendingPrompts.has(id) || snapshot?.requests.length) throw rejected('Codex 正在提交消息或等待答复，请处理后再发送');
+    if (this.changingSettings.has(id) || this.sendingPrompts.has(id) || snapshot?.requests.length) throw rejected('Codex 正在修改设置、提交消息或等待答复，请处理后再发送');
     if (expectedTurnId !== undefined && (!UUID.test(expectedTurnId) || snapshot.activeTurnId !== expectedTurnId)) throw rejected('当前任务已变化或完成，草稿已保留，请核对后重新发送');
     if (snapshot.activeTurnId && !expectedTurnId) throw rejected('Codex 仍在执行，请刷新后补充当前任务');
     this.sendingPrompts.add(id);
@@ -459,6 +527,8 @@ export class CodexBridge {
   }
 
   private invalidateObserver(threadId: string, detail: string, forceEmit = false): void {
+    this.nativeSettings.delete(threadId);
+    this.settingsViews.delete(threadId);
     const connection = this.observers.get(threadId);
     if (connection) this.closeConnection(connection);
     this.observers.delete(threadId);
@@ -610,6 +680,7 @@ export class CodexBridge {
     const params = message.params ?? {};
     const threadId = typeof params.threadId === 'string' ? params.threadId : undefined;
     if (!threadId || !UUID.test(threadId) || this.observers.get(threadId) !== connection) return;
+    if (message.method === 'thread/settings/updated') this.captureSettings(threadId, params.threadSettings);
     if (message.method === 'serverRequest/resolved') {
       if (typeof params.requestId === 'string' || typeof params.requestId === 'number') this.answeredChatRequests.get(connection)?.delete(params.requestId);
       for (const [id, entry] of this.chatRequests) if (entry.connection === connection && entry.threadId === threadId && entry.request.nativeId === params.requestId) this.chatRequests.delete(id);
@@ -723,6 +794,7 @@ export class CodexBridge {
         if (response.error) throw this.rpcError(response, 'Codex 会话恢复失败');
         const thread = (response.result as { thread?: Thread } | undefined)?.thread;
         if (thread?.id !== threadId) throw new Error('Codex 返回了不匹配的恢复会话');
+        this.captureSettings(threadId, response.result);
         if (cwd && (!thread.cwd || !await sameDirectory(thread.cwd, cwd))) throw new Error('Codex 恢复后未使用所选工作目录');
         const newerTurn = this.chat.turnChanged(threadId, basis);
         this.chat.reconcile(threadId, thread, basis, true);
@@ -756,6 +828,7 @@ export class CodexBridge {
       if (!thread?.id || !UUID.test(thread.id)) throw new Error('Codex 未返回有效的原生会话 ID');
       this.executionModes.set(thread.id, mode);
       this.retainObserver(thread.id, connection);
+      this.captureSettings(thread.id, response.result);
       this.chat.reconcile(thread.id, thread, this.chat.get(thread.id)?.revision ?? 0, true);
       if (title?.trim()) {
         // The native identity already exists. A transient title write failure
@@ -802,6 +875,7 @@ export class CodexBridge {
       if (targetCwd && child.cwd && !await sameDirectory(child.cwd, targetCwd)) throw new Error('Codex Fork 未使用请求的工作目录');
       this.executionModes.set(child.id, mode ?? this.executionModes.get(id) ?? 'default');
       this.retainObserver(child.id, connection);
+      this.captureSettings(child.id, response.result);
       this.chat.reconcile(child.id, child, this.chat.get(child.id)?.revision ?? 0, true);
       if (child.status) this.emitStatus(child.id, this.mapStatus(child.status, 'Codex Fork 会话已连接'));
       return { nativeSessionId: child.id, remoteUrl: this.endpoint };

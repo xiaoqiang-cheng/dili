@@ -20,13 +20,14 @@ const bridge = new ClaudeChatBridge(), reader = new ConversationReader({ claudeH
 let release: (() => void) | undefined, failure: Error | undefined;
 const held = new Set<ServerResponse>();
 const requests: string[] = [];
+const requestedModels: string[] = [];
 const provider = createServer(async (req, res) => {
   try {
     let body = ''; for await (const data of req) body += data;
     if (req.method === 'HEAD') { res.end(); return; }
     if (req.url?.includes('count_tokens')) { res.setHeader('content-type', 'application/json'); res.end('{"input_tokens":10}'); return; }
     assert.equal(new URL(req.url!, 'http://localhost').pathname, '/v1/messages'); assert.equal(req.headers['x-api-key'], 'dili-loopback-fixture');
-    const input = JSON.parse(body); requests.push(JSON.stringify(input.messages));
+    const input = JSON.parse(body); requests.push(JSON.stringify(input.messages)); requestedModels.push(input.model);
     res.writeHead(200, { 'content-type': 'text/event-stream' }); held.add(res); res.once('close', () => held.delete(res));
     const event = (type: string, fields: object) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`);
     event('message_start', { message: { id: `msg_fixture_${requests.length}`, type: 'message', role: 'assistant', model: input.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } });
@@ -65,9 +66,17 @@ try {
   const args = ['--model', 'claude-sonnet-4-6', '--setting-sources', '', '--strict-mcp-config', '--no-chrome', '--tools', ''];
   const id = randomUUID();
   await bridge.start(id, cwd, { file: executable, args: ['--session-id', id, ...args], env }, { messages: [], truncated: false });
+  let settings = await bridge.readChatSettings(id);
+  assert.ok(settings.models.length, 'Native initialize did not supply model choices');
+  settings = await bridge.updateChatSettings(id, { version: settings.version, field: 'permission', value: 'plan' });
+  assert.equal(settings.permission, 'plan');
+  settings = await bridge.updateChatSettings(id, { version: settings.version, field: 'permission', value: 'default' });
+  settings = await bridge.updateChatSettings(id, { version: settings.version, field: 'model', value: settings.models.find(model => model.id !== 'default')!.id });
   await bridge.sendPrompt(id, 'DILI_STREAM_FIRST');
   await until(() => bridge.chatSnapshot(id)?.items.some(item => item.text === 'Hello **') === true, 'No real native partial text');
   assert.ok(bridge.chatSnapshot(id)?.activeTurnId, 'Partial must be visible while the turn is active');
+  assert.equal(requestedModels.at(-1), settings.model, 'Next real provider request must use the native model selection');
+  await assert.rejects(bridge.updateChatSettings(id, { version: settings.version, field: 'permission', value: 'plan' }), /任务|审批/);
   assert.ok(release); release();
   await until(() => bridge.chatSnapshot(id)?.activeTurnId === null, 'Native turn did not finish');
   assert.deepEqual(bridge.chatSnapshot(id)?.items.filter(item => item.type === 'assistant').map(item => item.text), ['Hello **world**']);
@@ -115,7 +124,7 @@ try {
   await bridge.stopSession(approvalId);
   await until(() => bridge.chatSnapshot(approvalId)?.activeTurnId === null, 'Native interrupt did not finish');
   release = undefined;
-  console.log('Real Claude stream-json: streaming, Markdown, images, resume, fork, empty-chat reopening, tool approval and interrupt passed.');
+  console.log('Real Claude stream-json: native model list/switch and next-request effect, permission switch, busy guard, streaming, Markdown, images, resume, fork, empty-chat reopening, tool approval and interrupt passed.');
 } finally {
   await bridge.close(); for (const res of held) res.destroy();
   await new Promise<void>(resolve => provider.close(() => resolve()));

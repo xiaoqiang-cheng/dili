@@ -2,7 +2,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
-import type { AgentChatAnswer, AgentChatItem, AgentChatRequest, AgentChatSnapshot } from '../shared/chat.ts';
+import type { AgentChatAnswer, AgentChatItem, AgentChatRequest, AgentChatSnapshot, AgentChatSettings, AgentChatSettingsUpdate } from '../shared/chat.ts';
+import { checkSettingsUpdate, settingsError, settingsVersion } from './agents/settings.ts';
 import type { ConversationTranscript, SessionStatus } from '../shared/types.ts';
 import type { LaunchCommand } from './terminal.ts';
 import { OwnedProcess } from './owned-process.ts';
@@ -16,6 +17,7 @@ interface Run {
   alive: boolean; stopping: boolean; pending: Map<string, { resolve(value: Row): void; reject(error: Error): void; timer: NodeJS.Timeout }>;
   requests: Map<string, { nativeId: string; input: Row; tool: string }>;
   messageId?: string; blocks: Map<number, string>; completedBlocks: Map<string, number>; stderr: string;
+  settings?: AgentChatSettings; changingSettings?: boolean;
 }
 
 /** Claude's own stream-json protocol. No TUI scraping, API credentials or SDK
@@ -34,6 +36,33 @@ export class ClaudeChatBridge {
     return run?.alive ? { ...run.snapshot, items: run.snapshot.items.map(item => ({ ...item })), requests: [...run.snapshot.requests] } : undefined;
   }
   async readChat(id: string) { const snapshot = this.chatSnapshot(id); if (!snapshot) throw new Error('Claude 图形连接尚未启动'); return snapshot; }
+  async readChatSettings(id: string): Promise<AgentChatSettings> {
+    const run = this.runs.get(id);
+    if (!run?.alive || !run.snapshot.connected || !run.settings) return settingsError('请先连接 Claude 图形会话');
+    return { ...run.settings, ...(run.changingSettings || run.snapshot.activeTurnId || run.snapshot.requests.length ? { disabledReason: '请等待当前任务、审批或设置修改结束' } : {}) };
+  }
+  async updateChatSettings(id: string, update: AgentChatSettingsUpdate): Promise<AgentChatSettings> {
+    const run = this.runs.get(id);
+    checkSettingsUpdate(await this.readChatSettings(id), update);
+    if (!run?.alive || this.runs.get(id) !== run || run.settings?.version !== update.version || run.changingSettings || run.snapshot.activeTurnId || run.snapshot.requests.length) return settingsError('原生会话正在处理任务或设置，或连接已变化，请刷新后重试');
+    run.changingSettings = true;
+    try {
+      const response = await this.control(run, update.field === 'model' ? { subtype: 'set_model', model: update.value } : { subtype: 'set_permission_mode', mode: update.value });
+      if (this.runs.get(id) !== run || !run.alive) return settingsError('原生执行器已变化，请刷新设置');
+      const actual = response[update.field === 'model' ? 'model' : 'mode'];
+      // Acknowledgement must contain the actual native value. Never claim an
+      // empty success envelope confirms a setting in an older CLI.
+      if (typeof actual !== 'string' || !actual) {
+        run.settings = settingsVersion(undefined, { ...run.settings!, [update.field]: null });
+        return settingsError('原生进程未返回设置确认，请刷新检查；当前 CLI 可能不支持此操作');
+      }
+      run.settings = settingsVersion(undefined, { ...run.settings!, [update.field]: actual });
+    } catch (cause) {
+      if (!(cause as { nativeRejected?: boolean })?.nativeRejected && run.settings) run.settings = settingsVersion(undefined, { ...run.settings, [update.field]: null });
+      throw cause;
+    } finally { run.changingSettings = false; }
+    return this.readChatSettings(id);
+  }
   async readChatHistory(_id: string, _cursor: string): Promise<never> { return reject('Claude 的完整历史请在原生终端查看'); }
   private changed(id: string, run: Run) {
     // Bound both SSE frames and long-lived process memory. Trim only complete
@@ -94,6 +123,20 @@ export class ClaudeChatBridge {
     try {
       const initialized = await this.control(run, { subtype: 'initialize' });
       if (!run.alive) throw new Error('Claude 原生进程已退出');
+      const models = (Array.isArray(initialized.models) ? initialized.models : []).filter((model: Row) => typeof model.value === 'string').slice(0, 100).map((model: Row) => ({ id: model.value as string, label: String(model.displayName || model.value), description: typeof model.description === 'string' ? model.description : undefined }));
+      const modelIndex = command.args.indexOf('--model');
+      run.settings = settingsVersion(undefined, {
+        nativeSessionId: id, model: modelIndex >= 0 ? command.args[modelIndex + 1] ?? null : null, models,
+        permission: typeof initialized.current_permission_mode === 'string' ? initialized.current_permission_mode : null,
+        permissions: typeof initialized.current_permission_mode === 'string' ? [
+          { id: 'default', label: '默认审批', description: '沿用原生允许规则，其他操作请求审批' },
+          { id: 'acceptEdits', label: '自动接受编辑', description: '允许文件编辑，其他操作仍按原生规则审批' },
+          { id: 'plan', label: '计划模式', description: '先分析和规划，限制执行修改' },
+        ] : [],
+        ...(!models.length ? { modelReason: '当前 Claude 未返回模型列表，请检查 CLI 版本和原生配置' } : {}),
+        ...(typeof initialized.current_permission_mode !== 'string' ? { permissionReason: '当前 Claude 未报告权限模式，请升级 CLI 后重试' } : {}),
+        scope: '作用于当前 Claude 图形执行器；切换至终端或重开执行器后重新沿用原生配置。',
+      });
       for (const request of [...(Array.isArray(initialized.pending_permission_requests) ? initialized.pending_permission_requests : []), ...(Array.isArray(initialized.pending_user_dialog_requests) ? initialized.pending_user_dialog_requests : [])]) {
         const row = object(request); if (row) this.receive(id, run, row);
       }
@@ -127,13 +170,17 @@ export class ClaudeChatBridge {
   private receive(id: string, run: Run, row: Row) {
     if (row.type === 'control_response') {
       const reply = object(row.response), pending = reply && run.pending.get(reply.request_id);
-      if (pending) { clearTimeout(pending.timer); run.pending.delete(reply!.request_id); if (reply!.subtype === 'error') pending.reject(new Error(String(reply!.error))); else pending.resolve(object(reply!.response) ?? {}); }
+      if (pending) { clearTimeout(pending.timer); run.pending.delete(reply!.request_id); if (reply!.subtype === 'error') pending.reject(Object.assign(new Error(String(reply!.error)), { nativeRejected: true })); else pending.resolve(object(reply!.response) ?? {}); }
       return;
     }
     if (row.session_id && row.session_id !== id) {
       this.status(id, 'error', 'Claude 返回了不同的会话标识，已关闭连接'); void this.closeSession(id); return;
     }
     if (row.parent_tool_use_id) return; // subagent output is not this contact's reply
+    if (row.type === 'system' && run.settings && (row.subtype === 'init' || row.subtype === 'status')) {
+      run.settings = settingsVersion(run.settings, { ...run.settings, ...(typeof row.model === 'string' ? { model: row.model } : {}), ...(typeof row.permissionMode === 'string' ? { permission: row.permissionMode } : {}) });
+      return;
+    }
     if (row.type === 'stream_event') {
       const event = object(row.event); if (!event) return;
       if (event.type === 'message_start') { run.messageId = event.message?.id; run.blocks.clear(); run.completedBlocks.clear(); }
@@ -199,6 +246,7 @@ export class ClaudeChatBridge {
   async sendPrompt(id: string, text: string, _model?: string, images: string[] = [], expectedTurnId?: string) {
     const run = this.runs.get(id);
     if (!run?.alive || !run.snapshot.connected) return reject('请先连接 Claude 图形会话');
+    if (run.changingSettings) return reject('Claude 正在修改设置，请稍后发送');
     if (run.snapshot.activeTurnId || expectedTurnId) return reject('Claude 正在生成，请将消息加入队列');
     if (run.snapshot.requests.length) return reject('请先处理 Claude 的审批或提问');
     const content: Row[] = [];
@@ -208,7 +256,7 @@ export class ClaudeChatBridge {
       content.push({ type: 'image', source: { type: 'base64', media_type: mime, data: data.toString('base64') } });
     }
     // Loading attachments yielded: check again before reserving the native turn.
-    if (!run.alive || run.snapshot.activeTurnId || run.snapshot.requests.length) return reject('Claude 会话状态已变化，请重试');
+    if (!run.alive || run.changingSettings || run.snapshot.activeTurnId || run.snapshot.requests.length) return reject('Claude 会话状态已变化，请重试');
     if (text.trim()) content.push({ type: 'text', text });
     const turnId = randomUUID(); run.snapshot.activeTurnId = turnId;
     this.upsert(run, { id: `claude-user:${turnId}`, turnId, type: 'user', text, imageCount: images.length, status: 'completed' });

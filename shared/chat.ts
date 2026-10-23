@@ -61,6 +61,28 @@ export interface AgentChatSubmission {
   error?: string;
 }
 
+/** Only session-scoped, non-secret native settings cross this boundary. */
+export interface AgentChatChoice { id: string; label: string; description?: string }
+export interface AgentChatSettings {
+  nativeSessionId: string;
+  version: string;
+  model: string | null;
+  models: AgentChatChoice[];
+  permission: string | null;
+  /** Explains a reported native policy that is not one of the offered presets. */
+  permissionLabel?: string;
+  permissions: AgentChatChoice[];
+  modelReason?: string;
+  permissionReason?: string;
+  disabledReason?: string;
+  scope: string;
+}
+export interface AgentChatSettingsUpdate {
+  version: string;
+  field: 'model' | 'permission';
+  value: string;
+}
+
 // Compatibility names retained while platform implementations migrate to the
 // shared Agent chat protocol.
 export type CodexChatItem = AgentChatItem;

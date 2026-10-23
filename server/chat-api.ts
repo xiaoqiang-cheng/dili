@@ -134,6 +134,23 @@ export function registerAgentChat(app: express.Express, options: Dependencies) {
   const offStore = store.onChange(change => { if (change.table === 'sessions' && !!options.adapters[change.data.backend]) queue(change.data.id); });
 
   app.get('/api/sessions/:id/chat', async (req, res) => res.json(await read(String(req.params.id))));
+  app.get('/api/sessions/:id/chat/settings', async (req, res) => {
+    const item = writable(String(req.params.id)), identity = item.nativeSessionId!;
+    const settings = await bridgeFor(item).readChatSettings(identity);
+    if (writable(item.id).nativeSessionId !== identity) fail('会话身份已变化，请刷新', 409);
+    res.json({ ...settings, ...(res.locals.principal?.kind === 'share' ? { disabledReason: '分享访问只能查看设置，请由所有者修改' } : {}) });
+  });
+  app.post('/api/sessions/:id/chat/settings', async (req, res) => {
+    const item = writable(String(req.params.id)), identity = item.nativeSessionId!;
+    const { version, field, value } = req.body;
+    if (typeof version !== 'string' || version.length > 100 || !version || (field !== 'model' && field !== 'permission') || typeof value !== 'string' || !value || value.length > 200 || /[\x00-\x1f]/.test(value)) fail('设置参数无效');
+    const settings = await bridgeFor(item).updateChatSettings(identity, { version, field, value }).catch(cause => {
+      const error = cause instanceof Error ? cause : new Error('原生设置修改失败，请刷新确认');
+      throw Object.assign(error, { status: (cause as { status?: number })?.status ?? 409 });
+    });
+    if (writable(item.id).nativeSessionId !== identity) fail('会话身份已变化，请刷新确认原生设置', 409);
+    res.json(settings);
+  });
   app.get('/api/sessions/:id/chat/history', async (req, res) => {
     const id = String(req.params.id), item = session(id), bridge = bridgeFor(item), identity = item.nativeSessionId;
     if (options.demo || !identity || item.forkPending) fail('当前会话没有可分页读取的原生历史', 409);
@@ -167,6 +184,7 @@ export function registerAgentChat(app: express.Express, options: Dependencies) {
   app.post('/api/sessions/:id/chat/messages', async (req, res) => {
     const item = writable(String(req.params.id)), bridge = bridgeFor(item);
     const id = requestId(req.body.requestId);
+    if (req.body.model !== undefined) fail('请通过会话设置切换模型后再发送');
     if (typeof req.body.text !== 'string' || req.body.text.length > 32_000 || /\x00/.test(req.body.text)) fail('消息不能为空，且最多 32000 字符');
     const text = req.body.text.trim();
     const images = options.attachments.resolve(item.id, req.body.attachments);
@@ -177,8 +195,7 @@ export function registerAgentChat(app: express.Express, options: Dependencies) {
     if (!created) return res.status(submission.status === 'unknown' || submission.status === 'sending' ? 202 : 200).json(submission);
     const inputAt = new Date().toISOString();
     try {
-      const model = typeof req.body.model === 'string' && /^[a-zA-Z0-9._:-]{1,100}$/.test(req.body.model) ? req.body.model : undefined;
-      const result = await bridge.sendPrompt(item.nativeSessionId!, text, model, images, expectedTurnId);
+      const result = await bridge.sendPrompt(item.nativeSessionId!, text, undefined, images, expectedTurnId);
       if (options.closing()) return;
       const accepted = submissions.finish(item.id, id, { status: 'accepted', turnId: result.turnId });
       options.updatePreview(item, { messages: [{ id, role: 'user', text: text || '[图片]', createdAt: inputAt }], truncated: false }, false);

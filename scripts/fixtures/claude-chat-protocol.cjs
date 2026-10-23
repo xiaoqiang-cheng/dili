@@ -17,7 +17,7 @@ if (!process.argv.includes('--print')) {
   const out = row => process.stdout.write(JSON.stringify({ ...row, session_id: id }) + '\n');
   const saved = (role, content, uuid = randomUUID()) => fs.appendFileSync(file, JSON.stringify({ type: role, uuid, sessionId: id, timestamp: new Date().toISOString(), message: { role, content } }) + '\n');
   const event = payload => out({ type: 'stream_event', event: payload, parent_tool_use_id: null });
-  let timer, messageId, active = false, pending;
+  let timer, messageId, active = false, pending, model = 'fixture-claude', mode = 'default';
   function finish(error = false) {
     clearTimeout(timer);
     if (!active) return;
@@ -33,7 +33,14 @@ if (!process.argv.includes('--print')) {
     const row = JSON.parse(line);
     fs.appendFileSync(path.join(root, 'claude-calls.jsonl'), JSON.stringify(row) + '\n');
     if (row.type === 'control_request') {
-      out({ type: 'control_response', response: { subtype: 'success', request_id: row.request_id, response: {} } });
+      let response = {};
+      if (row.request.subtype === 'initialize') response = { current_permission_mode: mode, models: [{ value: 'fixture-claude', displayName: 'Claude Fixture' }, { value: 'fixture-alternative', displayName: 'Claude Alternative' }, { value: 'fixture-denied', displayName: 'Native denied' }, { value: 'fixture-no-ack', displayName: 'Missing confirmation' }] };
+      if (row.request.subtype === 'set_model') {
+        if (row.request.model === 'fixture-denied') { out({ type: 'control_response', response: { subtype: 'error', request_id: row.request_id, error: 'Native policy denied model' } }); return; }
+        model = row.request.model; response = model === 'fixture-no-ack' ? {} : { model };
+      }
+      if (row.request.subtype === 'set_permission_mode') { mode = row.request.mode; response = { mode }; }
+      out({ type: 'control_response', response: { subtype: 'success', request_id: row.request_id, response } });
       if (row.request.subtype === 'interrupt') finish(true);
     } else if (row.type === 'user') {
       active = true; messageId = 'msg_' + randomUUID();
