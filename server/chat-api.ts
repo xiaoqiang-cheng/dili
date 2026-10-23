@@ -1,8 +1,7 @@
 import type express from 'express';
-import type { ConversationTranscript, Session } from '../shared/types.ts';
-import type { CodexChatPatch, CodexChatSnapshot } from '../shared/chat.ts';
-import type { CodexBridge } from './codex.ts';
-export type ChatBridge = Pick<CodexBridge, 'readChat' | 'chatSnapshot' | 'readChatHistory' | 'onChat' | 'sendPrompt' | 'getStatus' | 'answerChatRequest' | 'stopSession'>;
+import type { Backend, ConversationTranscript, Session } from '../shared/types.ts';
+import type { AgentChatPatch, AgentChatSnapshot } from '../shared/chat.ts';
+import type { AgentChatAdapter, AgentChatAdapters } from './agents/chat.ts';
 import type { ConversationReader } from './conversation.ts';
 import type { ChatSubmissions } from './chat-submissions.ts';
 import type { Attachments } from './attachments.ts';
@@ -12,8 +11,7 @@ interface Dependencies {
   store: Store;
   attachments: Attachments;
   submissions: ChatSubmissions;
-  bridge: ChatBridge;
-  claudeBridge?: ChatBridge;
+  adapters: AgentChatAdapters;
   conversations: ConversationReader;
   instanceId: string;
   demo: boolean;
@@ -27,19 +25,19 @@ interface Dependencies {
 }
 const fail = (message: string, status = 400): never => { throw Object.assign(new Error(message), { status }); };
 const requestId = (value: unknown): string => typeof value === 'string' && /^[a-zA-Z0-9_-]{16,100}$/.test(value) ? value : fail('发送标识无效');
-interface Viewer { response: express.Response; previous?: CodexChatSnapshot; device?: string }
+interface Viewer { response: express.Response; previous?: AgentChatSnapshot; device?: string }
 
-export function registerCodexChat(app: express.Express, options: Dependencies) {
+export function registerAgentChat(app: express.Express, options: Dependencies) {
   const { store, conversations } = options;
-  const bridgeFor = (item: Session) => item.backend === 'claude' ? options.claudeBridge! : options.bridge;
+  const bridgeFor = (item: Session): AgentChatAdapter => options.adapters[item.backend] ?? fail(`${item.backend} 尚未注册图形聊天适配器`);
   const submissions = options.submissions;
   const viewers = new Map<string, Set<Viewer>>();
   const scheduled = new Map<string, NodeJS.Timeout>();
-  const snapshots = new Map<string, CodexChatSnapshot>();
+  const snapshots = new Map<string, AgentChatSnapshot>();
   let revision = 0;
   function session(id: string): Session {
     const item = store.session(id) ?? fail('会话不存在', 404);
-    if (item.backend !== 'codex' && !(item.backend === 'claude' && options.claudeBridge)) fail('这个后端尚未支持原生流式图形聊天');
+    if (!options.adapters[item.backend]) fail('这个后端尚未支持原生流式图形聊天');
     return item;
   }
   function writable(id: string): Session {
@@ -49,7 +47,7 @@ export function registerCodexChat(app: express.Express, options: Dependencies) {
     if (item.archived || item.forkPending || !item.running || !item.nativeSessionId || !options.ready(item)) fail('请先启动或恢复这个图形会话', 409);
     return item;
   }
-  function remember(id: string, snapshot: CodexChatSnapshot) {
+  function remember(id: string, snapshot: AgentChatSnapshot) {
     const previous = snapshots.get(id);
     const comparable = { ...snapshot, instanceId: options.instanceId, revision: 0 };
     if (previous && JSON.stringify({ ...previous, revision: 0 }) === JSON.stringify(comparable)) return previous;
@@ -62,7 +60,7 @@ export function registerCodexChat(app: express.Express, options: Dependencies) {
     }
     return next;
   }
-  function nativeView(item: Session, snapshot: CodexChatSnapshot) {
+  function nativeView(item: Session, snapshot: AgentChatSnapshot) {
     return remember(item.id, { ...snapshot, connected: item.running && options.ready(item) && snapshot.connected });
   }
   async function read(id: string) {
@@ -99,7 +97,7 @@ export function registerCodexChat(app: express.Express, options: Dependencies) {
       requests: live?.requests ?? [], truncated: transcript.truncated, notice: transcript.notice,
     });
   }
-  function emit(id: string, snapshot: CodexChatSnapshot) {
+  function emit(id: string, snapshot: AgentChatSnapshot) {
     for (const viewer of viewers.get(id) ?? []) {
       const { response, previous } = viewer;
       if (response.destroyed || response.writableLength > 2_097_152) { response.destroy(); viewers.get(id)?.delete(viewer); continue; }
@@ -107,7 +105,7 @@ export function registerCodexChat(app: express.Express, options: Dependencies) {
       if (!previous || previous.nativeSessionId !== snapshot.nativeSessionId) response.write(`event: state\ndata: ${JSON.stringify(snapshot)}\n\n`);
       else {
         const oldItems = new Map(previous.items.map(item => [item.id, item]));
-        const patch: CodexChatPatch = { ...snapshot, baseRevision: previous.revision, items: snapshot.items.filter(item => JSON.stringify(item) !== JSON.stringify(oldItems.get(item.id))), order: snapshot.items.map(item => item.id) };
+        const patch: AgentChatPatch = { ...snapshot, baseRevision: previous.revision, items: snapshot.items.filter(item => JSON.stringify(item) !== JSON.stringify(oldItems.get(item.id))), order: snapshot.items.map(item => item.id) };
         response.write(`event: patch\ndata: ${JSON.stringify(patch)}\n\n`);
       }
       viewer.previous = snapshot;
@@ -124,7 +122,7 @@ export function registerCodexChat(app: express.Express, options: Dependencies) {
       else void read(id).then(snapshot => emit(id, snapshot)).catch(() => {});
     }, 80));
   }
-  const offChats = ([['codex', options.bridge], ['claude', options.claudeBridge]] as const).filter((entry): entry is readonly ['codex' | 'claude', ChatBridge] => !!entry[1]).map(([backend, bridge]) => bridge.onChat((nativeId) => {
+  const offChats = (Object.entries(options.adapters) as [Backend, AgentChatAdapter][]).map(([backend, bridge]) => bridge.onChat((nativeId) => {
     if (options.closing()) return;
     const item = options.sessions().find(item => item.backend === backend && item.nativeSessionId === nativeId && !item.forkPending);
     if (!item) return;
@@ -133,7 +131,7 @@ export function registerCodexChat(app: express.Express, options: Dependencies) {
     // older users. Saved native history owns previews; successful local sends
     // update immediately below, without letting late snapshot hydration regress them.
   }));
-  const offStore = store.onChange(change => { if (change.table === 'sessions' && ['codex', 'claude'].includes(change.data.backend)) queue(change.data.id); });
+  const offStore = store.onChange(change => { if (change.table === 'sessions' && !!options.adapters[change.data.backend]) queue(change.data.id); });
 
   app.get('/api/sessions/:id/chat', async (req, res) => res.json(await read(String(req.params.id))));
   app.get('/api/sessions/:id/chat/history', async (req, res) => {

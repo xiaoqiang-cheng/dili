@@ -1,5 +1,5 @@
-/** SessionDeck's bounded view of native Codex items; the native thread owns execution. */
-export interface CodexChatItem {
+/** Dili's bounded view of native Agent items; the native session owns execution. */
+export interface AgentChatItem {
   id: string;
   turnId?: string;
   type: 'user' | 'assistant' | 'command' | 'fileChange' | 'tool' | 'plan' | 'notice';
@@ -10,7 +10,7 @@ export interface CodexChatItem {
   status: 'inProgress' | 'completed' | 'failed';
 }
 
-export interface CodexChatRequest {
+export interface AgentChatRequest {
   /** Opaque handle bound to the native connection and original request. */
   id: string;
   kind: 'approval' | 'question' | 'unsupported';
@@ -21,42 +21,52 @@ export interface CodexChatRequest {
   questions?: { id: string; header: string; question: string; isOther?: boolean; isSecret?: boolean; options?: { label: string; description: string }[] }[];
 }
 
-export interface CodexChatSnapshot {
+export interface AgentChatSnapshot {
   instanceId?: string;
   nativeSessionId: string | null;
   revision: number;
   connected: boolean;
   activeTurnId: string | null;
-  items: CodexChatItem[];
-  requests: CodexChatRequest[];
+  items: AgentChatItem[];
+  requests: AgentChatRequest[];
   truncated: boolean;
   /** Native cursor for loading older turns; null means the beginning is loaded. */
   historyCursor?: string | null;
   notice?: string;
 }
 
-export interface CodexChatHistoryPage {
+export interface AgentChatHistoryPage {
   nativeSessionId: string;
-  items: CodexChatItem[];
+  items: AgentChatItem[];
   nextCursor: string | null;
   truncated: boolean;
 }
 
-export interface CodexChatPatch extends Omit<CodexChatSnapshot, 'items'> {
+export interface AgentChatPatch extends Omit<AgentChatSnapshot, 'items'> {
   baseRevision: number;
   /** Only changed items. Order also removes items evicted from the bounded view. */
-  items: CodexChatItem[];
+  items: AgentChatItem[];
   order: string[];
 }
 
-export interface CodexChatAnswer {
+export interface AgentChatAnswer {
   decision?: string;
   answers?: Record<string, string[]>;
 }
 
-export interface CodexChatSubmission {
+export interface AgentChatSubmission {
   requestId: string;
   status: 'sending' | 'accepted' | 'unknown' | 'rejected';
   turnId?: string;
   error?: string;
 }
+
+// Compatibility names retained while platform implementations migrate to the
+// shared Agent chat protocol.
+export type CodexChatItem = AgentChatItem;
+export type CodexChatRequest = AgentChatRequest;
+export type CodexChatSnapshot = AgentChatSnapshot;
+export type CodexChatHistoryPage = AgentChatHistoryPage;
+export type CodexChatPatch = AgentChatPatch;
+export type CodexChatAnswer = AgentChatAnswer;
+export type CodexChatSubmission = AgentChatSubmission;

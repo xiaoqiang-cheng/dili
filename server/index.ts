@@ -41,7 +41,8 @@ import { ConversationReader, conversationPreview, handoffPrompt } from './conver
 import { gitDiff, gitStatus, listWorkspace, openWorkspaceContent, parseByteRange, readWorkspaceFile, streamWorkspaceContent } from './workspace.ts';
 import { Attachments, registerAttachments, hasImageSignature } from './attachments.ts';
 import { ChatSubmissions } from './chat-submissions.ts';
-import { registerCodexChat } from './chat-api.ts';
+import { registerAgentChat } from './chat-api.ts';
+import { createAgentChatAdapters } from './agents/chat.ts';
 import { MAX_TERMINAL_IMAGE_BYTES, TERMINAL_IMAGE_TYPES, type TerminalImageType } from '../shared/terminal-images.ts';
 import type { Backend, BackendInfo, Session, AppState, SessionStatus, ConversationTranscript, DiscoveredSession } from '../shared/types.ts';
 
@@ -523,8 +524,8 @@ app.delete('/api/shells/:id', async (req, res) => {
   for (const socket of wss.clients) if ((socket as WebSocket & { shellId?: string }).shellId === id) socket.close(1000, 'Shell removed');
   res.json({ removed: true });
 });
-const chatApi = registerCodexChat(app, {
-  store, bridge: codexBridge, conversations, instanceId, demo, updatePreview, attachments, submissions,
+const chatApi = registerAgentChat(app, {
+  store, adapters: createAgentChatAdapters([['codex', codexBridge]]), conversations, instanceId, demo, updatePreview, attachments, submissions,
   closing: () => closing,
   supported: item => !!info(item.backend).capabilities.graphicalChat,
   ready: item => { const run = codexRuns.get(item.id); return run?.nativeId === item.nativeSessionId && run?.launchId === launchIds.get(item.id); },

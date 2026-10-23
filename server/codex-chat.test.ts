@@ -11,7 +11,7 @@ import WebSocket, { WebSocketServer } from 'ws';
 import express from 'express';
 import { CodexBridge } from './codex.ts';
 import { CodexChatState, nativeChatAnswer, nativeChatRequest } from './codex-chat.ts';
-import { registerCodexChat } from './chat-api.ts';
+import { registerAgentChat } from './chat-api.ts';
 import { ConversationReader } from './conversation.ts';
 import { Store } from './store.ts';
 
@@ -412,7 +412,7 @@ test('a returning HTTP viewer receives cached messages before the fresh native p
   const store = new Store(':memory:');
   const contact = store.addSession({ backend: 'codex', title: 'cached fixture', cwd: '/tmp', nativeSessionId: threadId });
   const app = express();
-  const api = registerCodexChat(app, { attachments: testAttachments(t, store), submissions: new ChatSubmissions(store.db), store, bridge, conversations: new ConversationReader(), instanceId: 'http-fixture', demo: false, closing: () => false, supported: () => true, ready: () => false, busy: () => false, sessions: () => store.sessions(), broadcast: () => {}, updatePreview: () => {} });
+  const api = registerAgentChat(app, { attachments: testAttachments(t, store), submissions: new ChatSubmissions(store.db), store, adapters: { codex: bridge }, conversations: new ConversationReader(), instanceId: 'http-fixture', demo: false, closing: () => false, supported: () => true, ready: () => false, busy: () => false, sessions: () => store.sessions(), broadcast: () => {}, updatePreview: () => {} });
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.once('listening', resolve));
   const address = server.address(); assert.ok(address && typeof address === 'object');
@@ -463,7 +463,7 @@ test('graphical reconnect recovers a lost observer without clearing history or s
   store.updateSession(contact.id, { running: true });
   let busy = false;
   const app = express(); app.use(express.json());
-  const api = registerCodexChat(app, { attachments: testAttachments(t, store), submissions: new ChatSubmissions(store.db), store, bridge, conversations: new ConversationReader(), instanceId: 'reconnect-fixture', demo: false, closing: () => false, supported: () => true, ready: () => true, busy: () => busy, sessions: () => store.sessions(), broadcast: () => {}, updatePreview: () => {} });
+  const api = registerAgentChat(app, { attachments: testAttachments(t, store), submissions: new ChatSubmissions(store.db), store, adapters: { codex: bridge }, conversations: new ConversationReader(), instanceId: 'reconnect-fixture', demo: false, closing: () => false, supported: () => true, ready: () => true, busy: () => busy, sessions: () => store.sessions(), broadcast: () => {}, updatePreview: () => {} });
   app.use((error: Error & { status?: number }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.once('listening', resolve));
