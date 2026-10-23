@@ -1,17 +1,24 @@
 # 安装与运行 Dili
 
-当前正式验收目标为 Linux x86_64；WSL2 x86_64 沿用 Linux 运行方式。需要 Node.js 24+。Windows 原生和 macOS 暂未完成本版本发行验收。
+更新日期：2026-10-23。当前正式发行验收目标为 Linux x86_64；WSL2 x86_64 沿用 Linux 运行方式，完整实机验收仍待完成。需要 Node.js 24+。Windows 原生和 macOS 暂未完成本版本发行验收。
 
-## npm 安装
-
-包名暂定 `dili-workbench`，命令名为 `dili`。本版本尚未发布到 npm；正式发布后可执行：
+## 源码运行（推荐起点）
 
 ```sh
-npm install -g dili-workbench
-dili
+git clone https://github.com/xiaoqiang-cheng/dili.git
+cd dili
+./start.sh
 ```
 
-发布前可以使用本地生成的包，安装效果相同：
+打开 `http://127.0.0.1:4317`。脚本会检查 Node.js 24+、npm、端口和数据锁，在依赖缺失或依赖清单更新时安装，再构建和启动。已有实例占用端口或数据目录时直接退出，不接管进程。没有适用的 `node-pty` 预编译包时需要系统编译工具。
+
+默认只监听本机；局域网访问可使用 `SESSIONDECK_HOST=0.0.0.0 ./start.sh`，再打开主机的局域网 IP 和端口。远程访问推荐[邀请码配对](remote-access.md)，不要把本机免密码入口直接代理到公网。
+
+也可在新 checkout 手动执行 `npm ci`、`npm run build`、`npm start`。并行开发及活动实例保护见[开发指南](development.md)。
+
+## 安装本地 npm 包
+
+包名暂定 `dili-workbench`，命令名为 `dili`。**本版本尚未发布到 npm**，目前请从源码或经过核对的发行制品安装。在独立 checkout 中制作本地包：
 
 ```sh
 npm ci
@@ -31,9 +38,7 @@ dili doctor
 
 默认浏览器地址为 `http://localhost:4317`。前台运行时 Ctrl+C 会停止 Dili 及其托管进程，保留原生历史、联系人、笔记和配置。程序安装目录与数据目录分离，兼容数据目录仍为 `~/.local/share/sessiondeck`。升级不应在仍有运行会话时覆盖服务依赖；安排停止服务后升级。
 
-## 源码运行
-
-`./start.sh` 沿用现有源码安装与构建流程；也可运行 `npm ci && npm run build && npm start`。npm 包和源码启动使用同一数据格式；不能同时使用同一数据目录。
+npm 包和源码启动使用同一数据格式，不能同时使用同一数据目录；服务端升级会中断托管进程，请按[操作指南](operations.md)安排维护。
 
 ## Agent
 
