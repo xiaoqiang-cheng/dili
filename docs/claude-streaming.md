@@ -1,23 +1,29 @@
-# Claude 图形对话与原生终端共用实例
+# Claude 图形会话：原生 stream-json
 
-Dili 以交互式 Claude CLI（TUI）作为 Claude 联系人的唯一执行者。图形页读取该会话的原生 JSONL 记录，并经同一个 PTY 提交输入。切换界面只改变显示方式，不重启进程、不交接历史文件，也不重新初始化权限。执行中或等待审批时同样允许切换。
+Dili 图形模式启动已安装 Claude CLI 的官方 stream-json 协议，复用原生认证、工具、权限和持久会话，不自建模型执行引擎。Codex 与 Claude 共用 `client/AgentChatPane.tsx`，正文、Markdown、工具结果、审批与用户问题统一呈现。
 
-## 实现
+## 执行者与切换
 
-- `server/index.ts`：两种界面都使用 `buildLaunch` 启动一个 TUI，提前保存原生 ID；`/start` 对运行中的 Claude 仅更新界面偏好。停止/恢复、Fork 与 Auto 继续复用 Claude CLI 原生参数。尚未发送的空会话保留初始化信息，避免恢复不存在的历史文件。
-- `client/ConversationPane.tsx`、`client/NativeInputComposer.tsx`：图形正文使用 Markdown、图表和对话目录，输入保留文字、图片、语音、可调大小、草稿与待发送队列。旧流式界面的草稿、图片及待核对回执迁移回来，旧队列先暂停，避免升级后意外执行。
-- `/api/sessions/:id/input`：发送前校验 PTY generation、会话身份与审批状态；使用持久 request ID 去重。粘贴与回车之间再次检查原生输入变化，发送不确定时保留回执并要求人工核对，不自动重试。
-- `server/native-hook.cjs`、`server/native-events.ts`：执行、完成与审批状态来自 Claude 原生钩子；图形页发送后立即显示响应状态。
-- 共享会话同样使用原生进程；只读分享不能发送。Codex 保留 app-server 流式对话与远程 TUI 的实现。
+图形模式由 `server/claude-chat.ts` 执行，原生终端由 PTY 执行。两者能够恢复同一个持久会话 ID，但不是同一个运行进程。每个联系人只允许一个执行者；当前轮及审批处理完毕后，界面明确确认交接，再退出旧执行者、恢复已保存上下文。执行中拒绝交接，不能把一个回合同时交给两个进程。
 
-## 体验与边界
+新安装且没有已保存显示偏好时，Claude 默认打开图形对话；已有偏好继续生效。已有 PTY 会话不会因刷新页面而被替换；用户仍可阅读历史，明确切换执行方式后才启动图形执行。若需要保留原生进程中的临时状态，请继续使用原生终端，待工作结束后再切换。切换不承诺保留仅存在于原进程内存中的设置。
 
-图形页不是第二个 Claude 实例。图形输入会直接提交给正在运行的原生 Claude；审批、权限/模型设置、问题选项与其他 TUI 交互需切到原生终端处理，然后可随时切回图形页。图形页在等待审批时提供跳转按钮。
+## 代码路径
 
-正文随 Claude 写入原生历史后更新：可见图形页在运行期间每三秒刷新，原生状态变化也会触发刷新。由于 TUI 没有对外提供结构化正文增量，图形页暂不承诺逐字流式输出，部分回复可能在本轮结束后出现。历史读取继续限制数据量，完整记录可在原生终端查看。
+- `server/index.ts`：启动、停止、空会话恢复、Fork、交接、群组投递及异常退出。
+- `server/claude-chat.ts`：流式正文、工具、原生审批、AskUserQuestion、图片、interrupt；子 Agent 输出不混入当前联系人的正文。
+- `server/chat-api.ts`：平台无关 HTTP/SSE、快照与补丁、持久 request ID 去重、未知发送结果核对。
+- `client/AgentChatPane.tsx`：草稿、图片、语音、队列、消息目录、审批与问题。兼容原有草稿键；升级的旧队列需核对连接身份，不自动重复发送。
+- `client/NativeInputComposer.tsx` 和 `/input` 保留 PTY 兼容路径，供旧版本 Claude 及 Harness 使用。
 
-`stream-json` 是另一种 Claude CLI 运行方式，不能作为交互式 TUI 的公开附加客户端；相同 session ID 只保证持久上下文，并不代表相同执行进程。`server/claude-chat.ts` 与其协议测试保留用于独立兼容研究，工作台不再通过它启动 Claude。更新服务时需要正常重启，旧的流式进程不能在运行中转换为 TUI；不要从被 Dili 托管的会话中重启承载服务。
+## 当前边界
+
+图形模式可以处理普通输入、图片、流式回复、工具审批、问题和停止。模型／权限配置尚待统一设置接口；Claude 当前只加载有界最近历史，完整历史仍保留在原生存储中。运行中补充输入先进入队列，本轮结束后发送。
+
+CLI 不支持 stream-json 部分消息参数时不宣称支持结构化图形交互。原生 TUI 和图形模式继承的是原生持久配置，临时内存状态不能承诺跨进程继承。
 
 ## 验证
 
-`npm run verify` 执行类型、服务端与隔离浏览器测试。Claude 的回归覆盖图形/终端切换时的同一 PTY generation、执行及审批状态保持、无第二次启动、空会话恢复、Fork 身份、发送去重、图片以及旧草稿迁移。测试使用本机模拟 CLI，不访问模型服务、不更改用户的原生配置。
+`server/codex-chat-api.test.ts` 使用隔离 CLI fixture 验证流式、Unicode、多行、去重、审批／提问、停止、交接、Fork 与恢复。
+
+`npm run test:smoke:claude-chat` 使用真实已安装 Claude CLI 连接一次性 loopback provider，检查流式、图片、恢复、Fork、审批与停止，不访问付费模型或修改用户配置。完整验收还包括 `npm run check`、`npm test` 和隔离 `npm run test:web`。本轮结果写入架构文档；不能用 fixture 通过代替所有真实账号兼容性。

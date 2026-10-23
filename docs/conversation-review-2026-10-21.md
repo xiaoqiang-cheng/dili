@@ -1,6 +1,6 @@
 # 会话交互整体 Review（2026-10-21）
 
-后续更新：Claude 的图形页与原生终端现共用一个交互式 CLI 进程，输入经 PTY 提交，正文从原生历史读取；不再使用第二个 `stream-json` 执行器。实现和当前边界见 [Claude 原生会话](claude-streaming.md)。
+后续更新（2026-10-23）：下文保留 10 月 21 日的阶段记录。Claude 图形模式现已改用官方 stream-json，支持实时正文、工具和图形审批／提问；与 TUI 通过同一持久会话进行空闲交接。当前实现和边界见 [Claude 图形会话](claude-streaming.md)及[架构方案](graphical-workbench-architecture.md)。
 
 ## 结论
 

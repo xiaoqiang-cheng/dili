@@ -288,10 +288,10 @@ test('raw graphical uploads enforce image type and session ownership, then nativ
 });
 
 
-test('Claude graphical staging uses separate native image pastes, no Enter, and rejects stale or repeated changes', {timeout:30000}, async t => {
+test('Claude terminal staging uses separate native image pastes, no Enter, and rejects stale or repeated changes', {timeout:30000}, async t => {
   const f=await launch(t);
   const contact=await f.request<Session>('/api/sessions','POST',{backend:'claude',title:'Native staging',cwd:f.directory},201);
-  await f.request('/api/sessions/'+contact.id+'/start','POST',{mode:'chat'});
+  await f.request('/api/sessions/'+contact.id+'/start','POST',{mode:'terminal'});
   await delay(150);
   const native=await f.request<{generation:string}>('/api/sessions/'+contact.id+'/input');
   assert.ok(native.generation);
@@ -313,10 +313,10 @@ test('Claude graphical staging uses separate native image pastes, no Enter, and 
   assert.equal(terminal.status,200);
 });
 
-test('Claude graphical send submits multiline text and images once, exposes recovery, and leaves approvals native', {timeout:30000}, async t => {
+test('Claude terminal compatibility submits multiline text and images once, exposes recovery, and leaves approvals native', {timeout:30000}, async t => {
   const f=await launch(t);
   const contact=await f.request<Session>('/api/sessions','POST',{backend:'claude',title:'Direct graphical send',cwd:f.directory},201);
-  await f.request('/api/sessions/'+contact.id+'/start','POST',{mode:'chat'}); await delay(150);
+  await f.request('/api/sessions/'+contact.id+'/start','POST',{mode:'terminal'}); await delay(150);
   const native=await f.request<{generation:string;directSubmit:boolean}>('/api/sessions/'+contact.id+'/input');
   assert.equal(native.directSubmit,true);
   const path='/api/sessions/'+contact.id+'/input';
@@ -344,29 +344,59 @@ test('Claude graphical send submits multiline text and images once, exposes reco
 });
 
 
-test('Claude views keep one TUI and permission state, and legacy stream endpoints cannot start another writer', { timeout: 30_000 }, async t => {
-  const f = await launch(t), { request } = f;
-  const source = await request<Session>('/api/sessions', 'POST', { backend: 'claude', title: 'One Claude instance', cwd: f.directory }, 201);
-  const started = await request<Session>(`/api/sessions/${source.id}/start`, 'POST', { mode: 'chat' });
-  assert.ok(started.nativeSessionId);
+test('Claude graphical execution streams once, handles approvals/questions, and rejects concurrent writers', { timeout: 30_000 }, async t => {
+  const f = await launch(t), { request, snapshot } = f;
+  const source = await request<Session>('/api/sessions', 'POST', { backend: 'claude', title: 'Structured Claude', cwd: f.directory }, 201);
   const path = `/api/sessions/${source.id}`;
-  const native = await request<{ generation: string }>(path + '/input');
-  assert.ok(native.generation);
-  await until(async () => !!(await readFile(join(f.directory, 'claude-launches.jsonl'), 'utf8').catch(() => '')), 'TUI did not start');
-  for (const status of ['idle', 'waiting_approval', 'waiting_input', 'unknown']) {
-    await request(path, 'PATCH', { status });
-    const before = await f.current(source.id);
-    for (const mode of ['terminal', 'chat', 'chat', 'terminal']) {
-      const changed = await request<Session>(path + '/start', 'POST', { mode });
-      assert.equal(changed.interactionMode, mode);
-      for (const key of ['running', 'nativeSessionId', 'executionMode', 'status', 'statusSource', 'unread', 'lastAttentionKey'] as const) assert.equal(changed[key], before[key], `Switching changed ${key}`);
-      assert.equal((await request<{ generation: string }>(path + '/input')).generation, native.generation);
-    }
+  const started = await request<Session>(path + '/start', 'POST', { mode: 'chat' });
+  assert.ok(started.nativeSessionId);
+  assert.equal(started.executionTransport, 'structured');
+  assert.equal((await request<{ generation: string | null }>(path + '/input')).generation, null);
+  const events = await f.stream(source.id);
+  const payload = { requestId: randomUUID(), text: '检查任务\n保留换行🙂' };
+  await Promise.all([1, 2].map(() => request(path + '/chat/messages', 'POST', payload, [200, 202])));
+  await until(async () => (await snapshot(source.id)).items.some(item => item.text === '第一段 **'), 'Partial text not visible');
+  assert.ok((await snapshot(source.id)).activeTurnId);
+  await until(async () => events.text.includes('第一段 **'), 'No partial SSE text');
+  // A display status is editable; it must not override the native writer lock.
+  await request(path, 'PATCH', { status: 'waiting_input' });
+  await request(path + '/start', 'POST', { mode: 'terminal', handoff: true }, 409);
+  await until(async () => !(await snapshot(source.id)).activeTurnId, 'Turn did not finish');
+  assert.equal((await snapshot(source.id)).items.filter(item => item.type === 'assistant').length, 1);
+  assert.equal((await snapshot(source.id)).items.filter(item => item.type === 'user').length, 1);
+  assert.equal((await f.current(source.id)).lastUserInput, payload.text.replace(/\s+/g, ' '));
+  const calls = async () => (await readFile(join(f.directory, 'claude-calls.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.equal((await calls()).filter(row => row.type === 'user').length, 1);
+  for (const text of ['APPROVAL', 'QUESTION']) {
+    await request(path + '/chat/messages', 'POST', { requestId: randomUUID(), text });
+    await until(async () => !!(await snapshot(source.id)).requests.length, 'Request did not arrive');
+    const pending = (await snapshot(source.id)).requests[0];
+    assert.equal(pending.kind, text === 'QUESTION' ? 'question' : 'approval');
+    await request(path + '/start', 'POST', { mode: 'terminal', handoff: true }, 409);
+    const answer = text === 'QUESTION' ? { answers: { '0': ['二'] } } : { decision: 'deny' };
+    await request(path + '/chat/requests/' + pending.id, 'POST', answer);
+    await request(path + '/chat/requests/' + pending.id, 'POST', answer, 409);
+    await until(async () => !(await snapshot(source.id)).activeTurnId, 'Answer did not finish turn');
   }
-  await request(path + '/chat/messages', 'POST', { requestId: randomUUID(), text: 'Do not start stream-json' }, 400);
-  const launches = (await readFile(join(f.directory, 'claude-launches.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-  assert.equal(launches.length, 1);
-  assert.equal(launches[0].args.includes('--print'), false);
+  await request(path + '/chat/messages', 'POST', { requestId: randomUUID(), text: 'HOLD' });
+  await request(path + '/chat/interrupt', 'POST', {});
+  await until(async () => !(await snapshot(source.id)).activeTurnId, 'Interrupt did not finish');
+  // Interrupt reports an error result; the next normal turn restores idle status.
+  await request(path + '/chat/messages', 'POST', { requestId: randomUUID(), text: 'Resume' });
+  await until(async () => !(await snapshot(source.id)).activeTurnId, 'Resume did not finish');
+  await request(path + '/start', 'POST', { mode: 'terminal' }, 409);
+  const terminal = await request<Session>(path + '/start', 'POST', { mode: 'terminal', handoff: true });
+  assert.equal(terminal.nativeSessionId, started.nativeSessionId);
+  assert.equal(terminal.executionTransport, 'pty');
+  assert.equal((await snapshot(source.id)).connected, false);
+  await request(path + '/chat/messages', 'POST', { requestId: randomUUID(), text: 'Must not write' }, 409);
+  await request(path, 'PATCH', { status: 'waiting_input' });
+  await request(path + '/start', 'POST', { mode: 'chat' }, 409);
+  const restored = await request<Session>(path + '/start', 'POST', { mode: 'chat', handoff: true });
+  assert.equal(restored.nativeSessionId, started.nativeSessionId);
+  assert.equal((await snapshot(source.id)).connected, true);
+  assert.ok((await snapshot(source.id)).items.some(item => item.text === payload.text));
+  assert.equal((await readFile(join(f.directory, 'claude-launches.jsonl'), 'utf8')).trim().split('\n').length, 1);
 });
 
 test('Claude graphical starts preserve empty-session and fork identities across real stop/resume', { timeout: 30_000 }, async t => {
@@ -389,7 +419,10 @@ test('Claude graphical starts preserve empty-session and fork identities across 
   const reopened = await start(fork.id);
   assert.equal(reopened.nativeSessionId, child.nativeSessionId);
   assert.deepEqual(reopened.claudeUnwritten, child.claudeUnwritten);
-  const native = await request<{ generation: string }>(`/api/sessions/${source.id}/input`);
-  await request(`/api/sessions/${source.id}/input`, 'POST', { text: 'Continue the original', requestId: randomUUID(), generation: native.generation, submit: true });
-  assert.equal((await request<{ generation: string }>(`/api/sessions/${source.id}/input`)).generation, native.generation);
+  await request(`/api/sessions/${source.id}/chat/messages`, 'POST', { text: 'Continue the original', requestId: randomUUID() });
+  await until(async () => !(await f.snapshot(source.id)).activeTurnId, 'Original did not finish');
+  await stop(source.id);
+  const written = await start(source.id);
+  assert.equal(written.nativeSessionId, blank.nativeSessionId);
+  assert.equal(written.claudeUnwritten, undefined);
 });

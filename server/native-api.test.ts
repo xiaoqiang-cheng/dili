@@ -76,13 +76,13 @@ setInterval(() => {}, 1000);
     assert.equal(response.status, 200);
   };
   const readHandshake = () => readFile(handshakePath, 'utf8').then(value => JSON.parse(value) as Handshake);
-  await request(`/api/sessions/${item.id}/start`, 'POST', { mode: 'chat' });
+  await request(`/api/sessions/${item.id}/start`, 'POST', { mode: 'terminal' });
   await until(async () => { try { return !!(await readHandshake()).url; } catch { return false; } }, 'PTY fixture did not receive hook configuration');
   const first = await readHandshake();
   await hook(first, 'SessionStart');
   assert.equal((await state()).nativeSessionId, first.nativeId);
   await hook(first, 'UserPromptSubmit');
-  await t.test('running and approving Claude switches views without replacing the native PTY or state', async () => {
+  await t.test('running and approving Claude rejects execution handoffs without replacing the native PTY or state', async () => {
     const path = `/api/sessions/${item.id}`;
     const initial = await request<{ generation: string }>(path + '/input');
     assert.ok(initial.generation);
@@ -90,8 +90,12 @@ setInterval(() => {}, 1000);
       await hook(first, event);
       const before = await state();
       for (const mode of ['terminal', 'chat', 'terminal', 'chat']) {
-        const changed = await request<Session>(path + '/start', 'POST', { mode });
-        assert.equal(changed.interactionMode, mode);
+        if (mode === 'chat') {
+          const denied = await fetch(base + path + '/start', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sessiondeck-token': csrfToken }, body: JSON.stringify({ mode, handoff: true }) });
+          assert.equal(denied.ok, false);
+        } else await request<Session>(path + '/start', 'POST', { mode });
+        const changed = await state();
+        assert.equal(changed.interactionMode, 'terminal');
         assert.equal(changed.nativeSessionId, first.nativeId);
         assert.equal(changed.status, before.status);
         assert.equal(changed.statusSource, before.statusSource);

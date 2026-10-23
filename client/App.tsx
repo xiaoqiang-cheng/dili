@@ -36,7 +36,7 @@ import ModalShell from './Modal';
 import { SecuritySettings, ShareDialog } from './Sharing';
 import type { AuthStatus } from '../shared/auth';
 
-const CodexChatPane = lazy(() => import('./CodexChatPane'));
+const AgentChatPane = lazy(() => import('./AgentChatPane'));
 
 export const BACKEND: Record<Backend, { name: string; short: string; color: string }> = {
   claude: { name: 'Claude Code', short: 'Claude', color: 'coral' },
@@ -143,7 +143,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   const [privateViews, setPrivateViews] = useState<Record<string, string>>(() => Object.fromEntries(
     ['claude', 'codex', 'dsh'].map(backend => {
       const saved = readLocalPreference(`sessiondeck.private-view.${backend}`);
-      return [backend, saved === 'terminal' || saved === 'conversation' || saved === 'chat' ? saved : backend === 'codex' ? 'chat' : 'terminal'];
+      return [backend, saved === 'terminal' || saved === 'conversation' || saved === 'chat' ? saved : backend === 'codex' || backend === 'claude' ? 'chat' : 'terminal'];
     }),
   ));
   const [terminalPanelOpen, setTerminalPanelOpen] = useState(false);
@@ -496,22 +496,23 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   const selectedBackend = selected ? state?.backends.find((backend) => backend.id === selected.backend) : undefined;
   const nativeSessionBusy = selected?.backend === 'codex' && !selected.running && selected.status === 'error'
     && (selected.errorCode === 'NATIVE_SESSION_BUSY' || /already has an active writer/i.test(selected.statusDetail));
-  const codexChatAvailable = !!selected && ['codex', 'claude'].includes(selected.backend) && !state?.demo && !!selectedBackend?.capabilities.graphicalChat;
+  const agentChatAvailable = !!selected && ['codex', 'claude'].includes(selected.backend) && !state?.demo && !!selectedBackend?.capabilities.graphicalChat;
   // DeepSeek Harness without dsh-tui has no PTY: it shows its native Web UI.
   const dshWebOnly = selected?.backend === 'dsh' && !state?.demo && !selectedBackend?.capabilities.terminal;
-  const privateView = selected ? selected.backend === 'codex' && codexChatAvailable
+  const privateView = selected ? selected.backend === 'codex' && agentChatAvailable
     ? privateViews.codex === 'terminal' ? 'terminal' : 'chat'
-    : selected.backend === 'claude' && codexChatAvailable
-      ? privateViews.claude === 'chat' || privateViews.claude === 'conversation' ? 'conversation' : 'terminal'
+    : selected.backend === 'claude' && agentChatAvailable
+      ? privateViews.claude === 'chat' ? 'chat' : privateViews.claude === 'conversation' ? selected.running && selected.executionTransport !== 'structured' ? 'conversation' : 'chat' : 'terminal'
       : privateViews[selected.backend] === 'conversation' ? 'conversation' : 'terminal' : 'terminal';
   const switchPrivateView = (mode: 'chat' | 'conversation' | 'terminal') => {
     if (!selected) return;
-    const executionView = selected.backend === 'claude' && codexChatAvailable && mode === 'conversation' ? 'chat' : mode;
-    if ((executionView === 'terminal' || executionView === 'chat') && codexChatAvailable && selected.running && selected.interactionMode !== executionView) {
-      void run(`attach:${selected.id}`, async () => { await api(`/sessions/${selected.id}/start`, { mode: executionView }); selectPrivateView(selected.backend, mode); });
+    const executionView = selected.backend === 'claude' && agentChatAvailable && mode === 'conversation' ? 'chat' : mode;
+    if ((executionView === 'terminal' || executionView === 'chat') && agentChatAvailable && selected.running && selected.interactionMode !== executionView) {
+      if (selected.backend === 'claude' && !window.confirm('切换将退出当前 Claude 进程，并从同一份已保存会话恢复。当前任务和审批必须先处理完成。继续切换？')) return;
+      void run(`attach:${selected.id}`, async () => { await api(`/sessions/${selected.id}/start`, { mode: executionView, handoff: selected.backend === 'claude' }); selectPrivateView(selected.backend, mode); });
     } else selectPrivateView(selected.backend, mode);
   };
-  const startMode = (mode = privateView) => codexChatAvailable && (mode === 'chat' || selected?.backend === 'claude' && mode === 'conversation') ? 'chat' : 'terminal';
+  const startMode = (mode = privateView) => agentChatAvailable && (mode === 'chat' || selected?.backend === 'claude' && mode === 'conversation') ? 'chat' : 'terminal';
   const startSelected = (mode?: 'terminal' | 'chat') => {
     if (!selected) return Promise.resolve(false);
     return run(`start:${selected.id}`, () => api(`/sessions/${selected.id}/start`, { mode: mode ?? startMode() }));
@@ -629,7 +630,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
           <div className="drawer-title"><h2 title={selected.title}>{selected.title}</h2><button className="icon-button rename-button" title="改名" aria-label="改名" onClick={() => setModal({ type: 'rename', session: selected })}><Pencil size={12} /></button><StatusBadge session={selected} /></div>
           <nav className="session-meta" aria-label="会话关系">{selected.statusDetail && <span className={`session-status-detail ${attention(selected) ? 'needs-attention' : ''}`} title={`${selected.statusDetail} · ${selected.statusSource === 'native' ? '后端状态' : selected.statusSource === 'terminal' ? '终端估测' : selected.statusSource === 'manual' ? '手动标记' : '进程状态'}`}>{selected.statusDetail}</span>}{selected.archived && <button className="session-meta-link" onClick={() => void patch(selected, { archived: false })}><Archive size={12} />已归档 · 恢复联系人</button>}<span>{BACKEND[selected.backend].short}</span><button className="session-cwd" aria-label="复制工作目录" title={`${selected.cwd}\n点击复制`} onClick={() => void copyText(selected.cwd, '工作目录')}><Folder size={12} /><span><bdi>{selected.cwd}</bdi></span></button>{selectedGroup && <button className="session-meta-link" onClick={() => navigate(`group:${selectedGroup.id}`)}><UsersRound size={12} />{selectedGroup.title}</button>}{selectedParent && <button className="session-meta-link" onClick={() => openSession(selectedParent)}><GitFork size={12} />来源：{selectedParent.title}</button>}</nav>
         </div>
-        <div className="private-view-switch" role="group" aria-label="会话显示方式" title={selected.backend === 'claude' && codexChatAvailable ? '同一 Claude 原生进程，切换界面不重启' : '同一个会话，切换视图不重启'}><button aria-label={codexChatAvailable ? '图形对话' : '对话记录'} title={codexChatAvailable ? '图形对话' : '对话记录'} aria-pressed={dshWebOnly ? privateView === 'conversation' : privateView !== 'terminal'} onClick={() => switchPrivateView(selected.backend === 'codex' && codexChatAvailable ? 'chat' : 'conversation')}><MessageSquare size={14} /><span>{codexChatAvailable ? '图形对话' : '对话记录'}</span></button><button aria-label={dshWebOnly ? '原生界面' : '原生终端'} title={dshWebOnly ? '原生界面' : '原生终端'} aria-pressed={privateView === 'terminal'} disabled={!!busy} onClick={() => switchPrivateView('terminal')}><TerminalSquare size={14} /><span>{dshWebOnly ? '原生界面' : '原生终端'}</span></button></div>
+        <div className="private-view-switch" role="group" aria-label="会话显示方式" title={selected.backend === 'claude' && agentChatAvailable ? '图形模式与原生终端通过已保存会话交接，仅空闲时可切换' : '同一个会话，切换视图不重启'}><button aria-label={agentChatAvailable ? '图形对话' : '对话记录'} title={agentChatAvailable ? '图形对话' : '对话记录'} aria-pressed={dshWebOnly ? privateView === 'conversation' : privateView !== 'terminal'} onClick={() => switchPrivateView(agentChatAvailable ? 'chat' : 'conversation')}><MessageSquare size={14} /><span>{agentChatAvailable ? '图形对话' : '对话记录'}</span></button><button aria-label={dshWebOnly ? '原生界面' : '原生终端'} title={dshWebOnly ? '原生界面' : '原生终端'} aria-pressed={privateView === 'terminal'} disabled={!!busy} onClick={() => switchPrivateView('terminal')}><TerminalSquare size={14} /><span>{dshWebOnly ? '原生界面' : '原生终端'}</span></button></div>
         <SessionToolbarHost />
         <div className="drawer-actions">
           <button className="icon-button" aria-label={fullscreenSessionId === selected.id ? '退出会话全屏' : '全屏会话'} title={fullscreenSessionId === selected.id ? '退出全屏（Esc）' : '全屏会话（Ctrl / ⌘ + Shift + Enter）'} aria-pressed={fullscreenSessionId === selected.id} onClick={() => setFullscreenSessionId(value => value ? null : selected.id)}>{fullscreenSessionId === selected.id ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>
@@ -665,7 +666,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
       {nativeSessionBusy && <div role="alert" className="error-banner native-session-busy"><span>这个 Codex 会话正被其他原生客户端占用。关闭原客户端后可重试恢复；也可以 Fork 继承上下文，独立继续。</span><div><button className="button secondary small-button" disabled={!!busy} onClick={() => void startSelected()}>重试恢复</button><button className="button secondary small-button" disabled={!!busy || !selectedBackend?.capabilities.fork || !selected.nativeSessionId || selected.forkPending} onClick={() => { setError(''); setModal({ type: 'fork', session: selected, groupId: selected.groupId ?? undefined }); }}><GitFork size={13} />Fork 后继续</button></div></div>}
       {error && !nativeSessionBusy && <div role="alert" className="error-banner"><span>{error}</span><button className="icon-button" aria-label="关闭会话错误提示" onClick={() => setError('')}><X size={15} /></button></div>}
       <div className="session-conversation">
-      {dshWebOnly && privateView !== 'conversation' ? selected.nativeUrl ? <div className="native-web"><iframe title="DeepSeek Harness 会话" src={selected.nativeUrl} allow="clipboard-read; clipboard-write" /></div> : <div className="terminal-empty"><BackendAvatar backend="dsh" /><h3>直接使用 Harness 原生界面</h3><p>{busy === `start:${selected.id}` ? '正在启动原生会话…' : '启动会话后，在这里继续这个联系人的上下文。'}</p></div> : privateView === 'chat' ? <Suspense fallback={<div className="loading-state"><LoaderCircle size={22} className="spin" /><p>正在加载对话…</p></div>}><CodexChatPane key={selected.id} session={selected} onTerminal={() => switchPrivateView('terminal')} onSelection={setSelection} /></Suspense> : privateView === 'conversation' ? <ConversationPane key={selected.id} session={selected} allowInput={!state.demo && !dshWebOnly} onTerminal={() => switchPrivateView('terminal')} onSelection={setSelection} /> : selected.backend === 'codex' && codexChatAvailable && selected.running && selected.interactionMode === 'chat' ? <div className="terminal-empty"><Command size={26} /><h3>连接同一个 {BACKEND[selected.backend].short} 会话</h3><button className="button primary" disabled={!!busy} onClick={() => switchPrivateView('terminal')}>连接原生终端</button></div> : <TerminalPane key={selected.id} sessionId={selected.id} running={selected.running} status={selected.status} allowImages={['codex', 'claude', 'dsh'].includes(selected.backend) && !state.demo} onSelection={setSelection} />}
+      {dshWebOnly && privateView !== 'conversation' ? selected.nativeUrl ? <div className="native-web"><iframe title="DeepSeek Harness 会话" src={selected.nativeUrl} allow="clipboard-read; clipboard-write" /></div> : <div className="terminal-empty"><BackendAvatar backend="dsh" /><h3>直接使用 Harness 原生界面</h3><p>{busy === `start:${selected.id}` ? '正在启动原生会话…' : '启动会话后，在这里继续这个联系人的上下文。'}</p></div> : privateView === 'chat' ? <Suspense fallback={<div className="loading-state"><LoaderCircle size={22} className="spin" /><p>正在加载对话…</p></div>}><AgentChatPane key={selected.id} session={selected} onTerminal={() => switchPrivateView('terminal')} onSelection={setSelection} /></Suspense> : privateView === 'conversation' ? <ConversationPane key={selected.id} session={selected} allowInput={!state.demo && !dshWebOnly} onTerminal={() => switchPrivateView('terminal')} onSelection={setSelection} /> : selected.backend === 'codex' && agentChatAvailable && selected.running && selected.interactionMode === 'chat' ? <div className="terminal-empty"><Command size={26} /><h3>连接同一个 {BACKEND[selected.backend].short} 会话</h3><button className="button primary" disabled={!!busy} onClick={() => switchPrivateView('terminal')}>连接原生终端</button></div> : <TerminalPane key={selected.id} sessionId={selected.id} running={selected.running} status={selected.status} allowImages={['codex', 'claude', 'dsh'].includes(selected.backend) && !state.demo} onSelection={setSelection} />}
       </div>
     </section></SessionChrome>}
     </div>

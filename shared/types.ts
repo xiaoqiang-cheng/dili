@@ -42,6 +42,8 @@ export interface Session {
   running: boolean;
   /** Native graphical transport or interactive PTY. */
   interactionMode?: 'chat' | 'terminal';
+  /** Execution owner, separate from the currently displayed view. */
+  executionTransport?: 'structured' | 'pty' | 'web';
   /** Claude print mode saves a new/forked identity only after its first input.
    * Retain the bootstrap until then so closing an empty chat remains resumable. */
   claudeUnwritten?: { sourceId: string | null };

@@ -59,7 +59,7 @@ Codex           Claude        Harness / ACP / 后续平台
 - [ ] 为每个能力定义同一组适配器契约测试。
 - 验收：现有 Codex、Claude 和 Harness 工作流不回归；接口定义不依赖 Codex 模块。
 
-当前进度：公共聊天 API 已从 `CodexBridge` 类型解耦，并通过适配器表选择后端；当前只注册 Codex。Claude 原型仍未注册，Codex 外的执行语义未改变。下一步为接口建立共享契约测试，并梳理能力声明，之后才推进 Claude 的执行者交接。
+当前进度：公共聊天 API 已从 `CodexBridge` 类型解耦，前端通用面板已迁移为 `AgentChatPane`。Claude 官方 stream-json 图形执行路径已接入并通过本轮回归；Claude 图形／终端采用空闲时明确确认的停止与恢复交接，Codex 保留同线程原生连接。模型／权限配置统一契约和 Harness 结构化接入尚未完成。
 
 ### 阶段 1：Codex 作为结构化适配器基线
 
@@ -99,10 +99,32 @@ Codex           Claude        Harness / ACP / 后续平台
 - `server/chat-api.ts`：通过 `registerAgentChat` 使用 `AgentChatAdapter` 和按 Backend 注册的适配器表；HTTP 路由保持兼容。
 - `server/agents/chat.ts`：平台无关的聊天适配器契约与注册表。
 - `shared/chat.ts`：定义 `AgentChat*` 平台无关类型，同时保留 `CodexChat*` 兼容别名。
-- `server/claude-chat.ts`：独立结构化协议原型，当前未由 `server/index.ts` 主流程启动；在完成执行者和交接审查前不直接接入生产路由。
+- `server/claude-chat.ts`：Claude 官方 stream-json 适配器，由图形模式启动；提供实时正文、工具、审批、问题、图片和停止。TUI 另走 PTY，不能并行写同一联系人。
 - `server/dsh.ts`：Harness 会话及原生 Web 集成；图形聊天采用独立适配方案评估。
-- `client/CodexChatPane.tsx`：成熟的图形交互面板，后续重命名并让其仅消费公共聊天契约。
+- `client/AgentChatPane.tsx`：Codex 与 Claude 共用的图形交互面板，消费公共聊天契约；保留现有草稿存储键以保护未发送内容。
 
 ## 版本与发布
 
 每个阶段先更新本文件和 `TODO.md`，再实现并执行 `npm run check`、相关服务端测试和隔离浏览器测试。阶段边界清晰时创建本地提交，描述可验证的用户行为。未经明确授权不 push、不建 tag、不重启承载当前会话的服务。
+
+## 2026-10-23 实施记录：Claude 结构化执行
+
+- `Session.executionTransport` 将执行通道与显示偏好分开，区分 structured / pty / web。
+- Claude 图形启动使用已安装 CLI 的 stream-json，保留原生认证、配置、权限和历史；不引入第二套模型 API 或密钥。
+- 运行中的 Claude 切换执行方式要求空闲、无审批、显式 `handoff: true`。UI 先解释交接并确认，后端退出旧执行者后才启动新执行者；只读分享不触发交接。
+- 启动、停止、异常退出、服务关闭和群组投递均接入 Claude 执行器；空会话与 Fork 初始化身份持久保存，发送成功回执不冒充历史已落盘。
+- 已存在的 PTY 联系人不会在页面刷新时被自动替换。图形视图允许先只读历史；用户明确切换后才建立结构化执行。
+- 仍待完成：统一能力声明与设置接口、Claude 长历史分页、更多 CLI 版本兼容、Harness / ACP 适配。此阶段不宣称所有平台已能完全替代原生终端。
+
+### 本轮验收
+
+- `npm run verify`：类型检查通过；服务端 254 项通过、1 项跳过；隔离浏览器 165 项全部通过。覆盖两平台公共面板的流式 Markdown、工具、审批、提问、中断，以及手机语音、草稿恢复和旧 PTY 偏好。
+- `npm run test:smoke:claude-chat`：真实 Claude Code 2.1.308 与临时 loopback provider 验证流式正文、图片、恢复、Fork、空会话重开、工具审批拒绝和中断。问题回答与交接另由 HTTP fixture 验证；不代表真实云端模型、所有账号或所有 CLI 版本已验收。
+- 交接同时检查原生 active turn 和待处理请求；手动修改联系人显示状态不能绕过执行锁。当前活动服务不重启，本轮测试仅使用独立实例。
+
+### 后续实施顺序
+
+1. **会话设置与能力契约**：在 `shared/chat.ts` 和 `server/agents/chat.ts` 定义平台中立的设置字段、可选值、可修改时机及不支持原因；由各适配器调用原生模型／权限接口，前端根据能力渲染统一设置面板。审批规则由 Agent 执行，不只修改界面显示。
+2. **恢复与历史一致性**：为 Claude 增加有界分页、稳定消息身份及重启后的历史对账；将断线、重复事件、未知发送结果、停止后继续等用例提炼成公共适配器契约测试。
+3. **Harness 结构化接入**：评估已安装版本的会话 API／ACP，验证流式、附件和审批再接入公共面板。原生 Web 与 PTY 在能力不足时继续提供入口，界面明确限制。
+4. **发布验收**：真实账号、小屏远程连接和多 CLI 版本矩阵验证通过后，再将“日常不需要原生终端”作为产品能力对外描述；新平台复用同一契约和验收集。

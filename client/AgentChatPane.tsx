@@ -4,7 +4,7 @@ import { appUrl } from './urls';
 import { memo, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowDownToLine, Check, ChevronRight, CircleAlert, List, LoaderCircle, MessageSquare, RefreshCw, Send, Square, TerminalSquare } from 'lucide-react';
 import type { Session } from '../shared/types';
-import type { CodexChatAnswer, CodexChatHistoryPage, CodexChatItem, CodexChatPatch, CodexChatRequest, CodexChatSnapshot, CodexChatSubmission } from '../shared/chat';
+import type { AgentChatAnswer, AgentChatHistoryPage, AgentChatItem, AgentChatPatch, AgentChatRequest, AgentChatSnapshot, AgentChatSubmission } from '../shared/chat';
 import { api, ApiError } from './api';
 import Markdown from './Markdown';
 import { interfaceScale } from './zoom';
@@ -20,7 +20,7 @@ import './codex-chat.css';
 
 type Pending = { requestId: string; text: string; attachments?: ChatAttachment[]; queueId?: string };
 type Draft = { text: string; pending: Pending | null; attachments: ChatAttachment[]; queue?: QueuedMessage[] };
-type OlderHistory = { identity: string; items: CodexChatItem[]; cursor: string | null; loading: boolean; error: string; notice?: string; limited?: boolean };
+type OlderHistory = { identity: string; items: AgentChatItem[]; cursor: string | null; loading: boolean; error: string; notice?: string; limited?: boolean };
 const draftKey = (id: string) => `sessiondeck.codex-chat-draft.${id}`;
 function readDraft(id: string, backend?: string): Draft {
   try {
@@ -50,7 +50,7 @@ function requestId() {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0')).join('');
 }
 
-const MessageItem = memo(function MessageItem({ item, highlighted = false, agentName = 'Codex' }: { item: CodexChatItem; highlighted?: boolean; agentName?: string }) {
+const MessageItem = memo(function MessageItem({ item, highlighted = false, agentName = 'Codex' }: { item: AgentChatItem; highlighted?: boolean; agentName?: string }) {
   if (item.type === 'assistant' || item.type === 'user') return <article className={`chat-message chat-${item.type} codex-message codex-${item.type}${highlighted ? ' codex-message-highlighted' : ''}`} data-chat-item={item.id} tabIndex={item.type === 'user' ? -1 : undefined}>
     <div className="chat-message-heading codex-message-heading"><strong>{item.type === 'user' ? '你' : agentName}</strong>{item.status === 'inProgress' && <span><LoaderCircle size={11} className="spin" />正在回复</span>}{item.status === 'failed' && <span>未完成</span>}</div>
     <div className="chat-message-body codex-message-body">{item.type === 'assistant' ? <Markdown text={item.text || '…'} /> : <><p>{item.text}</p>{!!item.imageCount && <p className="codex-image-count">附带 {item.imageCount} 张图片</p>}</>}</div>
@@ -63,12 +63,12 @@ const MessageItem = memo(function MessageItem({ item, highlighted = false, agent
   </details>;
 });
 
-function NativeRequest({ request, disabled, answer, agentName = 'Codex' }: { agentName?: string; request: CodexChatRequest; disabled: boolean; answer: (id: string, answer: CodexChatAnswer) => Promise<void> }) {
+function NativeRequest({ request, disabled, answer, agentName = 'Codex' }: { agentName?: string; request: AgentChatRequest; disabled: boolean; answer: (id: string, answer: AgentChatAnswer) => Promise<void> }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [other, setOther] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  async function submit(payload: CodexChatAnswer) {
+  async function submit(payload: AgentChatAnswer) {
     if (busy || disabled) return;
     setBusy(true); setError('');
     try { await answer(request.id, payload); }
@@ -95,7 +95,7 @@ function NativeRequest({ request, disabled, answer, agentName = 'Codex' }: { age
   </section>;
 }
 
-export default function CodexChatPane(props: { session: Session; onTerminal: () => void; onSelection?: (text: string) => void }) {
+export default function AgentChatPane(props: { session: Session; onTerminal: () => void; onSelection?: (text: string) => void }) {
   return <ChatSession key={props.session.id} {...props} />;
 }
 
@@ -103,7 +103,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
   const chrome = useSessionChrome();
   const agentName = session.backend === 'claude' ? 'Claude' : 'Codex';
   const [draft, setDraft] = useState(() => readDraft(session.id, session.backend));
-  const [snapshot, setSnapshot] = useState<CodexChatSnapshot | null>(null);
+  const [snapshot, setSnapshot] = useState<AgentChatSnapshot | null>(null);
   const [older, setOlder] = useState<OlderHistory | null>(null);
   const olderRef = useRef(older);
   olderRef.current = older;
@@ -186,7 +186,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
     olderLoading.current = true;
     setOlder(previous => ({ identity: nativeId, items: previous?.identity === nativeId ? previous.items : snapshot.items, cursor, loading: true, error: '' }));
     try {
-      const page = await api<CodexChatHistoryPage>(`/sessions/${encodeURIComponent(session.id)}/chat/history?cursor=${encodeURIComponent(cursor)}`);
+      const page = await api<AgentChatHistoryPage>(`/sessions/${encodeURIComponent(session.id)}/chat/history?cursor=${encodeURIComponent(cursor)}`);
       if (!active.current || snapshotRef.current?.nativeSessionId !== nativeId) return;
       if (page.nativeSessionId !== nativeId) throw new Error('历史记录的会话身份不匹配，请重新读取。');
       const element = scroller.current;
@@ -212,7 +212,10 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
     if (reconnecting || !transport) return;
     setReconnecting(true); setError('');
     try {
-      if (session.backend === 'claude' && session.interactionMode !== 'chat') await api(`/sessions/${encodeURIComponent(session.id)}/start`, { mode: 'chat' });
+      if (session.backend === 'claude' && session.executionTransport !== 'structured') {
+        if (!window.confirm('切换将退出当前 Claude 进程，并从同一份已保存会话恢复。当前任务和审批必须先处理完成。继续切换？')) return;
+        await api(`/sessions/${encodeURIComponent(session.id)}/start`, { mode: 'chat', handoff: true });
+      }
       else await api(`/sessions/${encodeURIComponent(session.id)}/chat/connect`, {});
       if (active.current) await readSnapshot.current();
     } catch (cause) { if (active.current) setError(errorText(cause)); }
@@ -232,7 +235,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
     let sourceReset = true;
     let refreshJob: Promise<void> | undefined;
     let refreshAgain = false;
-    function install(next: CodexChatSnapshot) {
+    function install(next: AgentChatSnapshot) {
       if (disposed) return;
       const previous = snapshotRef.current;
       if (previous?.instanceId === next.instanceId && previous?.nativeSessionId === next.nativeSessionId && next.revision < previous.revision) return;
@@ -263,7 +266,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
       if (refreshJob) { refreshAgain ||= required; return refreshJob; }
       const before = sequence;
       refreshJob = (async () => {
-        try { const result = await api<CodexChatSnapshot>(`/sessions/${session.id}/chat`); if (sequence === before) install(result); }
+        try { const result = await api<AgentChatSnapshot>(`/sessions/${session.id}/chat`); if (sequence === before) install(result); }
         catch (cause) { if (!disposed && sequence === before) { setError(errorText(cause)); setLoading(false); } }
         finally { refreshJob = undefined; if (refreshAgain && !disposed) { refreshAgain = false; void refresh(); } }
       })();
@@ -281,7 +284,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
     });
     source.addEventListener('state', event => {
       try {
-        const next = JSON.parse((event as MessageEvent).data) as CodexChatSnapshot;
+        const next = JSON.parse((event as MessageEvent).data) as AgentChatSnapshot;
         const previous = snapshotRef.current;
         if (!sourceReset && previous?.instanceId === next.instanceId && previous?.nativeSessionId === next.nativeSessionId && next.revision < previous.revision) return;
         sourceReset = false; sequence++; install(next);
@@ -289,7 +292,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
     });
     source.addEventListener('patch', event => {
       try {
-        const patch = JSON.parse((event as MessageEvent).data) as CodexChatPatch;
+        const patch = JSON.parse((event as MessageEvent).data) as AgentChatPatch;
         const previous = snapshotRef.current;
         if (previous && patch.instanceId === previous.instanceId && patch.nativeSessionId === previous.nativeSessionId && patch.revision <= previous.revision) return;
         if (!previous || patch.instanceId !== previous.instanceId || patch.nativeSessionId !== previous.nativeSessionId || patch.baseRevision !== previous.revision) { sequence++; void refresh(true); return; }
@@ -348,7 +351,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
     if (!pending || checking) return;
     setChecking(true); setCheckNotice('');
     try {
-      const result = await api<CodexChatSubmission>(`/sessions/${session.id}/chat/submissions/${encodeURIComponent(pending.requestId)}`);
+      const result = await api<AgentChatSubmission>(`/sessions/${session.id}/chat/submissions/${encodeURIComponent(pending.requestId)}`);
       if (!active.current || draftRef.current.pending?.requestId !== pending.requestId) return;
       if (result.status === 'accepted') accepted(pending);
       else if (result.status === 'rejected') { updateDraft({ ...draftRef.current, pending: null }); setError(result.error || '这条消息未被接收，草稿已保留，可以修改后重试。'); }
@@ -374,7 +377,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
       const next = { ...draftRef.current, pending };
       if (!saveDraft(session.id, next)) throw new Error('无法保存本次发送状态。请允许此站点使用浏览器存储后重试。');
       updateDraft(next);
-      const result = await api<CodexChatSubmission>(`/sessions/${session.id}/chat/messages`, { text, attachments: pending.attachments?.map(item => item.id), requestId: pending.requestId, ...(expectedTurnId ? { expectedTurnId } : {}) });
+      const result = await api<AgentChatSubmission>(`/sessions/${session.id}/chat/messages`, { text, attachments: pending.attachments?.map(item => item.id), requestId: pending.requestId, ...(expectedTurnId ? { expectedTurnId } : {}) });
       if (result.status === 'accepted') accepted(pending, result.turnId);
       else if (result.status === 'rejected') { const current = active.current ? draftRef.current : readDraft(session.id); if (current.pending?.requestId === pending.requestId) updateDraft({ ...current, pending: null }); if (active.current) setError(result.error || '消息未被接收，草稿已保留。'); }
       else if (active.current) setCheckNotice(result.status === 'sending' ? '消息正在提交，请查询发送结果。' : '发送结果尚未确认，请查询结果后继续。');
@@ -430,7 +433,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
     {!!snapshot?.requests.length && <div className="codex-request-alert" role="alert"><CircleAlert size={15} /><span>{snapshot.requests.length === 1 ? snapshot.requests[0].title : `${snapshot.requests.length} 项请求需要处理`}</span><button type="button" className="text-button" onClick={() => jumpToRequest(snapshot.requests[0].id)}>定位到请求</button></div>}
     {!transport && !loading && <div className="codex-chat-banner" role="status">与本地服务的连接已中断，正在重连。草稿已保留。</div>}
     {error && <div className="codex-chat-error" role="alert"><span>{error}</span><button type="button" className="text-button" onClick={() => { setError(''); void readSnapshot.current(); }}>重新读取</button></div>}
-    {session.running && snapshot && !snapshot.connected && <div className="codex-chat-banner codex-native-retry" role="status"><span>{session.backend === 'claude' && session.interactionMode !== 'chat' ? '当前由原生终端运行；本轮结束后可切换到流式图形对话。' : '历史记录可查看，原生输入连接尚未就绪。'}</span><button type="button" className="text-button" disabled={reconnecting || !transport} onClick={() => void reconnectNative()}>{reconnecting ? '正在重新连接…' : session.backend === 'claude' && session.interactionMode !== 'chat' ? '切换到流式对话' : '重新连接原生会话'}</button></div>}
+    {session.running && snapshot && !snapshot.connected && <div className="codex-chat-banner codex-native-retry" role="status"><span>{session.backend === 'claude' && session.executionTransport !== 'structured' ? '当前由原生终端运行；本轮结束后可切换到流式图形对话。' : '历史记录可查看，原生输入连接尚未就绪。'}</span><button type="button" className="text-button" disabled={reconnecting || !transport} onClick={() => void reconnectNative()}>{reconnecting ? '正在重新连接…' : session.backend === 'claude' && session.executionTransport !== 'structured' ? '切换到流式对话' : '重新连接原生会话'}</button></div>}
     <NoticeToasts scope={'codex.' + session.id + '.' + (snapshot?.nativeSessionId ?? session.nativeSessionId ?? '')} notices={[
       ...(snapshot?.notice ? [{ id: 'native:' + snapshot.notice, text: snapshot.notice }] : []),
       ...(snapshot?.truncated && !snapshot.notice ? [{ id: 'history-window', text: olderCursor ? '先展示最近的消息，可加载更早消息继续查看。' : '超长历史或工具输出可能已省略，完整记录保留在原生会话中。' }] : []),

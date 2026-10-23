@@ -21,7 +21,7 @@ interface Dependencies {
   busy(id: string): boolean;
   sessions(): Session[];
   broadcast(): void;
-  updatePreview(item: Session, transcript: ConversationTranscript): void;
+  updatePreview(item: Session, transcript: ConversationTranscript, persisted?: boolean): void;
 }
 const fail = (message: string, status = 400): never => { throw Object.assign(new Error(message), { status }); };
 const requestId = (value: unknown): string => typeof value === 'string' && /^[a-zA-Z0-9_-]{16,100}$/.test(value) ? value : fail('发送标识无效');
@@ -181,7 +181,7 @@ export function registerAgentChat(app: express.Express, options: Dependencies) {
       const result = await bridge.sendPrompt(item.nativeSessionId!, text, model, images, expectedTurnId);
       if (options.closing()) return;
       const accepted = submissions.finish(item.id, id, { status: 'accepted', turnId: result.turnId });
-      options.updatePreview(item, { messages: [{ id, role: 'user', text: text || '[图片]', createdAt: inputAt }], truncated: false });
+      options.updatePreview(item, { messages: [{ id, role: 'user', text: text || '[图片]', createdAt: inputAt }], truncated: false }, false);
       res.json(accepted);
     } catch (cause) {
       if (options.closing()) return;

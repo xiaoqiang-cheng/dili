@@ -190,8 +190,7 @@ async function fixture(page: Page, agent: 'codex' | 'claude' = 'codex') {
   const requests: { path: string; body: Record<string, unknown> }[] = [];
   const submissions = new Map<string, CodexChatSubmission>();
   let reads = 0;
-  await page.addInitScript(agent => {
-    if (agent === 'claude') localStorage.setItem('sessiondeck.private-view.claude', 'chat');
+  await page.addInitScript(() => {
     const target = window as unknown as { codexSources: Source[] };
     target.codexSources = [];
     class FakeSource extends EventTarget {
@@ -208,12 +207,12 @@ async function fixture(page: Page, agent: 'codex' | 'claude' = 'codex') {
       close() { this.closed = true; }
     }
     Object.defineProperty(window, 'EventSource', { configurable: true, value: FakeSource });
-  }, agent);
+  });
   await page.route('**/api/state', route => route.fulfill({ json: state }));
   await page.route(`**/api/sessions/${contact.id}/chat`, route => { reads++; return route.fulfill({ json: current.snapshot }); });
   await page.route(`**/api/sessions/${contact.id}/start`, async route => {
     requests.push({ path: 'start', body: route.request().postDataJSON() });
-    Object.assign(contact, { running: true, nativeSessionId: 'exact-native-thread', interactionMode: 'chat' });
+    Object.assign(contact, { running: true, nativeSessionId: 'exact-native-thread', interactionMode: 'chat', executionTransport: 'structured' });
     current.snapshot = { ...current.snapshot, connected: true, nativeSessionId: contact.nativeSessionId, revision: current.snapshot.revision + 1 };
     state.revision = (state.revision ?? 0) + 1;
     await emit(page, '/api/events', 'state', state);
@@ -317,14 +316,16 @@ test('informational notices expire, pause for pointer or keyboard reading, and d
   await expect(toast).toContainText('新的独立提示');
 });
 
-test('Codex GUI sends to the native thread, streams safe Markdown and handles tools, approval, questions and interruption', async ({ page }) => {
-  const app = await fixture(page);
+for (const agent of ['codex', 'claude'] as const) {
+  const name = agent === 'claude' ? 'Claude' : 'Codex';
+  test(`${name} GUI sends to the native session, streams safe Markdown and handles tools, approval, questions and interruption`, async ({ page }) => {
+  const app = await fixture(page, agent);
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await app.open();
   await expect(page.getByText('在这里继续你的工作', { exact: true })).toBeVisible();
   expect(app.requests).toEqual([]);
-  const input = page.getByLabel('给 Codex 发送消息');
+  const input = page.getByLabel('给 ' + name + ' 发送消息');
   await input.fill('检查登录流程，并解释修改。');
   await input.press('Enter');
   await expect(page.locator('.codex-user')).toContainText('检查登录流程，并解释修改。');
@@ -357,9 +358,10 @@ test('Codex GUI sends to the native thread, streams safe Markdown and handles to
   await expect(page.getByRole('button', { name: /^(?:停止生成|正在停止…)$/ })).toHaveCount(0);
   expect(app.requests.filter(item => item.path === 'interrupt')).toHaveLength(1);
   expect(app.contact.running).toBe(true);
-  await page.screenshot({ path: 'artifacts/codex-graphical-chat.png', animations: 'disabled' });
+  await page.screenshot({ path: 'artifacts/' + agent + '-graphical-chat.png', animations: 'disabled' });
   expect(errors).toEqual([]);
 });
+}
 
 test('uncertain submissions survive reload, keep edited drafts and are checked without another send', async ({ page }) => {
   const app = await fixture(page);

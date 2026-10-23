@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
-import type { CodexChatAnswer, CodexChatItem, CodexChatRequest, CodexChatSnapshot } from '../shared/chat.ts';
+import type { AgentChatAnswer, AgentChatItem, AgentChatRequest, AgentChatSnapshot } from '../shared/chat.ts';
 import type { ConversationTranscript, SessionStatus } from '../shared/types.ts';
 import type { LaunchCommand } from './terminal.ts';
 import { OwnedProcess } from './owned-process.ts';
@@ -12,7 +12,7 @@ const object = (value: unknown): Row | undefined => value && typeof value === 'o
 const reject = (text: string): never => { throw Object.assign(new Error(text), { deliveryUnknown: false, status: 409 }); };
 export interface ClaudeChatStatus { status: SessionStatus; detail: string; timestamp: string; attentionKey?: string; running?: false }
 interface Run {
-  child: ChildProcessWithoutNullStreams; owner: OwnedProcess; snapshot: CodexChatSnapshot;
+  child: ChildProcessWithoutNullStreams; owner: OwnedProcess; snapshot: AgentChatSnapshot;
   alive: boolean; stopping: boolean; pending: Map<string, { resolve(value: Row): void; reject(error: Error): void; timer: NodeJS.Timeout }>;
   requests: Map<string, { nativeId: string; input: Row; tool: string }>;
   messageId?: string; blocks: Map<number, string>; completedBlocks: Map<string, number>; stderr: string;
@@ -23,7 +23,7 @@ interface Run {
 export class ClaudeChatBridge {
   private runs = new Map<string, Run>();
   private events = new EventEmitter();
-  onChat(listener: (id: string, snapshot: CodexChatSnapshot) => void) { this.events.on('chat', listener); return () => this.events.off('chat', listener); }
+  onChat(listener: (id: string, snapshot: AgentChatSnapshot) => void) { this.events.on('chat', listener); return () => this.events.off('chat', listener); }
   onStatus(listener: (id: string, status: ClaudeChatStatus) => void) { this.events.on('status', listener); return () => this.events.off('status', listener); }
   onInput(listener: (id: string, text: string) => void) { this.events.on('input', listener); return () => this.events.off('input', listener); }
   has(id: string) { return this.runs.get(id)?.alive === true; }
@@ -113,7 +113,7 @@ export class ClaudeChatBridge {
       void this.write(run, { type: 'control_request', request_id: id, request }).catch(error => { clearTimeout(timer); run.pending.delete(id); reject(error); });
     });
   }
-  private upsert(run: Run, item: CodexChatItem) {
+  private upsert(run: Run, item: AgentChatItem) {
     item.text = item.text.slice(0, 32_000);
     if (item.output) item.output = item.output.slice(0, 24_000);
     const index = run.snapshot.items.findIndex(old => old.id === item.id);
@@ -184,7 +184,7 @@ export class ClaudeChatBridge {
         void this.write(run, { type: 'control_response', response: { subtype: 'error', request_id: nativeId, error: 'Dili 暂不支持此交互请求' } }).catch(() => {}); return;
       }
       const handle = randomUUID(), input = object(request.input) ?? {};
-      const item: CodexChatRequest = { id: handle, kind: 'approval', title: `Claude 请求使用 ${String(request.tool_name)}`, details: JSON.stringify(input, null, 2).slice(0, 24_000), options: [{ id: 'allow', label: '允许本次' }, { id: 'deny', label: '拒绝' }] };
+      const item: AgentChatRequest = { id: handle, kind: 'approval', title: `Claude 请求使用 ${String(request.tool_name)}`, details: JSON.stringify(input, null, 2).slice(0, 24_000), options: [{ id: 'allow', label: '允许本次' }, { id: 'deny', label: '拒绝' }] };
       if (request.tool_name === 'AskUserQuestion' && Array.isArray(input.questions)) {
         item.kind = 'question'; item.title = 'Claude 需要你补充信息'; item.details = undefined;
         item.questions = input.questions.slice(0, 10).map((question: Row, index: number) => ({ id: String(index), header: String(question.header ?? ''), question: String(question.question ?? ''), isOther: true, options: (Array.isArray(question.options) ? question.options : []).slice(0, 20).map((option: Row) => ({ label: String(option.label), description: String(option.description ?? '') })) }));
@@ -217,7 +217,7 @@ export class ClaudeChatBridge {
     this.events.emit('input', id, text || '[图片]');
     return { turnId };
   }
-  async answerChatRequest(id: string, handle: string, answer: CodexChatAnswer) {
+  async answerChatRequest(id: string, handle: string, answer: AgentChatAnswer) {
     const run = this.runs.get(id), pending = run?.requests.get(handle);
     if (!run?.alive || !pending) return reject('这个审批或提问已失效');
     let response: Row;

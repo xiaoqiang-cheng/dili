@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import type { CodexChatSubmission } from '../shared/chat.ts';
+import type { AgentChatSubmission } from '../shared/chat.ts';
 
-interface Record extends CodexChatSubmission {
+interface Record extends AgentChatSubmission {
   sessionId: string;
   nativeId: string;
   promptHash: string;
@@ -20,12 +20,12 @@ export class ChatSubmissions {
     const row = this.db.prepare('SELECT data FROM chat_submissions WHERE id = ?').get(`${sessionId}:${requestId}`);
     return row ? JSON.parse(String(row.data)) as Record : undefined;
   }
-  get(sessionId: string, requestId: string): CodexChatSubmission | undefined {
+  get(sessionId: string, requestId: string): AgentChatSubmission | undefined {
     const record = this.getRecord(sessionId, requestId);
     if (!record) return;
     return { requestId: record.requestId, status: record.status, ...(record.turnId ? { turnId: record.turnId } : {}), ...(record.error ? { error: record.error } : {}) };
   }
-  begin(sessionId: string, requestId: string, nativeId: string, text: string): { created: boolean; submission: CodexChatSubmission } {
+  begin(sessionId: string, requestId: string, nativeId: string, text: string): { created: boolean; submission: AgentChatSubmission } {
     const promptHash = createHash('sha256').update(text).digest('hex');
     const previous = this.getRecord(sessionId, requestId);
     if (previous) {
@@ -36,7 +36,7 @@ export class ChatSubmissions {
     this.db.prepare('INSERT INTO chat_submissions(id,data) VALUES (?,?)').run(`${sessionId}:${requestId}`, JSON.stringify(record));
     return { created: true, submission: { requestId, status: 'sending' } };
   }
-  finish(sessionId: string, requestId: string, patch: Pick<CodexChatSubmission, 'status' | 'turnId' | 'error'>): CodexChatSubmission {
+  finish(sessionId: string, requestId: string, patch: Pick<AgentChatSubmission, 'status' | 'turnId' | 'error'>): AgentChatSubmission {
     const current = this.getRecord(sessionId, requestId);
     if (!current) throw new Error('发送记录不存在');
     this.db.prepare('UPDATE chat_submissions SET data = ? WHERE id = ?').run(JSON.stringify({ ...current, ...patch }), `${sessionId}:${requestId}`);

@@ -40,7 +40,7 @@ async function fixture(page: Page, backend: 'claude' | 'dsh') {
   }};
 }
 
-test('Claude graphical history and input stay on the native session path',async({page})=>{
+test('legacy Claude PTY history stays attached until an explicit graphical handoff',async({page})=>{
   const app=await fixture(page,'claude');
   app.transcript.messages.push(
     {id:'prompt',role:'user',text:'请总结变更。'},
@@ -54,10 +54,13 @@ test('Claude graphical history and input stay on the native session path',async(
   expect(app.result.posts[0]).toMatchObject({text:'继续处理',submit:true,generation:'test-generation'});
   expect(app.modes).toEqual([]);
   await expect(page.getByLabel('给 Claude 发送消息')).toHaveCount(0);
+  page.once('dialog', dialog => dialog.accept());
   await page.getByRole('button',{name:'原生终端',exact:true}).click();
   await expect.poll(()=>app.modes).toEqual(['terminal']);
+  page.once('dialog', dialog => dialog.dismiss());
   await page.getByRole('button',{name:'图形对话',exact:true}).click();
-  await expect.poll(()=>app.modes).toEqual(['terminal','chat']);
+  expect(app.modes).toEqual(['terminal']);
+  await expect(page.getByRole('button',{name:'原生终端',exact:true})).toHaveAttribute('aria-pressed','true');
 });
 
 for(const backend of ['claude','dsh'] as const) {
@@ -71,6 +74,7 @@ for(const backend of ['claude','dsh'] as const) {
     await expect(page.locator('.conversation-text')).toContainText('兼容性更好');
     const notice=page.getByRole('status').filter({hasText:backend==='claude'?'Claude 正在等待原生终端中的输入':'DeepSeek Harness 正在等待原生界面中的问题回答'});
     await expect(notice).toBeVisible();
+    if (backend === 'claude') page.once('dialog', dialog => dialog.accept());
     await notice.getByRole('button').click();
     await expect(page.locator('.private-view-switch button').nth(1)).toHaveAttribute('aria-pressed','true');
   });

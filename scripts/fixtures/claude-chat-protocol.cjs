@@ -13,7 +13,7 @@ if (!process.argv.includes('--print')) {
   const id = process.argv.includes('--session-id') ? arg('--session-id') : arg('--resume');
   const folder = path.join(root, 'claude-home/projects/fixture'); fs.mkdirSync(folder, { recursive: true });
   const file = path.join(folder, id + '.jsonl');
-  if (process.argv.includes('--fork-session')) fs.copyFileSync(path.join(folder, arg('--resume') + '.jsonl'), file);
+  if (process.argv.includes('--fork-session') && fs.existsSync(path.join(folder, arg('--resume') + '.jsonl'))) fs.copyFileSync(path.join(folder, arg('--resume') + '.jsonl'), file);
   const out = row => process.stdout.write(JSON.stringify({ ...row, session_id: id }) + '\n');
   const saved = (role, content, uuid = randomUUID()) => fs.appendFileSync(file, JSON.stringify({ type: role, uuid, sessionId: id, timestamp: new Date().toISOString(), message: { role, content } }) + '\n');
   const event = payload => out({ type: 'stream_event', event: payload, parent_tool_use_id: null });

@@ -74,8 +74,8 @@ export async function getBackendInfo(): Promise<BackendInfo[]> {
     const tui = id === 'dsh' ? await findDshTui() : null;
     return {
       id, label: LABELS[id], installed: true, version,
-      capabilities: { terminal: id !== 'dsh' || !!tui, resume: id === 'dsh' || /\bresume\b/.test(help), fork: id === 'dsh' || (id === 'claude' ? help.includes('--fork-session') : /\bfork\b/.test(help)), discovery: true, nativeControl, graphicalChat: id === 'claude' || nativeControl, autoMode: id === 'claude' ? help.includes('--permission-mode') && /["']auto["']/.test(help) : id === 'codex' ? help.includes('--approve-for-me') : true },
-      note: id === 'dsh' ? (tui ? '原生终端界面（dsh-tui）与对话记录；原生 Web 界面仍可打开' : '复用原生 Web 界面与本地 session API；安装 @deepseek-harness-tui/dsh-tui 可获得原生终端') : id === 'codex' ? (nativeControl ? '原生 app-server 提供图形对话、流式回复、审批和精确会话；可切换原生终端' : '兼容终端模式：原生 ID 在完成一轮后确认；更新 Codex 可启用图形对话') : '图形对话与原生终端共用同一 TUI 进程及权限；正文随原生历史保存后更新，审批在原生终端处理',
+      capabilities: { terminal: id !== 'dsh' || !!tui, resume: id === 'dsh' || /\bresume\b/.test(help), fork: id === 'dsh' || (id === 'claude' ? help.includes('--fork-session') : /\bfork\b/.test(help)), discovery: true, nativeControl, graphicalChat: nativeControl, autoMode: id === 'claude' ? help.includes('--permission-mode') && /["']auto["']/.test(help) : id === 'codex' ? help.includes('--approve-for-me') : true },
+      note: id === 'dsh' ? (tui ? '原生终端界面（dsh-tui）与对话记录；原生 Web 界面仍可打开' : '复用原生 Web 界面与本地 session API；安装 @deepseek-harness-tui/dsh-tui 可获得原生终端') : id === 'codex' ? (nativeControl ? '原生 app-server 提供图形对话、流式回复、审批和精确会话；可切换原生终端' : '兼容终端模式：原生 ID 在完成一轮后确认；更新 Codex 可启用图形对话') : nativeControl ? '图形模式复用 Claude stream-json：流式正文、工具、审批与提问；与 TUI 通过已保存会话交接' : '兼容终端模式与对话记录；更新 Claude 可启用结构化图形对话',
     };
   }));
 }
