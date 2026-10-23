@@ -1,8 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
-import { ArrowLeft, ChevronDown, FileDiff, FilePenLine, FileText, Folder, Globe2, PanelRightClose, Plus, X } from 'lucide-react';
+import { ArrowLeft, ChevronDown, FilePenLine, Folder, Globe2, PanelRightClose, Plus, X } from 'lucide-react';
 import type { Session } from '../shared/types';
 import WorkspaceExplorer, { Splitter } from './WorkspaceExplorer';
-import WorkspaceFilePreview from './WorkspacePreview';
 import ScratchpadPanel from './ScratchpadPanel';
 import ServicePreviewPanel from './ServicePreviewPanel';
 import type { PreviewTab, PreviewWorkspaceController } from './usePreviewWorkspace';
@@ -13,11 +12,10 @@ import './preview-workspace.css';
 function tabTitle(tab: PreviewTab, sessions: Session[]) {
   if (tab.kind === 'note') return '随手记';
   if (tab.kind === 'web') return tab.url ? new URL(tab.url).host : '新网页';
-  if (tab.kind === 'explorer') return `文件 · ${sessions.find(session => session.id === tab.sessionId)?.title ?? '工作区'}`;
-  return `${tab.kind === 'diff' ? '差异 · ' : ''}${tab.path.split('/').pop() || tab.path}`;
+  return `文件 · ${sessions.find(session => session.id === tab.sessionId)?.title ?? '工作区'}`;
 }
 function TabIcon({ tab }: { tab: PreviewTab }) {
-  const Icon = tab.kind === 'note' ? FilePenLine : tab.kind === 'web' ? Globe2 : tab.kind === 'explorer' ? Folder : tab.kind === 'diff' ? FileDiff : FileText;
+  const Icon = tab.kind === 'note' ? FilePenLine : tab.kind === 'web' ? Globe2 : Folder;
   return <Icon size={14} aria-hidden="true" />;
 }
 
@@ -29,7 +27,6 @@ function WorkspaceTabContent({ tab, sessions, controller, close }: {
   if (!session || session.cwd !== tab.cwd) return <div className="preview-unavailable">
     <Folder size={26} /><p>原工作区已移除或目录已改变。</p><p>请从当前联系人重新打开文件。</p>
   </div>;
-  if (tab.kind !== 'explorer') return <WorkspaceFilePreview sessionId={session.id} path={tab.path} kind={tab.kind} close={close} />;
   const picker = <label className="workspace-picker"><span>工作目录</span>
     <select aria-label="资源管理器工作区" value={session.id} onChange={event => {
       const next = sessions.find(item => item.id === event.target.value);
@@ -39,7 +36,9 @@ function WorkspaceTabContent({ tab, sessions, controller, close }: {
     </select>
   </label>;
   return <WorkspaceExplorer session={session} embedded close={close} picker={picker}
-    onOpenFile={(path, kind) => controller.openFile(session, path, kind)} />;
+    selection={tab.selection} treeCollapsed={tab.treeCollapsed ?? false}
+    onTreeCollapsed={value => controller.collapseTree(tab.id, value)}
+    onSelectFile={selection => controller.selectFile(tab.id, selection)} />;
 }
 
 export default function PreviewWorkspace({ controller, sessions, currentSession, inert }: { controller: PreviewWorkspaceController; sessions: Session[]; currentSession?: Session; inert: boolean }) {
@@ -101,7 +100,7 @@ export default function PreviewWorkspace({ controller, sessions, currentSession,
       <button className="icon-button preview-mobile-back" aria-label="返回工作台" title="返回工作台" onClick={hide}><ArrowLeft size={16} /></button>
       <div ref={list} className="preview-tab-list" role="tablist" aria-label="预览标签页">
         {tabs.map((tab, index) => <div key={tab.id} className={`preview-tab ${tab.id === activeId ? 'active' : ''}`}>
-          <button type="button" id={tabId(tab)} role="tab" aria-selected={tab.id === activeId} aria-controls={contentId(tab)} tabIndex={tab.id === activeId ? 0 : -1} title={'cwd' in tab ? `${tabTitle(tab, sessions)}\n${tab.cwd}${'path' in tab ? `/${tab.path}` : ''}` : tab.kind === 'web' ? tab.url || '新网页' : '随手记 · 自动保存'} onClick={() => select(tab.id)} onKeyDown={event => tabKeys(event, index)}><TabIcon tab={tab} /><span>{tabTitle(tab, sessions)}</span></button>
+          <button type="button" id={tabId(tab)} role="tab" aria-selected={tab.id === activeId} aria-controls={contentId(tab)} tabIndex={tab.id === activeId ? 0 : -1} title={'cwd' in tab ? `${tabTitle(tab, sessions)}\n${tab.cwd}` : tab.kind === 'web' ? tab.url || '新网页' : '随手记 · 自动保存'} onClick={() => select(tab.id)} onKeyDown={event => tabKeys(event, index)}><TabIcon tab={tab} /><span>{tabTitle(tab, sessions)}</span></button>
           <button type="button" className="preview-tab-close" aria-label={`关闭标签 ${tabTitle(tab, sessions)}`} title="关闭标签" onClick={() => closeTab(tab.id)}><X size={12} /></button>
         </div>)}
       </div>

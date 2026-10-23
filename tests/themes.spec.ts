@@ -133,14 +133,14 @@ test('dark theme keeps file, Git and note tabs readable in one preview panel', a
     const note = page.getByRole('complementary', { name: '随手记', exact: true });
     await expect(note).toBeVisible();
     await expect(explorer).toBeHidden();
-    await expect(panel.getByRole('tab')).toHaveCount(4);
+    await expect(panel.getByRole('tab')).toHaveCount(2);
     await expect(note.getByRole('textbox')).toBeVisible();
     await page.screenshot({ path: 'artifacts/workbench-dark-explorer.png' });
     await page.setViewportSize({ width: 1440, height: 1000 });
     const main = page.locator('.app-main');
     const widthWithNote = (await main.boundingBox())!.width;
     await note.getByRole('button', { name: '关闭随手记' }).click();
-    await expect(panel.getByRole('tab', { name: '差异 · README.md', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(panel.getByRole('tab', { name: `文件 · ${session.title}`, exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(panel.locator('td.diff-code.diff-added')).toBeVisible();
     expect(Math.abs((await main.boundingBox())!.width - widthWithNote)).toBeLessThan(1);
   } finally { await rm(directory, { recursive: true, force: true }); }

@@ -74,8 +74,8 @@ test('files stay bound to their original workspace and stale workspaces cannot r
       await panel.getByRole('complementary', { name: '资源管理器', exact: true }).getByRole('button', { name: /same\.md/ }).click();
       await expect(panel.getByRole('heading', { name: `Workspace ${index + 1}`, exact: true })).toBeVisible();
     }
-    await expect(panel.getByRole('tab', { name: 'same.md', exact: true })).toHaveCount(2);
-    await panel.getByRole('tab', { name: 'same.md', exact: true }).first().click();
+    await expect(panel.getByRole('tab', { name: /^文件 · 固定工作区/ })).toHaveCount(2);
+    await panel.getByRole('tab', { name: /^文件 · 固定工作区/ }).first().click();
     await expect(panel.getByRole('heading', { name: 'Workspace 1', exact: true })).toBeVisible();
     await page.reload();
     await expect(panel.getByRole('heading', { name: 'Workspace 1', exact: true })).toBeVisible();
@@ -88,7 +88,7 @@ test('files stay bound to their original workspace and stale workspaces cannot r
     await page.reload();
     await expect(panel.getByRole('tabpanel').getByText('原工作区已移除或目录已改变。')).toBeVisible();
     await expect(panel.getByRole('heading', { name: 'Workspace 2', exact: true })).toBeHidden();
-    await panel.getByRole('tab', { name: 'same.md', exact: true }).last().click();
+    await panel.getByRole('tab', { name: /^文件 · 固定工作区/ }).last().click();
     await expect(panel.getByRole('heading', { name: 'Workspace 2', exact: true })).toBeVisible();
     await page.getByRole('button', { name: '切换主题', exact: true }).click();
     const appearance = page.getByRole('dialog', { name: '外观主题', exact: true });
@@ -103,7 +103,7 @@ test('files stay bound to their original workspace and stale workspaces cannot r
   } finally { await Promise.all(directories.map(path => rm(path, { recursive: true, force: true }))); }
 });
 
-test('closing a pending file and retrying another file cannot mix their results', async ({ page, request }) => {
+test('switching from a pending file and retrying another file cannot mix their results', async ({ page, request }) => {
   const cwd = await mkdtemp(join(tmpdir(), 'dili-preview-requests-'));
   let finishFirst: () => void = () => {};
   const releaseFirst = new Promise<void>(resolve => { finishFirst = resolve; });
@@ -131,7 +131,6 @@ test('closing a pending file and retrying another file cannot mix their results'
     const explorer = panel.getByRole('complementary', { name: '资源管理器', exact: true });
     await explorer.getByRole('button', { name: /^a\.md/ }).click();
     await requestedFirst;
-    await panel.getByRole('button', { name: '关闭标签 a.md', exact: true }).click();
     await explorer.getByRole('button', { name: /^b\.md/ }).click();
     await expect(panel.getByRole('alert')).toContainText('暂时读取失败');
     await panel.getByRole('button', { name: '重试', exact: true }).click();
@@ -140,6 +139,43 @@ test('closing a pending file and retrying another file cannot mix their results'
     finishFirst(); await firstFinished;
     await expect(panel.getByRole('heading', { name: 'First', exact: true })).toHaveCount(0);
     await expect(panel.getByRole('heading', { name: 'Second', exact: true })).toBeVisible();
-    await expect(panel.getByRole('tab')).toHaveCount(2);
+    await expect(panel.getByRole('tab')).toHaveCount(1);
   } finally { finishFirst(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('previous standalone file tabs migrate into one workspace and retain the active file', async ({ page, request }) => {
+  const cwd = await mkdtemp(join(tmpdir(), 'dili-preview-migration-'));
+  try {
+    await writeFile(join(cwd, 'first.md'), '# Earlier file');
+    await writeFile(join(cwd, 'active.md'), '# Active migrated file');
+    const response = await request.post('/api/sessions', { headers: await mutationHeaders(request), data: { backend: 'codex', title: '旧标签迁移', cwd } });
+    expect(response.ok()).toBe(true);
+    const session = await response.json() as Session;
+    await page.addInitScript(({ sessionId, cwd }) => {
+      if (localStorage.getItem('migration-seeded')) return;
+      const source = { sessionId, cwd };
+      localStorage.setItem('dili.preview-workspace:/', JSON.stringify({ tabs: [
+        { ...source, id: 'old-explorer', kind: 'explorer' },
+        { ...source, id: 'old-first', kind: 'file', path: 'first.md' },
+        { id: 'scratchpad', kind: 'note' },
+        { ...source, id: 'old-active', kind: 'file', path: 'active.md' },
+        { id: 'web:old', kind: 'web', url: '' },
+      ], activeId: 'old-active', open: true }));
+      localStorage.setItem('migration-seeded', 'true');
+    }, { sessionId: session.id, cwd });
+    await page.goto('/');
+    const panel = page.getByRole('complementary', { name: '统一预览面板', exact: true });
+    await expect(panel.getByRole('tab')).toHaveCount(3);
+    await expect(panel.getByRole('heading', { name: 'Active migrated file', exact: true })).toBeVisible();
+    await expect(panel.locator('.workspace-list-pane')).toBeVisible();
+    await panel.getByRole('button', { name: '收起目录', exact: true }).click();
+    await page.reload();
+    await expect(panel.locator('.workspace-list-pane')).toBeHidden();
+    await expect(panel.getByRole('heading', { name: 'Active migrated file', exact: true })).toBeVisible();
+    await panel.getByRole('button', { name: '展开目录', exact: true }).click();
+    await panel.getByRole('button', { name: '关闭文件预览', exact: true }).click();
+    await expect(panel.getByText('选择文件以预览内容')).toBeVisible();
+    await expect(panel.locator('.workspace-list-pane')).toBeVisible();
+    await expect(panel.getByRole('tab')).toHaveCount(3);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
 });

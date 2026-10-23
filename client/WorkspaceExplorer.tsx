@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
-import { ChevronDown, ChevronRight, FileDiff, Folder, LoaderCircle, RefreshCw, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileDiff, FileText, Folder, PanelLeftClose, PanelLeftOpen, LoaderCircle, RefreshCw, X } from 'lucide-react';
 import { EntryIcon, formatSize, gitStatusClass, gitStatusLabel, htmlPath, mediaKind, type Entry, type Tree, type FileResult, type DiffResult, type GitStatus, type Preview } from './workspace-files';
-import { WorkspacePreviewContent } from './WorkspacePreview';
+import WorkspaceFilePreview, { WorkspacePreviewContent } from './WorkspacePreview';
+import type { FileSelection } from './usePreviewWorkspace';
 import type { Session } from '../shared/types';
 import { api } from './api';
 import { readLocalPreference, writeLocalPreference } from './ui';
@@ -66,7 +67,7 @@ export function Splitter({ label, value, min, max, onChange, onCommit, direction
     onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={finish} onPointerCancel={finish} onLostPointerCapture={finish} onKeyDown={keyDown}><span /></div>;
 }
 
-type ExplorerProps = { session: Session; close: () => void; picker?: ReactNode; embedded?: boolean; onOpenFile?: (path: string, kind: 'file' | 'diff') => void };
+type ExplorerProps = { session: Session; close: () => void; picker?: ReactNode; embedded?: boolean; selection?: FileSelection; treeCollapsed?: boolean; onTreeCollapsed?: (value: boolean) => void; onSelectFile?: (selection?: FileSelection) => void };
 
 export default function WorkspaceExplorer(props: ExplorerProps) {
   // Remount immediately when switching workspaces; pending responses from the
@@ -74,16 +75,30 @@ export default function WorkspaceExplorer(props: ExplorerProps) {
   return <WorkspaceExplorerPanel key={`${props.session.id}:${props.session.cwd}`} {...props} />;
 }
 
-function WorkspaceExplorerPanel({ session, close, picker, embedded, onOpenFile }: ExplorerProps) {
-  const [tab, setTab] = useState<'files' | 'git'>('files');
+function WorkspaceExplorerPanel({ session, close, picker, embedded, selection, treeCollapsed = false, onTreeCollapsed, onSelectFile }: ExplorerProps) {
+  const [tab, setTab] = useState<'files' | 'git'>(() => selection?.kind === 'diff' ? 'git' : 'files');
   const [trees, setTrees] = useState<Record<string, Tree>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']));
   const [selectedPath, setSelectedPath] = useState('');
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [previewRevision, setPreviewRevision] = useState(0);
   const [git, setGit] = useState<GitStatus | null>(null);
   const [pending, setPending] = useState<Set<string>>(() => new Set());
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [treeWidth, setTreeWidth] = useState(() => savedWidth(TREE.key, TREE.fallback));
+  const treeKey = embedded ? 'dili.preview-tree-width' : TREE.key;
+  const [treeWidth, setTreeWidth] = useState(() => savedWidth(treeKey, embedded ? 190 : TREE.fallback));
+  const container = useRef<HTMLElement>(null);
+  const [panelWidth, setPanelWidth] = useState(560);
+  useEffect(() => {
+    if (!embedded || !container.current) return;
+    const observer = new ResizeObserver(([entry]) => { if (entry.contentRect.width) setPanelWidth(entry.contentRect.width); });
+    observer.observe(container.current);
+    return () => observer.disconnect();
+  }, [embedded]);
+  const chooseFile = (path: string, kind: 'file' | 'diff') => {
+    onSelectFile?.({ path, kind });
+    if (panelWidth < 480) onTreeCollapsed?.(true);
+  };
   const [previewWidth, setPreviewWidth] = useState(() => savedWidth(PREVIEW.key, PREVIEW.fallback));
   const viewport = useViewportWidth();
   const live = useRef(true);
@@ -123,13 +138,14 @@ function WorkspaceExplorerPanel({ session, close, picker, embedded, onOpenFile }
   }, [loadTree, loadGit]);
 
   const clearPreview = () => {
+    if (onSelectFile) { onSelectFile(undefined); return; }
     requests.current.delete('preview');
     setPending(current => { const next = new Set(current); next.delete('preview'); return next; });
     setErrors(current => { const next = { ...current }; delete next.preview; return next; });
     setSelectedPath(''); setPreview(null);
   };
   const openFile = (path: string) => {
-    if (onOpenFile) { setSelectedPath(path); onOpenFile(path, 'file'); return; }
+    if (onSelectFile) { chooseFile(path, 'file'); return; }
     setSelectedPath(path); setPreview(null);
     const media = mediaKind(path);
     if (media) {
@@ -142,12 +158,12 @@ function WorkspaceExplorerPanel({ session, close, picker, embedded, onOpenFile }
     }, '无法读取文件');
   };
   const openDiff = (path: string) => {
-    if (onOpenFile) { setSelectedPath(path); onOpenFile(path, 'diff'); return; }
+    if (onSelectFile) { chooseFile(path, 'diff'); return; }
     setSelectedPath(path); setPreview(null);
     void request<DiffResult>('preview', `${base}/git/diff?path=${encodeURIComponent(path)}`, result => setPreview({ kind: 'diff', result: { ...result, path: result.path || path } }), '无法读取 Git diff');
   };
   const selectTab = (next: typeof tab) => {
-    if (next !== tab) { clearPreview(); setTab(next); }
+    if (next !== tab) { if (!embedded) clearPreview(); setTab(next); }
     if (next === 'git') void loadGit();
   };
   const refresh = () => {
@@ -159,7 +175,7 @@ function WorkspaceExplorerPanel({ session, close, picker, embedded, onOpenFile }
     setTrees(current => Object.fromEntries(Object.entries(current).filter(([path]) => expanded.has(path))));
     for (const path of expanded) void loadTree(path);
     void loadGit();
-    if (selectedPath && !onOpenFile) { if (tab === 'git') openDiff(selectedPath); else openFile(selectedPath); }
+    if (selectedPath && !onSelectFile) { if (tab === 'git') openDiff(selectedPath); else openFile(selectedPath); }
   };
   const root = trees[''];
   const rows = useMemo(() => {
@@ -192,15 +208,23 @@ function WorkspaceExplorerPanel({ session, close, picker, embedded, onOpenFile }
 
   // Saved widths are preferences; the rendered widths always leave the main
   // workbench usable on the current window size.
-  const treeMax = Math.max(TREE.min, Math.min(TREE.max, viewport - MAIN_RESERVE));
-  const shownTree = Math.max(TREE.min, Math.min(treeWidth, treeMax));
-  const previewOpen = !onOpenFile && !!selectedPath;
+  const treeMin = embedded ? 140 : TREE.min;
+  const treeMax = Math.max(treeMin, Math.min(TREE.max, embedded ? panelWidth - 246 : viewport - MAIN_RESERVE));
+  const shownTree = Math.max(treeMin, Math.min(treeWidth, treeMax));
+  const highlightedPath = embedded ? selection?.path : selectedPath;
+  const previewOpen = !onSelectFile && !!selectedPath;
   const previewMax = Math.max(PREVIEW.min, viewport - MAIN_RESERVE - shownTree);
   const shownPreview = Math.max(PREVIEW.min, Math.min(previewWidth, previewMax));
 
 
-  return <aside className={`workspace-explorer ${previewOpen ? 'preview-open' : ''} ${embedded ? 'embedded-explorer' : ''}`} aria-label="资源管理器" style={{ '--workspace-tree-width': `${shownTree}px`, '--workspace-preview-width': `${shownPreview}px` } as CSSProperties}>
-    <div className="workspace-list-pane">
+  return <aside ref={container} className={`workspace-explorer ${previewOpen ? 'preview-open' : ''} ${embedded ? `embedded-explorer ${treeCollapsed ? 'tree-collapsed' : ''}` : ''}`} aria-label="资源管理器" style={{ '--workspace-tree-width': `${shownTree}px`, '--workspace-preview-width': `${shownPreview}px` } as CSSProperties}>
+    {embedded && <div className="workspace-combined-toolbar">
+      <button className="icon-button" aria-label={treeCollapsed ? '展开目录' : '收起目录'} title={treeCollapsed ? '展开目录' : '收起目录'} aria-expanded={!treeCollapsed} onClick={() => onTreeCollapsed?.(!treeCollapsed)}>{treeCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}</button>
+      <span title={selection?.path || session.cwd}><bdi>{selection?.path || session.cwd}</bdi></span>
+      {selection && <><button className="icon-button" aria-label="重新读取文件" title="重新读取文件" onClick={() => setPreviewRevision(value => value + 1)}><RefreshCw size={14} /></button><button className="icon-button" aria-label="关闭文件预览" title="关闭文件预览" onClick={clearPreview}><X size={14} /></button></>}
+    </div>}
+    <div className="workspace-explorer-body">
+    <div className="workspace-list-pane" hidden={embedded && treeCollapsed}>
       <header className="workspace-explorer-header"><div><strong>资源管理器</strong><small title={session.cwd}><bdi>{session.cwd}</bdi></small></div><button className="icon-button" aria-label="刷新资源管理器" title="刷新" onClick={refresh}><RefreshCw size={14} /></button><button className="icon-button" aria-label="关闭资源管理器" title="关闭" onClick={close}><X size={16} /></button></header>
       {picker}
       <nav className="workspace-tabs" aria-label="资源管理器视图"><button className={tab === 'files' ? 'active' : ''} aria-pressed={tab === 'files'} onClick={() => selectTab('files')}><Folder size={14} />文件</button><button className={tab === 'git' ? 'active' : ''} aria-pressed={tab === 'git'} onClick={() => selectTab('git')}><FileDiff size={14} />Git diff{!!git?.entries.length && <b>{git.entries.length}</b>}</button></nav>
@@ -209,15 +233,19 @@ function WorkspaceExplorerPanel({ session, close, picker, embedded, onOpenFile }
       {tab === 'files' ? <div className="workspace-tree">
         {!root && !pending.has('tree:') && <button className="workspace-empty" onClick={() => void loadTree('')}>读取工作区</button>}
         {root && !root.entries.length && <p className="workspace-note">此目录为空。</p>}
-        {rows.map(({ entry, depth }) => <button key={entry.path} className={`workspace-entry ${selectedPath === entry.path ? 'selected' : ''}`} style={{ paddingLeft: 10 + depth * 16 }} aria-expanded={entry.kind === 'directory' ? expanded.has(entry.path) : undefined} onClick={() => toggle(entry)}>{entry.kind === 'directory' ? expanded.has(entry.path) ? <ChevronDown size={14} /> : <ChevronRight size={14} /> : <span className="workspace-file-spacer" aria-hidden="true" />}<EntryIcon entry={entry} /><span title={entry.path}>{entry.name}</span>{entry.kind === 'file' && <small>{formatSize(entry.size)}</small>}</button>)}
+        {rows.map(({ entry, depth }) => <button key={entry.path} className={`workspace-entry ${highlightedPath === entry.path ? 'selected' : ''}`} style={{ paddingLeft: 10 + depth * 16 }} aria-expanded={entry.kind === 'directory' ? expanded.has(entry.path) : undefined} onClick={() => toggle(entry)}>{entry.kind === 'directory' ? expanded.has(entry.path) ? <ChevronDown size={14} /> : <ChevronRight size={14} /> : <span className="workspace-file-spacer" aria-hidden="true" />}<EntryIcon entry={entry} /><span title={entry.path}>{entry.name}</span>{entry.kind === 'file' && <small>{formatSize(entry.size)}</small>}</button>)}
         {Object.entries(trees).filter(([path, tree]) => expanded.has(path) && tree.truncated).map(([path, tree]) => <p key={path} className="workspace-note">{path || '工作目录'}内容过多，仅显示前 {tree.entries.length} 项</p>)}
-      </div> : <div className="workspace-git">{!git?.available && git && <p className="workspace-note">当前目录不是 Git 仓库，或 Git 不可用。</p>}{gitEntries.map(entry => { const name = entry.path.split('/').pop() ?? entry.path; const folder = entry.path.slice(0, entry.path.length - name.length).replace(/\/$/, ''); return <button key={`${entry.status}:${entry.path}`} className={`workspace-git-entry ${gitStatusClass(entry.status)} ${selectedPath === entry.path ? 'selected' : ''}`} title={`${entry.path} · ${entry.status}`} onClick={() => openDiff(entry.path)}><EntryIcon entry={{ name: entry.path, path: entry.path, kind: 'file' }} /><span className="workspace-git-name">{name}</span>{folder && <small>{folder}</small>}<code>{gitStatusLabel(entry.status)}</code></button>; })}{git?.available && !gitEntries.length && <p className="workspace-note">工作区没有未提交变更。</p>}</div>}
+      </div> : <div className="workspace-git">{!git?.available && git && <p className="workspace-note">当前目录不是 Git 仓库，或 Git 不可用。</p>}{gitEntries.map(entry => { const name = entry.path.split('/').pop() ?? entry.path; const folder = entry.path.slice(0, entry.path.length - name.length).replace(/\/$/, ''); return <button key={`${entry.status}:${entry.path}`} className={`workspace-git-entry ${gitStatusClass(entry.status)} ${highlightedPath === entry.path ? 'selected' : ''}`} title={`${entry.path} · ${entry.status}`} onClick={() => openDiff(entry.path)}><EntryIcon entry={{ name: entry.path, path: entry.path, kind: 'file' }} /><span className="workspace-git-name">{name}</span>{folder && <small>{folder}</small>}<code>{gitStatusLabel(entry.status)}</code></button>; })}{git?.available && !gitEntries.length && <p className="workspace-note">工作区没有未提交变更。</p>}</div>}
     </div>
-    {!embedded && <Splitter label="调整文件树宽度" value={shownTree} min={TREE.min} max={treeMax} onChange={setTreeWidth} onCommit={value => writeLocalPreference(TREE.key, String(value))} />}
+    {(!embedded || !treeCollapsed) && <Splitter label="调整文件树宽度" value={shownTree} min={treeMin} max={treeMax} onChange={setTreeWidth} onCommit={value => writeLocalPreference(treeKey, String(value))} />}
+    {embedded && <div className="workspace-combined-preview">
+      {selection ? <WorkspaceFilePreview compact key={`${selection.kind}:${selection.path}:${previewRevision}`} sessionId={session.id} path={selection.path} kind={selection.kind} close={clearPreview} /> : <div className="preview-unavailable"><FileText size={28} /><p>选择文件以预览内容</p>{treeCollapsed && <button className="text-button" onClick={() => onTreeCollapsed?.(false)}>展开目录</button>}</div>}
+    </div>}
     {previewOpen && <><div className="workspace-preview-pane">
       {visibleErrors.filter(([scope]) => scope === 'preview').map(([scope, message]) => <div key={scope} className="workspace-error" role="alert">{message}</div>)}
       <WorkspacePreviewContent preview={preview} sessionId={session.id} selectedPath={selectedPath} loading={pending.has('preview')} clearPreview={clearPreview} setPreview={setPreview} />
     </div>
     <Splitter label="调整预览宽度" value={shownPreview} min={PREVIEW.min} max={previewMax} onChange={setPreviewWidth} onCommit={value => writeLocalPreference(PREVIEW.key, String(value))} /></>}
+    </div>
   </aside>;
 }

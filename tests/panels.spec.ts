@@ -60,7 +60,7 @@ test('bottom terminal runs real shell commands, isolates split shells and surviv
   }
 });
 
-test('unified preview keeps files and git diffs in tabs beside the conversation and terminal', async ({ page, request }) => {
+test('workspace keeps its tree beside files and diffs with a collapsible resizable directory', async ({ page, request }) => {
   const root = await mkdtemp(join(tmpdir(), 'sessiondeck-panels-'));
   const git = (args: string[]) => promisify(execFile)('git', args, { cwd: root });
   try {
@@ -81,11 +81,25 @@ test('unified preview keeps files and git diffs in tabs beside the conversation 
     await expect(panel).toBeVisible();
     await explorer.getByRole('button', { name: /README\.md/ }).click();
     await expect(panel.getByRole('heading', { name: 'Sidebar preview' })).toBeVisible();
-    await expect(panel.getByRole('tab', { name: 'README.md', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(panel.getByRole('tab', { name: `文件 · ${session.title}`, exact: true })).toHaveAttribute('aria-selected', 'true');
+    const tree = explorer.locator('.workspace-list-pane');
+    const preview = explorer.locator('.workspace-combined-preview');
+    expect((await tree.boundingBox())!.x + (await tree.boundingBox())!.width).toBeLessThanOrEqual((await preview.boundingBox())!.x);
+    const rendered = await panel.getByRole('heading', { name: 'Sidebar preview' }).elementHandle();
+    await explorer.getByRole('button', { name: '收起目录', exact: true }).click();
+    await expect(tree).toBeHidden();
+    await expect(panel.getByRole('heading', { name: 'Sidebar preview' })).toBeVisible();
+    await explorer.getByRole('button', { name: '展开目录', exact: true }).click();
+    await expect(tree).toBeVisible();
+    expect(await rendered!.evaluate(element => element.isConnected)).toBe(true);
+    const treeSplitter = explorer.getByRole('separator', { name: '调整文件树宽度', exact: true });
+    const treeInitial = Number(await treeSplitter.getAttribute('aria-valuenow'));
+    await treeSplitter.press('ArrowRight');
+    await expect(treeSplitter).toHaveAttribute('aria-valuenow', String(treeInitial + 24));
     expect((await panel.boundingBox())!.x).toBeGreaterThanOrEqual((await drawer.boundingBox())!.x + (await drawer.boundingBox())!.width - 1);
     await panel.getByRole('tab', { name: `文件 · ${session.title}`, exact: true }).click();
     await explorer.getByRole('button', { name: /README\.md/ }).click();
-    await expect(panel.getByRole('tab')).toHaveCount(2);
+    await expect(panel.getByRole('tab')).toHaveCount(1);
     await panel.getByRole('tab', { name: `文件 · ${session.title}`, exact: true }).click();
     await explorer.getByRole('button', { name: /^Git diff/ }).click();
     await explorer.getByRole('button', { name: /README\.md/ }).click();
@@ -108,17 +122,26 @@ test('unified preview keeps files and git diffs in tabs beside the conversation 
     await splitter.focus(); await splitter.press('ArrowLeft');
     await expect(splitter).toHaveAttribute('aria-valuenow', String(initial + 24));
     await page.reload();
-    await expect(panel.getByRole('tab')).toHaveCount(3);
+    await expect(panel.getByRole('tab')).toHaveCount(1);
+    await expect(treeSplitter).toHaveAttribute('aria-valuenow', String(treeInitial + 24));
     await expect(splitter).toHaveAttribute('aria-valuenow', String(initial + 24));
     await expect(diff.getByRole('table', { name: '内联差异' })).toBeVisible();
     await page.getByRole('button', { name: '隐藏预览面板' }).click();
     await expect(panel).toBeHidden();
     await page.getByRole('button', { name: '打开预览面板' }).click();
-    await expect(panel.getByRole('tab')).toHaveCount(3);
+    await expect(panel.getByRole('tab')).toHaveCount(1);
+    await expect(treeSplitter).toHaveAttribute('aria-valuenow', String(treeInitial + 24));
     await page.screenshot({ path: 'artifacts/unified-preview-desktop.png' });
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(panel.getByRole('button', { name: '返回工作台' })).toBeInViewport();
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await explorer.getByRole('button', { name: '收起目录', exact: true }).click();
+    await expect(diff).toBeVisible();
+    await explorer.getByRole('button', { name: '展开目录', exact: true }).click();
+    await explorer.getByRole('button', { name: '文件', exact: true }).click();
+    await explorer.getByRole('button', { name: /README\.md/ }).click();
+    await expect(tree).toBeHidden();
+    await expect(panel.getByRole('heading', { name: 'Sidebar preview' })).toBeVisible();
     await page.screenshot({ path: 'artifacts/unified-preview-mobile.png' });
     await panel.getByRole('button', { name: '返回工作台' }).click();
     await expect(panel).toBeHidden();
@@ -156,6 +179,10 @@ test('workspace sidebar previews HTML in a sandbox and plays local media', async
     const panel = page.getByRole('complementary', { name: '统一预览面板' });
     const frame = panel.frameLocator('iframe[title="预览 site/index.html"]');
     await expect(frame.locator('#title')).toHaveText('Codex site');
+    const iframe = await panel.locator('iframe').elementHandle();
+    await explorer.getByRole('button', { name: '收起目录', exact: true }).click();
+    await explorer.getByRole('button', { name: '展开目录', exact: true }).click();
+    expect(await iframe!.evaluate(element => element.isConnected)).toBe(true);
     await expect(panel.locator('iframe[title="预览 site/index.html"]')).toHaveAttribute('sandbox', 'allow-scripts allow-forms');
     await panel.getByRole('button', { name: '查看源码', exact: true }).click();
     await expect(panel.locator('.workspace-html-preview pre')).toContainText('Codex site');

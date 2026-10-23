@@ -29,7 +29,7 @@ export function WorkspacePreviewContent({ preview, sessionId, selectedPath, load
   </>;
 }
 
-export default function WorkspaceFilePreview({ sessionId, path, kind, close }: { sessionId: string; path: string; kind: 'file' | 'diff'; close: () => void }) {
+export default function WorkspaceFilePreview({ sessionId, path, kind, close, compact }: { compact?: boolean; sessionId: string; path: string; kind: 'file' | 'diff'; close: () => void }) {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
@@ -56,7 +56,7 @@ export default function WorkspaceFilePreview({ sessionId, path, kind, close }: {
     return () => { live = false; };
   }, [sessionId, path, kind, attempt]);
   return <div className="workspace-file-tab">
-    <div className="preview-file-actions"><span title={path}><bdi>{path}</bdi></span><button className="icon-button" aria-label="重新读取文件" title="重新读取文件" onClick={() => setAttempt(value => value + 1)}><RefreshCw size={14} /></button></div>
+    {!compact && <div className="preview-file-actions"><span title={path}><bdi>{path}</bdi></span><button className="icon-button" aria-label="重新读取文件" title="重新读取文件" onClick={() => setAttempt(value => value + 1)}><RefreshCw size={14} /></button></div>}
     {error && <div className="workspace-error" role="alert">{error}<button className="text-button" onClick={() => setAttempt(value => value + 1)}>重试</button></div>}
     <WorkspacePreviewContent preview={preview} sessionId={sessionId} selectedPath={path} loading={loading} clearPreview={close} setPreview={setPreview} />
   </div>;
