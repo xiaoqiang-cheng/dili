@@ -1,47 +1,17 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { LoaderCircle, RefreshCw } from 'lucide-react';
-import type { AgentChatSettings, AgentChatSettingsUpdate } from '../shared/chat';
-import { api } from './api';
+import type { AgentSettingsController } from './useAgentChatSettings';
 import ModalShell from './Modal';
 import './agent-chat-settings.css';
 
-export default function AgentChatSettingsPanel({ sessionId, busy, close }: { sessionId: string; busy: boolean; close(): void }) {
-  const [settings, setSettings] = useState<AgentChatSettings | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
-  const [selection, setSelection] = useState({ model: '', permission: '' });
-  const alive = useRef(true);
-  const path = `/sessions/${sessionId}/chat/settings`;
-  function accept(next: AgentChatSettings) {
-    if (!alive.current) return;
-    setSettings(next); setSelection({ model: next.model ?? '', permission: next.permission ?? '' });
-  }
-  async function read() {
-    setLoading(true); setError(''); setNotice('');
-    try { accept(await api<AgentChatSettings>(path)); }
-    catch (cause) { if (alive.current) { setSettings(null); setError(cause instanceof Error ? cause.message : '读取设置失败'); } }
-    finally { if (alive.current) setLoading(false); }
-  }
-  useEffect(() => { alive.current = true; void read(); return () => { alive.current = false; }; }, [sessionId]);
-  async function save(field: AgentChatSettingsUpdate['field']) {
-    if (!settings || saving || loading || busy) return;
-    setSaving(true); setError(''); setNotice('');
-    try {
-      const next = await api<AgentChatSettings>(path, { version: settings.version, field, value: selection[field] });
-      accept(next);
-      if (alive.current) setNotice('原生设置已确认，将用于后续任务。');
-    } catch (cause) {
-      // A timed-out control can still have applied. Invalidate the form and
-      // require native readback before retrying; keep the error visible.
-      if (alive.current) {
-        setSettings(null);
-        setError(cause instanceof Error ? cause.message : '设置修改失败，请刷新确认');
-      }
-    } finally { if (alive.current) setSaving(false); }
-  }
+export default function AgentChatSettingsPanel({ controller, close, field }: { controller: AgentSettingsController; close(): void; field?: 'model' | 'permission' }) {
+  const { settings, loading, saving, error, notice, selection, setSelection, busy, read, save } = controller;
+  useEffect(() => { void read(); }, [read, busy]);
+  useEffect(() => {
+    if (!settings || !field || loading) return;
+    document.getElementById(`agent-setting-${field}`)?.focus();
+  }, [field, settings, loading]);
   return createPortal(<ModalShell title="会话设置" subtitle="直接使用当前 Agent 的原生模型和权限能力" close={close}>
     <div className="agent-chat-settings">
       <button type="button" className="text-button" disabled={loading || saving} onClick={() => void read()}><RefreshCw size={14} />刷新原生设置</button>

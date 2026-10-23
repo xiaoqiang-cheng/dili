@@ -853,6 +853,177 @@ for (const backend of ['codex', 'claude'] as const) test(`${backend} unified nat
   await expect(dialog.getByLabel('模型', { exact: true })).toBeDisabled();
 });
 
+for (const backend of ['codex', 'claude'] as const) test(`${backend} composer exposes independent native model and permission controls`, async ({ page }) => {
+  const app = await fixture(page, backend);
+  let nativeSettings = { nativeSessionId: 'exact-native-thread', version: 'quick-1', model: 'native-model', models: [{ id: 'native-model', label: 'Native Model' }, { id: 'native-other', label: 'Native Other' }], permission: 'native-default', permissions: [{ id: 'native-default', label: 'Native Default' }, { id: 'native-plan', label: 'Native Plan' }], scope: '当前原生执行器的设置' };
+  const updates: { version: string; field: string; value: string }[] = [];
+  await page.route(`**/api/sessions/${app.contact.id}/chat/settings`, async route => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: nativeSettings });
+    const body = route.request().postDataJSON() as { version: string; field: 'model' | 'permission'; value: string };
+    updates.push(body);
+    nativeSettings = { ...nativeSettings, version: `quick-${updates.length + 1}`, [body.field]: body.value };
+    return route.fulfill({ json: nativeSettings });
+  });
+  await app.open();
+  const input = page.getByLabel(`给 ${backend === 'claude' ? 'Claude' : 'Codex'} 发送消息`);
+  await input.fill('草稿需要完整保留');
+  await page.getByRole('button', { name: /选择原生模型/ }).click();
+  const modelPopover = page.getByRole('group', { name: '原生模型设置' });
+  await expect(modelPopover.getByLabel('原生模型', { exact: true })).toHaveValue('native-model');
+  await modelPopover.getByLabel('原生模型', { exact: true }).selectOption('native-other');
+  await modelPopover.getByRole('button', { name: '应用模型' }).click();
+  await expect(modelPopover).toContainText('原生设置已确认');
+  expect(updates[0]).toEqual({ version: 'quick-1', field: 'model', value: 'native-other' });
+  await page.getByRole('button', { name: /选择原生权限/ }).click();
+  const permissionPopover = page.getByRole('group', { name: '原生权限设置' });
+  await expect(permissionPopover.getByLabel('原生权限', { exact: true })).toHaveValue('native-default');
+  await permissionPopover.getByLabel('原生权限', { exact: true }).selectOption('native-plan');
+  await permissionPopover.getByRole('button', { name: '应用权限' }).click();
+  await expect(permissionPopover).toContainText('原生设置已确认');
+  expect(updates[1]).toEqual({ version: 'quick-2', field: 'permission', value: 'native-plan' });
+  await expect(input).toHaveValue('草稿需要完整保留');
+  await permissionPopover.getByRole('button', { name: '关闭快捷设置' }).click();
+  await expect(page.getByRole('button', { name: '选择原生权限', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: '会话设置', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '会话设置', exact: true });
+  await expect(dialog.getByLabel('模型', { exact: true })).toHaveValue('native-other');
+  await dialog.getByLabel('模型', { exact: true }).selectOption('native-model');
+  await dialog.getByRole('button', { name: '应用模型', exact: true }).click();
+  await expect(dialog).toContainText('原生设置已确认');
+  await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+  await expect(page.getByRole('button', { name: '选择原生模型', exact: true })).toContainText('Native Model');
+  await page.setViewportSize({ width: 390, height: 844 });
+  const controls = page.getByLabel('原生模型和权限');
+  const bounds = await controls.boundingBox(); expect(bounds).toBeTruthy(); expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+  const expectSendInView = async () => {
+    const button = await page.getByRole('button', { name: '发送', exact: true }).boundingBox();
+    expect(button).toBeTruthy(); expect(button!.y + button!.height).toBeLessThanOrEqual(844);
+    const form = await page.locator('.agent-chat-composer').boundingBox();
+    expect(button!.y + button!.height).toBeLessThanOrEqual(form!.y + form!.height);
+  };
+  await expectSendInView();
+  await app.patch({ activeTurnId: 'quick-active-turn' });
+  await expectSendInView();
+  await page.getByRole('button', { name: /选择原生模型/ }).click();
+  await expect(page.getByLabel('原生模型', { exact: true })).toBeDisabled();
+  await app.patch({ activeTurnId: null });
+  await expect(page.getByLabel('原生模型', { exact: true })).toBeEnabled();
+  await app.patch({ requests: [{ id: 'quick-approval', kind: 'approval', title: '待审批' }] });
+  await expect(page.getByLabel('原生模型', { exact: true })).toBeDisabled();
+  await app.patch({ requests: [] });
+  await expect(page.getByLabel('原生模型', { exact: true })).toBeEnabled();
+  await page.screenshot({ path: `artifacts/${backend}-composer-settings-mobile.png` });
+  const popup = await modelPopover.boundingBox(); expect(popup).toBeTruthy(); expect(popup!.y).toBeGreaterThanOrEqual(0); expect(popup!.x + popup!.width).toBeLessThanOrEqual(390);
+  await modelPopover.getByRole('button', { name: '刷新原生模型' }).press('Escape');
+  await expect(modelPopover).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '选择原生模型', exact: true })).toBeFocused();
+});
+
+for (const backend of ['codex', 'claude'] as const) test(`${backend} slash command menu has native setup descriptions and preserves enter shortcuts`, async ({ page }) => {
+  const app = await fixture(page, backend); await app.open();
+  const input = page.getByLabel(`给 ${backend === 'claude' ? 'Claude' : 'Codex'} 发送消息`);
+  await input.fill('/');
+  const menu = page.getByRole('listbox', { name: '原生会话命令' });
+  await expect(menu.getByRole('option')).toHaveCount(3);
+  await expect(menu).toContainText('选择当前会话使用的模型');
+  await input.press('ArrowDown');
+  await expect(menu.getByRole('option', { selected: true })).toContainText('/model');
+  await expect(input).toBeFocused();
+  await input.press('Enter');
+  await expect(page.getByRole('dialog', { name: '会话设置' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await input.fill('/'); await input.press('Escape');
+  await expect(menu).toHaveCount(0); await expect(input).toHaveValue('/');
+  await input.fill('/m');
+  await expect(menu.getByRole('option')).toHaveCount(1);
+  await expect(menu.getByRole('option')).toContainText('/model');
+  await page.screenshot({ path: `artifacts/${backend}-slash-commands-desktop.png` });
+  await input.dispatchEvent('keydown', { key: 'Enter', code: 'Enter', isComposing: true, keyCode: 229 });
+  await expect(page.getByRole('dialog', { name: '会话设置' })).toHaveCount(0);
+  await expect(input).toHaveValue('/m');
+  await input.fill('/permissions'); await input.press('Enter');
+  await expect(page.getByRole('dialog', { name: '会话设置' })).toBeVisible();
+  await expect(input).toHaveValue('');
+  expect(app.requests.filter(item => item.path === 'messages')).toHaveLength(0);
+});
+
+for (const backend of ['codex', 'claude'] as const) test(`${backend} composer invalidates rejected settings and ignores old connection readback`, async ({ page }) => {
+  const app = await fixture(page, backend);
+  let nativeSettings = { nativeSessionId: 'exact-native-thread', version: 'first', model: 'one', models: [{ id: 'one', label: 'Model One' }, { id: 'two', label: 'Model Two' }], permission: null, permissionLabel: '自定义原生策略', permissions: [], permissionReason: '此原生版本不支持修改权限', scope: '只影响当前会话' };
+  let holdRead = false, reads = 0;
+  let release!: () => void;
+  const wait = new Promise<void>(resolve => { release = resolve; });
+  const updates: unknown[] = [];
+  await page.route(`**/api/sessions/${app.contact.id}/chat/settings`, async route => {
+    if (route.request().method() === 'POST') { updates.push(route.request().postDataJSON()); return route.fulfill({ status: 409, json: { error: '原生拒绝修改，请刷新确认' } }); }
+    reads++;
+    const response = nativeSettings;
+    if (holdRead) await wait;
+    return route.fulfill({ json: response });
+  });
+  await app.open();
+  const input = page.getByLabel(`给 ${backend === 'claude' ? 'Claude' : 'Codex'} 发送消息`);
+  await input.fill('保留我的任务');
+  await page.getByRole('button', { name: '选择原生模型', exact: true }).click();
+  const model = page.getByRole('group', { name: '原生模型设置' });
+  await model.getByLabel('原生模型', { exact: true }).selectOption('two');
+  await model.getByRole('button', { name: '应用模型' }).click();
+  await expect(model.getByRole('alert')).toContainText('原生拒绝修改');
+  await expect(model.getByLabel('原生模型', { exact: true })).toHaveCount(0);
+  await model.getByRole('button', { name: '刷新原生模型' }).click();
+  await expect(model.getByLabel('原生模型', { exact: true })).toHaveValue('one');
+  await page.getByRole('button', { name: '选择原生权限', exact: true }).click();
+  const permissions = page.getByRole('group', { name: '原生权限设置' });
+  await expect(permissions).toContainText('此原生版本不支持修改权限');
+  await expect(permissions.getByRole('button', { name: '应用权限' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '选择原生权限', exact: true })).toContainText('自定义原生策略');
+  const before = reads;
+  holdRead = true;
+  await page.getByRole('button', { name: '选择原生模型', exact: true }).click();
+  await expect.poll(() => reads).toBe(before + 1);
+  holdRead = false;
+  nativeSettings = { ...nativeSettings, version: 'replacement', model: 'two' };
+  app.current.snapshot = { ...app.current.snapshot, instanceId: 'replacement-instance', revision: 1 };
+  await emit(page, `/api/sessions/${app.contact.id}/chat/events`, 'state', app.current.snapshot);
+  await expect(model.getByLabel('原生模型', { exact: true })).toHaveValue('two');
+  release();
+  await expect(model.getByLabel('原生模型', { exact: true })).toHaveValue('two');
+  await expect(input).toHaveValue('保留我的任务');
+  expect(updates).toEqual([{ version: 'first', field: 'model', value: 'two' }]);
+  expect(app.requests.filter(item => item.path === 'messages')).toHaveLength(0);
+});
+
+test('composer menus remain usable at 200 percent zoom on a small screen and in fullscreen', async ({ page }) => {
+  const app = await fixture(page);
+  await page.addInitScript(() => { localStorage.setItem('dili.interface-zoom', '200'); });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route(`**/api/sessions/${app.contact.id}/chat/settings`, route => route.fulfill({ json: { nativeSessionId: 'exact-native-thread', version: 'zoom', model: 'long', models: [{ id: 'long', label: '一个足够长的原生模型名称用于测试完整显示边界' }], permission: 'default', permissions: [{ id: 'default', label: '原生默认权限' }], scope: '当前会话' } }));
+  await app.open();
+  const input = page.getByLabel('给 Codex 发送消息');
+  await input.fill('/');
+  const menu = page.getByRole('listbox', { name: '原生会话命令' });
+  let box = (await menu.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0); expect(box.y).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(390); expect(box.y + box.height).toBeLessThanOrEqual(844);
+  await page.screenshot({ path: 'artifacts/composer-slash-mobile-200.png' });
+  await input.fill('保留草稿');
+  await page.getByRole('button', { name: '选择原生权限', exact: true }).click();
+  const popup = page.getByRole('group', { name: '原生权限设置' });
+  await expect(popup.getByLabel('原生权限', { exact: true })).toBeVisible();
+  for (const label of ['选择原生模型', '选择原生权限']) {
+    const control = (await page.getByRole('button', { name: label, exact: true }).boundingBox())!;
+    expect(control.x).toBeGreaterThanOrEqual(0); expect(control.x + control.width).toBeLessThanOrEqual(390);
+  }
+  box = (await popup.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0); expect(box.y).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(390); expect(box.y + box.height).toBeLessThanOrEqual(844);
+  await popup.getByRole('button', { name: '关闭快捷设置' }).click();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.getByRole('button', { name: '全屏会话', exact: true }).click();
+  await page.getByRole('button', { name: '选择原生模型', exact: true }).click();
+  await expect(page.getByRole('group', { name: '原生模型设置' }).getByLabel('原生模型', { exact: true })).toBeVisible();
+  await expect(input).toHaveValue('保留草稿');
+  await page.screenshot({ path: 'artifacts/composer-settings-fullscreen-200.png' });
+});
+
 for (const backend of ['codex', 'claude'] as const) test(`${backend} discards pending old-instance pages and reloads with the replacement cursor`, async ({ page }) => {
   const app = await fixture(page, backend);
   app.current.snapshot = { ...app.current.snapshot, nativeSessionId: 'same-native-thread', items: outlineHistory(), historyCursor: 'old-cursor' };
