@@ -1,6 +1,8 @@
 /** Dili's bounded view of native Agent items; the native session owns execution. */
 export interface AgentChatItem {
   id: string;
+  /** Provisional stream items replaced by this native, saved message. */
+  replaces?: string[];
   turnId?: string;
   type: 'user' | 'assistant' | 'command' | 'fileChange' | 'tool' | 'plan' | 'notice';
   text: string;

@@ -327,3 +327,97 @@ test('handoff prompt carries bounded portable context and target platform', () =
   assert.match(prompt, /先检查测试并继续实现/);
   assert.match(prompt, /请继续实现登录流程/);
 });
+
+test('Claude pages preserve exact IDs and Unicode in bounded chronological pages while new records append', async t => {
+  const { file, reader } = await fixture(t), session = contact('claude');
+  const records = Array.from({ length: 103 }, (_, i) => claude(i % 2 ? 'assistant' : 'user', `第 ${i} 条🙂`));
+  const path = await file(session, records);
+  let page = await reader.readClaudePage(session.nativeSessionId!);
+  assert.equal(page.items.length, 40);
+  assert.equal(page.items[0].text, '第 63 条🙂');
+  assert.equal(page.truncated, false);
+  const items = [...page.items];
+  await appendFile(path, JSON.stringify(claude('user', 'new append')) + '\n');
+  while (page.nextCursor) {
+    page = await reader.readClaudePage(session.nativeSessionId!, page.nextCursor);
+    assert.ok(page.items.length <= 40);
+    items.unshift(...page.items);
+  }
+  assert.deepEqual(items.map(item => item.text), records.map(row => row.message.content));
+  assert.equal(new Set(items.map(item => item.id)).size, 103);
+  assert.equal(items[0].id, `claude:${session.nativeSessionId}:${records[0].uuid}`);
+});
+
+test('Claude cursor rejects tampering, other identities, restarts, truncation, replacement and symlinks', async t => {
+  const { file, reader, paths } = await fixture(t), session = contact('claude'), other = contact('claude');
+  const records = Array.from({ length: 45 }, () => claude('user', 'safe message'));
+  const path = await file(session, records);
+  await file(other, records);
+  const cursor = (await reader.readClaudePage(session.nativeSessionId!)).nextCursor!;
+  const stale = (job: Promise<unknown>) => assert.rejects(job, { status: 409 });
+  await stale(reader.readClaudePage(other.nativeSessionId!, cursor));
+  await stale(reader.readClaudePage(session.nativeSessionId!, cursor + 'x'));
+  await stale(reader.readClaudePage(session.nativeSessionId!, cursor.split('.')[0] + '.' + '中'.repeat(43)));
+  await stale(new ConversationReader(paths).readClaudePage(session.nativeSessionId!, cursor));
+  await writeFile(path, '');
+  await stale(reader.readClaudePage(session.nativeSessionId!, cursor));
+  await file(session, records);
+  const fresh = (await reader.readClaudePage(session.nativeSessionId!)).nextCursor!;
+  await rename(path, path + '.old');
+  await file(session, records);
+  await stale(reader.readClaudePage(session.nativeSessionId!, fresh));
+  await rm(path);
+  await symlink(path + '.old', path);
+  await stale(reader.readClaudePage(session.nativeSessionId!, fresh));
+  assert.deepEqual((await reader.readClaudePage(session.nativeSessionId!)).items, []);
+});
+
+test('Claude byte-window pages skip giant tool records, progress through empty pages and ignore torn tails', async t => {
+  const { file, paths } = await fixture(t), session = contact('claude');
+  const reader = new ConversationReader({ ...paths, maxBytes: 1024 });
+  const path = await file(session, [claude('user', '最早🙂'), { type: 'progress', data: 'X'.repeat(6000) }, claude('assistant', '最近🙂')]);
+  await appendFile(path, JSON.stringify(claude('user', 'not committed yet'))); // no final newline
+  let page = await reader.readClaudePage(session.nativeSessionId!);
+  const texts = page.items.map(item => item.text);
+  assert.equal(page.truncated, true);
+  let calls = 1, emptyPages = 0;
+  const cursors = new Set<string>();
+  while (page.nextCursor) {
+    assert.ok(!cursors.has(page.nextCursor)); cursors.add(page.nextCursor);
+    page = await reader.readClaudePage(session.nativeSessionId!, page.nextCursor);
+    texts.unshift(...page.items.map(item => item.text));
+    if (!page.items.length) emptyPages++;
+    assert.ok(++calls < 15);
+  }
+  assert.deepEqual(texts, ['最早🙂', '最近🙂']);
+  assert.ok(emptyPages > 0);
+});
+
+test('Claude page text budgets do not lose the next message and image-only prompts survive restoration', async t => {
+  const { file, reader } = await fixture(t), session = contact('claude');
+  const records = Array.from({ length: 25 }, (_, i) => claude('user', `${i}:` + '文'.repeat(24001)));
+  await file(session, [...records, claude('user', [{ type: 'image', source: { data: 'private image bytes' } }])]);
+  let page = await reader.readClaudePage(session.nativeSessionId!);
+  const items = [...page.items];
+  assert.ok(page.truncated);
+  assert.equal(items.at(-1)?.text, '[图片]');
+  assert.equal(items.at(-1)?.imageCount, 1);
+  while (page.nextCursor) {
+    page = await reader.readClaudePage(session.nativeSessionId!, page.nextCursor);
+    assert.ok(page.items.reduce((sum, item) => sum + item.text.length, 0) <= 512000);
+    items.unshift(...page.items);
+  }
+  assert.equal(items.length, 26);
+  assert.equal(new Set(items.map(item => item.id)).size, 26);
+  assert.equal(JSON.stringify(items).includes('private image bytes'), false);
+});
+
+test('Claude fresh page handles empty history and discovers newly created exact logs', async t => {
+  const { file, reader } = await fixture(t), session = contact('claude');
+  assert.equal((await reader.readClaudePage(session.nativeSessionId!)).nextCursor, null);
+  const path = await file(session, []);
+  await writeFile(path, '');
+  assert.equal((await reader.readClaudePage(session.nativeSessionId!)).items.length, 0);
+  await file(session, [claude('user', 'just saved')]);
+  assert.equal((await reader.readClaudePage(session.nativeSessionId!)).items[0].text, 'just saved');
+});

@@ -114,7 +114,7 @@ const conversations = new ConversationReader({ dshHistory: id => dsh.readHistory
 // flags, while preserving exact native IDs whenever the installed CLI supports it.
 const codexBridge = new CodexBridge({ dataDir });
 const codexRuns = new Map<string, { nativeId: string; launchId: string }>();
-const claudeBridge = new ClaudeChatBridge();
+const claudeBridge = new ClaudeChatBridge((id, cursor) => conversations.readClaudePage(id, cursor));
 const claudeRuns = new Map<string, { nativeId: string; launchId: string }>();
 const app = express();
 const server = createServer(app);
@@ -918,10 +918,9 @@ app.post('/api/sessions/:id/start', async (req, res) => {
         // Reopening an empty TUI or fork must reuse its original launch shape.
         status(item.id, { nativeSessionId: command.nativeSessionId, forkPending: false, claudeUnwritten: item.claudeUnwritten ?? (!item.nativeSessionId || item.forkPending ? { sourceId: item.forkPending ? item.nativeSessionId : null } : undefined) });
         if (mode === 'chat') {
-          const history = await conversations.readLatest({ ...item, forkPending: false });
           claudeRuns.set(item.id, { nativeId: command.nativeSessionId!, launchId });
           status(item.id, { running: true, interactionMode: 'chat', executionTransport: 'structured', status: 'unknown', statusSource: 'process', statusDetail: '正在连接 Claude 流式图形会话', lastActivity: new Date().toISOString() });
-          await claudeBridge.start(command.nativeSessionId!, item.cwd, command, history);
+          await claudeBridge.start(command.nativeSessionId!, item.cwd, command);
           store.activity(item.id, 'start', `打开了 ${item.title}`); broadcast(); return res.json(session(item.id));
         }
         const hookCommand = [process.execPath, join(root, 'server/native-hook.cjs'), `http://127.0.0.1:${port}/api/native-event/${item.id}?launch=${launchId}`, token, 'claude'].map(shellQuote).join(' ');

@@ -621,8 +621,8 @@ test('Codex outline handles empty history, evicted prompts and a resized workspa
   expect(app.requests).toEqual([]);
 });
 
-test('older Codex pages prepend without duplicate messages or scrolling away, and live patches keep the expanded history', async ({ page }) => {
-  const app = await fixture(page);
+for (const backend of ['codex', 'claude'] as const) test(`older ${backend} pages prepend without duplicate messages or scrolling away, and live patches keep the expanded history`, async ({ page }) => {
+  const app = await fixture(page, backend);
   app.current.snapshot = { ...app.current.snapshot, nativeSessionId: 'history-thread', items: outlineHistory(), historyCursor: 'cursor-1', truncated: true };
   let release!: () => void;
   let calls = 0;
@@ -638,7 +638,7 @@ test('older Codex pages prepend without duplicate messages or scrolling away, an
     ], nextCursor: null, truncated: false } });
   });
   await app.open();
-  const scroller = page.getByLabel('Codex 消息记录', { exact: true });
+  const scroller = page.getByLabel(`${backend === 'claude' ? 'Claude' : 'Codex'} 消息记录`, { exact: true });
   await scroller.evaluate(element => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll', { bubbles: true })); });
   const target = page.locator('[data-chat-item="input-0"]');
   const offset = () => target.evaluate(element => element.getBoundingClientRect().top - element.closest('.codex-chat-scroll')!.getBoundingClientRect().top);
@@ -851,4 +851,51 @@ for (const backend of ['codex', 'claude'] as const) test(`${backend} unified nat
   await page.getByRole('button', { name: '会话工具', exact: true }).click();
   await page.getByRole('button', { name: '会话设置', exact: true }).click();
   await expect(dialog.getByLabel('模型', { exact: true })).toBeDisabled();
+});
+
+for (const backend of ['codex', 'claude'] as const) test(`${backend} discards pending old-instance pages and reloads with the replacement cursor`, async ({ page }) => {
+  const app = await fixture(page, backend);
+  app.current.snapshot = { ...app.current.snapshot, nativeSessionId: 'same-native-thread', items: outlineHistory(), historyCursor: 'old-cursor' };
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const cursors: string[] = [];
+  let oldResponseDone = false;
+  await page.route(`**/api/sessions/${app.contact.id}/chat/history?*`, async route => {
+    const cursor = new URL(route.request().url()).searchParams.get('cursor')!;
+    cursors.push(cursor);
+    if (cursor === 'old-cursor') await pending;
+    await route.fulfill({ json: { nativeSessionId: 'same-native-thread', items: [{ id: cursor, type: 'user', text: cursor, status: 'completed' }], nextCursor: null, truncated: false } });
+    if (cursor === 'old-cursor') oldResponseDone = true;
+  });
+  await app.open();
+  await page.getByRole('button', { name: '加载更早消息' }).click();
+  await expect.poll(() => cursors.length).toBe(1);
+  app.current.snapshot = { ...app.current.snapshot, instanceId: 'replacement-server', revision: 1, historyCursor: 'new-cursor', items: [{ id: 'restored', type: 'user', text: '恢复后的消息', status: 'completed' }] };
+  await emit(page, `/api/sessions/${app.contact.id}/chat/events`, 'state', app.current.snapshot);
+  await expect(page.locator('[data-chat-item="restored"]')).toBeVisible();
+  // A hung request from the replaced instance must not block the new one.
+  await page.getByRole('button', { name: '加载更早消息' }).click();
+  await expect(page.locator('[data-chat-item="new-cursor"]')).toHaveCount(1);
+  release();
+  await expect.poll(() => oldResponseDone).toBe(true);
+  await expect(page.locator('[data-chat-item="old-cursor"]')).toHaveCount(0);
+  await expect(page.locator('[data-chat-item="input-0"]')).toHaveCount(0);
+  expect(cursors).toEqual(['old-cursor', 'new-cursor']);
+});
+
+test('Claude final saved messages replace provisional text even when older history was expanded', async ({ page }) => {
+  const app = await fixture(page, 'claude');
+  const provisional: CodexChatItem = { id: 'claude-live:thread:msg:1', type: 'assistant', text: '流式回复', status: 'inProgress' };
+  app.current.snapshot = { ...app.current.snapshot, nativeSessionId: 'thread', items: [...outlineHistory(), provisional], historyCursor: 'older' };
+  await page.route(`**/api/sessions/${app.contact.id}/chat/history?*`, route => route.fulfill({ json: { nativeSessionId: 'thread', items: [], nextCursor: null, truncated: false } }));
+  await app.open();
+  await page.getByRole('button', { name: '加载更早消息' }).click();
+  await expect(page.getByRole('button', { name: '加载更早消息' })).toHaveCount(0);
+  const saved: CodexChatItem = { id: 'claude:thread:saved-uuid', replaces: [provisional.id], type: 'assistant', text: '流式回复已完成', status: 'completed' };
+  await app.patch({ items: [...app.current.snapshot.items.filter(item => item.id !== provisional.id), saved] });
+  await expect(page.locator('[data-chat-item="claude:thread:saved-uuid"]')).toHaveCount(1);
+  await expect(page.locator('[data-chat-item="claude-live:thread:msg:1"]')).toHaveCount(0);
+  await app.patch({ items: app.current.snapshot.items.filter(item => item.id !== saved.id) });
+  await expect(page.locator('[data-chat-item="claude:thread:saved-uuid"]')).toHaveCount(1);
+  await expect(page.locator('[data-chat-item="claude-live:thread:msg:1"]')).toHaveCount(0);
 });

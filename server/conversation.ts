@@ -1,10 +1,12 @@
 import { constants } from 'node:fs';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { open, opendir, realpath, type FileHandle } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { zstdDecompressSync } from 'node:zlib';
 import type { Backend, ConversationMessage, ConversationTranscript, Session } from '../shared/types.js';
+import type { AgentChatHistoryPage } from '../shared/chat.ts';
 import { validateNativeId } from './adapters.ts';
 
 export type ConversationSession = Pick<Session, 'backend' | 'nativeSessionId' | 'forkPending' | 'cwd'>;
@@ -107,7 +109,8 @@ function claudeMessages(rows: Line[], nativeId: string): ConversationMessage[] {
       return [];
     }).join('\n\n');
     if (row.type === 'user' && /^(?:<local-command-|<command-name>|<system-reminder>|\[Request interrupted by user)/.test(text.trimStart())) continue;
-    const item = message(`claude:${nativeId}:${typeof row.uuid === 'string' ? row.uuid : offset}`, row.type, text, row.timestamp);
+    const hasImage = row.type === 'user' && content.some(block => record(block)?.type === 'image');
+    const item = message(`claude:${nativeId}:${typeof row.uuid === 'string' ? row.uuid : offset}`, row.type, text || (hasImage ? '[图片]' : ''), row.timestamp);
     if (item) output.push(item);
   }
   return output;
@@ -216,6 +219,7 @@ export class ConversationReader {
   private readonly pending = new Map<string, Promise<ConversationTranscript>>();
   private readonly indexes = new Map<Backend, Index>();
   private readonly scans = new Map<Backend, Promise<Index>>();
+  private readonly cursorKey = randomBytes(32);
   constructor(options: ConversationOptions = {}) {
     this.options = options;
     this.homes = {
@@ -247,6 +251,83 @@ export class ConversationReader {
   }
 
   async preview(session: ConversationSession): Promise<string | null> { return conversationPreview(await this.read(session))?.text ?? null; }
+
+  /** Read a bounded, append-stable page without starting the native CLI. The
+   * cursor names a byte boundary, never a client-supplied filesystem path. */
+  async readClaudePage(nativeId: string, cursor?: string): Promise<AgentChatHistoryPage> {
+    validateNativeId('claude', nativeId);
+    const stale = (): never => { throw Object.assign(new Error('历史游标已失效，请刷新会话后重新加载。'), { status: 409 }); };
+    type Position = { id: string; dev: number; ino: number; size: number; end: number; head: string };
+    let position: Position | undefined;
+    if (cursor) {
+      if (cursor.length > 8192) return stale();
+      const [payload, signature, extra] = cursor.split('.');
+      if (!payload || !signature || !/^[A-Za-z0-9_-]+$/.test(signature) || extra !== undefined) return stale();
+      const expected = createHmac('sha256', this.cursorKey).update(payload).digest('base64url');
+      if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return stale();
+      try { position = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')); } catch { return stale(); }
+      if (!position || position.id !== nativeId || !Number.isSafeInteger(position.end) || position.end <= 0 || position.end > position.size) return stale();
+    }
+    let index = await this.index('claude');
+    if (!index.paths.has(nativeId)) { this.indexes.delete('claude'); index = await this.index('claude'); }
+    const path = index.paths.get(nativeId);
+    const safe = path && await this.safePath('claude', path);
+    const empty: AgentChatHistoryPage = { nativeSessionId: nativeId, items: [], nextCursor: null, truncated: false };
+    if (!safe) return cursor ? stale() : empty;
+    let file: FileHandle;
+    try { file = await open(safe, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+    catch { return cursor ? stale() : empty; }
+    try {
+      const info = await file.stat();
+      if (!info.isFile()) return cursor ? stale() : empty;
+      if (position && (info.dev !== position.dev || info.ino !== position.ino || info.size < position.size)) return stale();
+      const size = position?.size ?? info.size;
+      if (!size) return empty;
+      const header = Buffer.alloc(Math.min(size, 4096));
+      const headRead = await file.read(header, 0, header.length, 0);
+      const head = createHash('sha256').update(header.subarray(0, headRead.bytesRead)).digest('base64url');
+      if (position && head !== position.head) return stale();
+      const end = position?.end ?? size;
+      const maxBytes = Math.max(1024, Math.min(2 * 1024 * 1024, this.options.maxBytes ?? 2 * 1024 * 1024));
+      const start = Math.max(0, end - maxBytes);
+      // One preceding byte distinguishes a line boundary from a cut record.
+      const from = start > 0 ? start - 1 : 0;
+      const buffer = Buffer.alloc(end - from);
+      const read = await file.read(buffer, 0, buffer.length, from);
+      const bytes = buffer.subarray(0, read.bytesRead);
+      const first = start > 0 ? bytes.indexOf(10) + 1 : 0;
+      const last = bytes.lastIndexOf(10) + 1;
+      let nextEnd = start > 0 && first > 0 && from + first < end ? from + first : start;
+      let truncated = read.bytesRead !== buffer.length || last < bytes.length || (start > 0 && last <= first);
+      const rows = last > first ? lines(bytes.subarray(first, last).toString('utf8'), from + first) : [];
+      const items: AgentChatHistoryPage['items'] = [];
+      const known = new Set<string>();
+      let total = 0;
+      let includedStart = nextEnd;
+      for (const row of rows.toReversed()) {
+        const item = claudeMessages([row], nativeId)[0];
+        if (!item || known.has(item.id)) continue;
+        if (total + Math.min(item.text.length, MAX_TEXT) > MAX_TOTAL_TEXT) { nextEnd = includedStart; break; }
+        known.add(item.id);
+        if (item.text.length > MAX_TEXT) truncated = true;
+        const text = item.text.length > MAX_TEXT ? item.text.slice(0, MAX_TEXT - 1) + '…' : item.text;
+        const content = record(row.value.message)?.content;
+        const imageCount = item.role === 'user' && Array.isArray(content) ? content.filter(block => record(block)?.type === 'image').length : 0;
+        items.unshift({ id: item.id, type: item.role, text, status: 'completed', ...(imageCount ? { imageCount } : {}) });
+        total += text.length;
+        includedStart = row.offset;
+        // If the next row exceeds the count budget, resume before this one.
+        if (items.length === 40) { nextEnd = row.offset; break; }
+      }
+      if (nextEnd >= end) return stale();
+      let nextCursor: string | null = null;
+      if (nextEnd > 0) {
+        const payload = Buffer.from(JSON.stringify({ id: nativeId, dev: info.dev, ino: info.ino, size, end: nextEnd, head } satisfies Position)).toString('base64url');
+        nextCursor = payload + '.' + createHmac('sha256', this.cursorKey).update(payload).digest('base64url');
+      }
+      return { ...empty, items, nextCursor, truncated };
+    } finally { await file.close(); }
+  }
 
   /** A transport handoff must hydrate the just-finished native turn, even if
    * an earlier poll cached the transcript before it was saved. */

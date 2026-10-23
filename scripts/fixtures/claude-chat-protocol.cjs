@@ -13,7 +13,7 @@ if (!process.argv.includes('--print')) {
   const id = process.argv.includes('--session-id') ? arg('--session-id') : arg('--resume');
   const folder = path.join(root, 'claude-home/projects/fixture'); fs.mkdirSync(folder, { recursive: true });
   const file = path.join(folder, id + '.jsonl');
-  if (process.argv.includes('--fork-session') && fs.existsSync(path.join(folder, arg('--resume') + '.jsonl'))) fs.copyFileSync(path.join(folder, arg('--resume') + '.jsonl'), file);
+  let forkSource = process.argv.includes('--fork-session') ? path.join(folder, arg('--resume') + '.jsonl') : undefined;
   const out = row => process.stdout.write(JSON.stringify({ ...row, session_id: id }) + '\n');
   const saved = (role, content, uuid = randomUUID()) => fs.appendFileSync(file, JSON.stringify({ type: role, uuid, sessionId: id, timestamp: new Date().toISOString(), message: { role, content } }) + '\n');
   const event = payload => out({ type: 'stream_event', event: payload, parent_tool_use_id: null });
@@ -24,8 +24,9 @@ if (!process.argv.includes('--print')) {
     active = false;
     if (!error) {
       const content = [{ type: 'text', text: '第一段 **完成**' }];
-      out({ type: 'assistant', uuid: randomUUID(), message: { id: messageId, role: 'assistant', content } });
-      saved('assistant', content);
+      const uuid = randomUUID();
+      out({ type: 'assistant', uuid, message: { id: messageId, role: 'assistant', content } });
+      saved('assistant', content, uuid);
     }
     out({ type: 'result', subtype: error ? 'error_during_execution' : 'success', is_error: error });
   }
@@ -43,10 +44,23 @@ if (!process.argv.includes('--print')) {
       out({ type: 'control_response', response: { subtype: 'success', request_id: row.request_id, response } });
       if (row.request.subtype === 'interrupt') finish(true);
     } else if (row.type === 'user') {
+      // Real Claude delays creating the child's saved log until its first turn.
+      if (forkSource && fs.existsSync(forkSource)) {
+        const copied = fs.readFileSync(forkSource, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.stringify({ ...JSON.parse(line), sessionId: id })).join('\n');
+        fs.writeFileSync(file, copied + '\n'); forkSource = undefined;
+      }
       active = true; messageId = 'msg_' + randomUUID();
       saved('user', row.message.content, row.uuid);
       const text = row.message.content.filter(block => block.type === 'text').map(block => block.text).join('');
       if (text === 'EXIT') process.exit(1);
+      if (text === 'BURST') {
+        for (let i = 0; i < 240; i++) {
+          const uuid = randomUUID(), content = [{ type: 'text', text: `progress ${i}` }];
+          saved('assistant', content, uuid);
+          out({ type: 'assistant', uuid, message: { id: `burst_${i}`, role: 'assistant', content } });
+        }
+        finish(); return;
+      }
       event({ type: 'message_start', message: { id: messageId, role: 'assistant' } });
       event({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } });
       event({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'hidden reasoning' } });

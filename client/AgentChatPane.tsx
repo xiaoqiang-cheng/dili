@@ -21,7 +21,7 @@ import './codex-chat.css';
 
 type Pending = { requestId: string; text: string; attachments?: ChatAttachment[]; queueId?: string };
 type Draft = { text: string; pending: Pending | null; attachments: ChatAttachment[]; queue?: QueuedMessage[] };
-type OlderHistory = { identity: string; items: AgentChatItem[]; cursor: string | null; loading: boolean; error: string; notice?: string; limited?: boolean };
+type OlderHistory = { identity: string; instanceId?: string; items: AgentChatItem[]; cursor: string | null; loading: boolean; error: string; notice?: string; limited?: boolean };
 const draftKey = (id: string) => `sessiondeck.codex-chat-draft.${id}`;
 function readDraft(id: string, backend?: string): Draft {
   try {
@@ -141,7 +141,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
   const textarea = useRef<HTMLTextAreaElement>(null);
   const followsBottom = useRef(true);
   const scrollAnchor = useRef<{ id: string; offset: number } | null>(null);
-  const olderLoading = useRef(false);
+  const olderLoading = useRef<symbol | null>(null);
   useLayoutEffect(() => {
     const element = pane.current;
     if (!element) return;
@@ -183,13 +183,15 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
   }
   async function loadOlder() {
     const nativeId = snapshot?.nativeSessionId;
+    const instanceId = snapshot?.instanceId;
     const cursor = older && older.identity === nativeId ? older.cursor : snapshot?.historyCursor;
     if (!nativeId || !cursor || olderLoading.current || older?.limited) return;
-    olderLoading.current = true;
-    setOlder(previous => ({ identity: nativeId, items: previous?.identity === nativeId ? previous.items : snapshot.items, cursor, loading: true, error: '' }));
+    const job = Symbol('history-page');
+    olderLoading.current = job;
+    setOlder(previous => ({ identity: nativeId, instanceId, items: previous?.identity === nativeId && previous.instanceId === instanceId ? previous.items : snapshot.items, cursor, loading: true, error: '' }));
     try {
       const page = await api<AgentChatHistoryPage>(`/sessions/${encodeURIComponent(session.id)}/chat/history?cursor=${encodeURIComponent(cursor)}`);
-      if (!active.current || snapshotRef.current?.nativeSessionId !== nativeId) return;
+      if (!active.current || snapshotRef.current?.nativeSessionId !== nativeId || snapshotRef.current?.instanceId !== instanceId) return;
       if (page.nativeSessionId !== nativeId) throw new Error('历史记录的会话身份不匹配，请重新读取。');
       const element = scroller.current;
       if (element) {
@@ -199,16 +201,16 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
       }
       followsBottom.current = false;
       setOlder(previous => {
-        if (previous?.identity !== nativeId || previous.cursor !== cursor) return previous;
+        if (previous?.identity !== nativeId || previous.instanceId !== instanceId || previous.cursor !== cursor) return previous;
         const known = new Set(previous.items.map(item => item.id));
         const items = [...page.items.filter(item => !known.has(item.id)), ...previous.items];
         if (items.length > 1000 || items.reduce((sum, item) => sum + item.text.length + (item.output?.length ?? 0), 0) > 2_000_000) return { ...previous, loading: false, limited: true, notice: '已达到本页历史显示上限。可重新进入会话释放已加载记录，或在原生终端查看完整历史。' };
-        return { identity: nativeId, items, cursor: page.nextCursor, loading: false, error: '', notice: page.truncated ? '这一页的部分工具输出或超长轮次已省略，完整记录可在原生终端查看。' : '' };
+        return { identity: nativeId, instanceId, items, cursor: page.nextCursor, loading: false, error: '', notice: page.truncated ? '这一页的部分工具输出或超长轮次已省略，完整记录可在原生终端查看。' : '' };
       });
     } catch (cause) {
       if (!active.current) return;
-      setOlder(previous => previous?.identity === nativeId && previous.cursor === cursor ? { ...previous, loading: false, error: errorText(cause) } : previous);
-    } finally { olderLoading.current = false; }
+      setOlder(previous => previous?.identity === nativeId && previous.instanceId === instanceId && previous.cursor === cursor ? { ...previous, loading: false, error: errorText(cause) } : previous);
+    } finally { if (olderLoading.current === job) olderLoading.current = null; }
   }
   async function reconnectNative() {
     if (reconnecting || !transport) return;
@@ -243,16 +245,17 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
       if (previous?.instanceId === next.instanceId && previous?.nativeSessionId === next.nativeSessionId && next.revision < previous.revision) return;
       const element = scroller.current;
       if (!followsBottom.current && element) {
-        const historyItems = olderRef.current?.identity === next.nativeSessionId ? olderRef.current.items : [];
-        const retained = new Set([...historyItems, ...next.items].map(item => item.id));
+        const historyItems = olderRef.current?.identity === next.nativeSessionId && olderRef.current.instanceId === next.instanceId ? olderRef.current.items : [];
+        const aliases = new Map(next.items.flatMap(item => (item.replaces ?? []).map(key => [key, item.id] as const)));
+        const retained = new Set([...historyItems, ...next.items].flatMap(item => [item.id, ...(item.replaces ?? [])]));
         const top = element.getBoundingClientRect().top;
         const visible = [...element.querySelectorAll<HTMLElement>('[data-chat-item]')].find(item => retained.has(item.dataset.chatItem!) && item.getBoundingClientRect().bottom > top);
-        scrollAnchor.current = visible ? { id: visible.dataset.chatItem!, offset: visible.getBoundingClientRect().top - top } : null;
+        scrollAnchor.current = visible ? { id: aliases.get(visible.dataset.chatItem!) ?? visible.dataset.chatItem!, offset: visible.getBoundingClientRect().top - top } : null;
       }
-      if (previous?.nativeSessionId !== next.nativeSessionId) setOlder(null);
+      if (previous?.nativeSessionId !== next.nativeSessionId || previous?.instanceId !== next.instanceId) { olderLoading.current = null; setOlder(null); }
       else setOlder(history => {
         if (!history || history.identity !== next.nativeSessionId) return history;
-        const known = new Set([...history.items, ...next.items].map(item => item.id));
+        const known = new Set([...history.items, ...next.items].flatMap(item => [item.id, ...(item.replaces ?? [])]));
         const evicted = previous.items.filter(item => !known.has(item.id));
         if (!evicted.length) return history;
         const items = [...history.items, ...evicted];
@@ -426,9 +429,10 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
     : awaitingTurnId && !snapshot.items.some(item => item.turnId === awaitingTurnId) ? 'waiting' : null;
   const nativeAvailable = !session.running || !!snapshot?.connected;
   const canSend = (!!draft.text.trim() || !!draft.attachments.length) && !voiceActive && !uploading && !busy && !draft.pending && transport && nativeAvailable && !snapshot?.requests.length && !session.archived;
-  const olderCurrent = older?.identity === snapshot?.nativeSessionId ? older : null;
-  const existingIds = new Set(snapshot?.items.map(item => item.id));
-  const visibleItems = [...(olderCurrent?.items.filter(item => !existingIds.has(item.id)) ?? []), ...(snapshot?.items ?? [])];
+  const olderCurrent = older?.identity === snapshot?.nativeSessionId && older?.instanceId === snapshot?.instanceId ? older : null;
+  const existingIds = new Set(snapshot?.items.flatMap(item => [item.id, ...(item.replaces ?? [])]));
+  const supersededIds = new Set([...(olderCurrent?.items ?? []), ...(snapshot?.items ?? [])].flatMap(item => item.replaces ?? []));
+  const visibleItems = [...(olderCurrent?.items.filter(item => !existingIds.has(item.id)) ?? []), ...(snapshot?.items ?? [])].filter(item => !supersededIds.has(item.id));
   const olderCursor = olderCurrent ? olderCurrent.cursor : snapshot?.historyCursor;
   const outlineEntries = visibleItems.filter(item => item.type === 'user');
   return <section ref={pane} className="codex-chat-pane" aria-label={`${agentName} 图形会话`} onKeyDown={event => {

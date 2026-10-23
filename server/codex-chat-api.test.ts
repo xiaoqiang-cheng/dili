@@ -484,3 +484,78 @@ for (const backend of ['codex', 'claude'] as const) test(`${backend} settings us
   const confirmed = await request<AgentChatSettings>(path);
   assert.equal(confirmed.permission, (competing.find(result => 'version' in result) as AgentChatSettings).permission);
 });
+
+test('Claude stopped history pages never launch a CLI; live and restored IDs agree and evicted messages stay reachable', { timeout: 30_000 }, async t => {
+  const f = await launch(t), { request, snapshot } = f;
+  const contact = await request<Session>('/api/sessions', 'POST', { backend: 'claude', title: 'Claude long history', cwd: f.directory }, 201);
+  const path = `/api/sessions/${contact.id}`;
+  const started = await request<Session>(path + '/start', 'POST', { mode: 'chat' });
+  await request(path + '/stop', 'POST', {});
+  const nativeId = started.nativeSessionId!;
+  const folder = join(f.directory, 'claude-home/projects/fixture');
+  await mkdir(folder, { recursive: true });
+  const file = join(folder, nativeId + '.jsonl');
+  const records = Array.from({ length: 106 }, (_, i) => ({ type: i % 2 ? 'assistant' : 'user', uuid: randomUUID(), sessionId: nativeId, message: { role: i % 2 ? 'assistant' : 'user', content: `history ${i}` } }));
+  await writeFile(file, records.map(row => JSON.stringify(row)).join('\n') + '\n');
+  const callsBefore = await readFile(join(f.directory, 'claude-calls.jsonl'), 'utf8');
+  let recent = await snapshot(contact.id);
+  assert.equal(recent.connected, false);
+  assert.equal(recent.items.length, 40);
+  assert.equal(recent.items[0].text, 'history 66');
+  let cursor = recent.historyCursor, items = [...recent.items];
+  while (cursor) {
+    const page = await request<import('../shared/chat.ts').AgentChatHistoryPage>(path + '/chat/history?cursor=' + encodeURIComponent(cursor));
+    items.unshift(...page.items); cursor = page.nextCursor;
+  }
+  assert.deepEqual(items.map(item => item.text), records.map(row => row.message.content));
+  assert.equal(await readFile(join(f.directory, 'claude-calls.jsonl'), 'utf8'), callsBefore);
+  assert.equal((await f.current(contact.id)).running, false);
+  await request(path + '/chat/history?cursor=' + encodeURIComponent(recent.historyCursor! + 'tampered'), 'GET', undefined, 409);
+  await request(path + '/start', 'POST', { mode: 'chat' });
+  const payload = { requestId: randomUUID(), text: 'identity check' };
+  await request(path + '/chat/messages', 'POST', payload);
+  await until(async () => !(await snapshot(contact.id)).activeTurnId, 'Claude native result missing');
+  const live = (await snapshot(contact.id)).items.slice(-2);
+  assert.ok(live.every(item => item.id.startsWith(`claude:${nativeId}:`)));
+  assert.equal(live[1].replaces?.length, 1);
+  await request(path + '/stop', 'POST', {});
+  const restored = (await snapshot(contact.id)).items.slice(-2);
+  assert.deepEqual(restored.map(item => [item.id, item.text]), live.map(item => [item.id, item.text]));
+  const fork = await request<Session>(path + '/fork', 'POST', { title: 'Paged Claude child' }, 201);
+  const forkPath = `/api/sessions/${fork.id}`;
+  const child = await request<Session>(forkPath + '/start', 'POST', { mode: 'chat' });
+  const inherited = await snapshot(fork.id);
+  assert.equal(inherited.items.length, 40, 'A not-yet-saved fork must show a bounded inherited page');
+  assert.ok(inherited.items.every(item => item.id.startsWith(`claude:${child.nativeSessionId}:`)));
+  assert.equal(inherited.historyCursor, null, 'A source cursor cannot page the child log');
+  await request(forkPath + '/stop', 'POST', {});
+  assert.deepEqual((await snapshot(fork.id)).items, inherited.items);
+  await request(forkPath + '/start', 'POST', { mode: 'chat' });
+  await request(forkPath + '/chat/messages', 'POST', { requestId: randomUUID(), text: 'fork identity' });
+  await until(async () => !(await snapshot(fork.id)).activeTurnId && !!(await snapshot(fork.id)).historyCursor, 'Saved fork cursor missing');
+  const forkSeen = new Map((await snapshot(fork.id)).items.map(item => [item.id, item]));
+  cursor = (await snapshot(fork.id)).historyCursor;
+  while (cursor) {
+    const page = await request<import('../shared/chat.ts').AgentChatHistoryPage>(forkPath + '/chat/history?cursor=' + encodeURIComponent(cursor));
+    for (const item of page.items) forkSeen.set(item.id, item);
+    cursor = page.nextCursor;
+  }
+  assert.equal([...forkSeen.values()].filter(item => item.text.startsWith('history ')).length, 106);
+  assert.equal(forkSeen.size, 110, 'Native fork history must reconcile with the inherited page without duplicates');
+  await request(forkPath + '/stop', 'POST', {});
+  await request(path + '/start', 'POST', { mode: 'chat' });
+  await request(path + '/chat/messages', 'POST', { requestId: randomUUID(), text: 'BURST' });
+  await until(async () => !(await snapshot(contact.id)).activeTurnId && !!(await snapshot(contact.id)).historyCursor, 'Burst history cursor missing');
+  recent = await snapshot(contact.id);
+  assert.ok(recent.items.length <= 200);
+  const seen = new Map(recent.items.map(item => [item.id, item]));
+  cursor = recent.historyCursor;
+  while (cursor) {
+    const page = await request<import('../shared/chat.ts').AgentChatHistoryPage>(path + '/chat/history?cursor=' + encodeURIComponent(cursor));
+    for (const item of page.items) seen.set(item.id, item);
+    cursor = page.nextCursor;
+  }
+  assert.equal([...seen.values()].filter(item => item.text.startsWith('progress ')).length, 240);
+  assert.equal([...seen.values()].filter(item => item.text === 'history 0').length, 1);
+  assert.equal((await snapshot(contact.id)).items.length, recent.items.length, 'Paging must not mutate the live snapshot');
+});
