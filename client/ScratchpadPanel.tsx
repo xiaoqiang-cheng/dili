@@ -44,7 +44,7 @@ function cache(model: Model) {
   }
 }
 
-export default function ScratchpadPanel({ open, close, inert }: { open: boolean; close: () => void; inert: boolean }) {
+export default function ScratchpadPanel({ open, close, inert, embedded = false }: { open: boolean; close: () => void; inert: boolean; embedded?: boolean }) {
   const [model, setModel] = useState<Model>({ note: null, content: '', conflict: null, status: 'loading', error: '' });
   const current = useRef(model);
   const mounted = useRef(true);
@@ -164,11 +164,11 @@ export default function ScratchpadPanel({ open, close, inert }: { open: boolean;
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  return !open ? null : <aside className="scratchpad-panel" aria-label="随手记" inert={inert} style={{ width }} onKeyDown={event => {
+  return !open ? null : <aside className={`scratchpad-panel ${embedded ? 'embedded-preview' : ''}`} aria-label="随手记" inert={inert} style={embedded ? undefined : { width }} onKeyDown={event => {
     if (event.key === 'Escape') { event.stopPropagation(); close(); }
     if ((event.ctrlKey || event.metaKey) && event.key === 's') { event.preventDefault(); void save(); }
   }}>
-    <Splitter label="调整随手记宽度" value={width} min={280} max={560} direction={-1} onChange={setWidth} onCommit={value => writeLocalPreference('sessiondeck.layout.scratchpad-px', String(value))} />
+    {!embedded && <Splitter label="调整随手记宽度" value={width} min={280} max={560} direction={-1} onChange={setWidth} onCommit={value => writeLocalPreference('sessiondeck.layout.scratchpad-px', String(value))} />}
     <header className="scratchpad-header"><span><FilePenLine size={16} /><strong>随手记</strong></span><div>
       <button className="icon-button" aria-label="导出随手记" title="导出 Markdown" disabled={!model.content} onClick={exportNote}><Download size={15} /></button>
       <button className="icon-button" aria-label="清空随手记" title="清空笔记" disabled={!model.content || !model.note || !!model.conflict || saving.current} onClick={() => setClearing(true)}><Trash2 size={15} /></button>

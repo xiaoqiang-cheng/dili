@@ -100,7 +100,7 @@ test('mobile theme controls stay reachable from contacts and from a session', as
   await expect(dialog.getByRole('radio', { name: /沉静深色/ })).toHaveAttribute('aria-checked', 'true');
 });
 
-test('dark theme keeps file previews and Git changes readable beside a note', async ({ page, request }) => {
+test('dark theme keeps file, Git and note tabs readable in one preview panel', async ({ page, request }) => {
   const directory = await mkdtemp(join(tmpdir(), 'sessiondeck-theme-preview-'));
   const git = (args: string[]) => promisify(execFile)('git', args, { cwd: directory });
   try {
@@ -119,27 +119,29 @@ test('dark theme keeps file previews and Git changes readable beside a note', as
     await page.getByRole('button', { name: '打开资源管理器', exact: true }).click();
     const explorer = page.getByRole('complementary', { name: '资源管理器', exact: true });
     await explorer.getByRole('button', { name: /README\.md/ }).click();
-    await expect(explorer.getByRole('heading', { name: 'Theme preview' })).toBeVisible();
-    await expect(explorer.locator('.markdown-code')).toHaveCSS('background-color', 'rgb(32, 37, 46)');
-    await expect(explorer.locator('.hljs-keyword')).toHaveCSS('color', 'rgb(255, 172, 181)');
+    const panel = page.getByRole('complementary', { name: '统一预览面板', exact: true });
+    await expect(panel.getByRole('heading', { name: 'Theme preview' })).toBeVisible();
+    await expect(panel.locator('.markdown-code')).toHaveCSS('background-color', 'rgb(32, 37, 46)');
+    await expect(panel.locator('.hljs-keyword')).toHaveCSS('color', 'rgb(255, 172, 181)');
+    await panel.getByRole('tab', { name: `文件 · ${session.title}`, exact: true }).click();
     await explorer.getByRole('button', { name: /^Git diff/ }).click();
     await explorer.getByRole('button', { name: /README\.md/ }).click();
-    await expect(explorer.locator('td.diff-code.diff-added')).toHaveCSS('background-color', 'rgb(30, 53, 40)');
-    await expect(explorer.locator('td.diff-code.diff-removed')).toHaveCSS('background-color', 'rgb(58, 37, 41)');
-    await expect(explorer.locator('td.diff-code.diff-added')).toHaveCSS('color', 'rgb(225, 231, 239)');
+    await expect(panel.locator('td.diff-code.diff-added')).toHaveCSS('background-color', 'rgb(30, 53, 40)');
+    await expect(panel.locator('td.diff-code.diff-removed')).toHaveCSS('background-color', 'rgb(58, 37, 41)');
+    await expect(panel.locator('td.diff-code.diff-added')).toHaveCSS('color', 'rgb(225, 231, 239)');
     await page.getByRole('button', { name: '打开随手记', exact: true }).click();
-    await page.screenshot({ path: 'artifacts/workbench-dark-explorer.png' });
     const note = page.getByRole('complementary', { name: '随手记', exact: true });
-    const explorerBounds = (await explorer.boundingBox())!;
-    const noteBounds = (await note.boundingBox())!;
-    expect(explorerBounds.x + explorerBounds.width).toBeLessThan(noteBounds.x);
-    // With all panels open on a laptop, the note floats rather than consuming
-    // the last pixels available to the conversation and contact list.
+    await expect(note).toBeVisible();
+    await expect(explorer).toBeHidden();
+    await expect(panel.getByRole('tab')).toHaveCount(4);
+    await expect(note.getByRole('textbox')).toBeVisible();
+    await page.screenshot({ path: 'artifacts/workbench-dark-explorer.png' });
     await page.setViewportSize({ width: 1440, height: 1000 });
-    await expect(note).toHaveCSS('position', 'absolute');
     const main = page.locator('.app-main');
     const widthWithNote = (await main.boundingBox())!.width;
     await note.getByRole('button', { name: '关闭随手记' }).click();
+    await expect(panel.getByRole('tab', { name: '差异 · README.md', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(panel.locator('td.diff-code.diff-added')).toBeVisible();
     expect(Math.abs((await main.boundingBox())!.width - widthWithNote)).toBeLessThan(1);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

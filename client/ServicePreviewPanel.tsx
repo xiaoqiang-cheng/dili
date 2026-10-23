@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { ExternalLink, Globe2, LoaderCircle, RefreshCw, X } from 'lucide-react';
 import { parseServicePreviewUrl, SERVICE_PREVIEW_PRESETS } from '../shared/service-preview';
 import { Splitter } from './WorkspaceExplorer';
@@ -23,9 +23,11 @@ function remember(url: string) {
   return next;
 }
 
-export default function ServicePreviewPanel({ open, close, inert }: { open: boolean; close: () => void; inert: boolean }) {
-  const [draft, setDraft] = useState(() => readLocalPreference(DRAFT_KEY) ?? 'http://127.0.0.1:5173/');
-  const [activeUrl, setActiveUrl] = useState('');
+export default function ServicePreviewPanel({ open, close, inert, embedded = false, initialUrl = '', onNavigate }: { open: boolean; close: () => void; inert: boolean; embedded?: boolean; initialUrl?: string; onNavigate?: (url: string) => void }) {
+  const [draft, setDraft] = useState(() => initialUrl || readLocalPreference(DRAFT_KEY) || 'http://127.0.0.1:5173/');
+  const [activeUrl, setActiveUrl] = useState(() => { const parsed = initialUrl ? parseServicePreviewUrl(initialUrl) : null; return parsed?.ok ? parsed.url : ''; });
+  const hintId = useId();
+  const errorId = useId();
   const [generation, setGeneration] = useState(0);
   const [error, setError] = useState('');
   const [recent, setRecent] = useState(readRecent);
@@ -43,6 +45,7 @@ export default function ServicePreviewPanel({ open, close, inert }: { open: bool
     setError('');
     setDraft(parsed.url);
     setActiveUrl(parsed.url);
+    onNavigate?.(parsed.url);
     setGeneration(current => current + 1);
     setLoading(true);
     setRecent(remember(parsed.url));
@@ -58,10 +61,10 @@ export default function ServicePreviewPanel({ open, close, inert }: { open: bool
 
   if (!open) return null;
 
-  return <aside className="service-preview-panel" aria-label="网页服务" inert={inert} style={{ width }} onKeyDown={event => {
+  return <aside className={`service-preview-panel ${embedded ? 'embedded-preview' : ''}`} aria-label="网页服务" inert={inert} style={embedded ? undefined : { width }} onKeyDown={event => {
     if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); close(); }
   }}>
-    <Splitter label="调整网页服务宽度" value={width} min={WIDTH.min} max={WIDTH.max} direction={-1} onChange={setWidth} onCommit={value => writeLocalPreference(WIDTH.key, String(value))} />
+    {!embedded && <Splitter label="调整网页服务宽度" value={width} min={WIDTH.min} max={WIDTH.max} direction={-1} onChange={setWidth} onCommit={value => writeLocalPreference(WIDTH.key, String(value))} />}
     <header className="service-preview-header">
       <div className="service-preview-title"><Globe2 size={15} /><strong>网页服务</strong></div>
       <button type="button" className="icon-button" aria-label="关闭网页服务" title="关闭" onClick={close}><X size={16} /></button>
@@ -69,7 +72,7 @@ export default function ServicePreviewPanel({ open, close, inert }: { open: bool
     <form className="service-preview-form" onSubmit={event => { event.preventDefault(); openUrl(draft); }}>
       <label className="service-preview-url">
         <span className="sr-only">服务地址</span>
-        <input value={draft} onChange={event => { setDraft(event.target.value); setError(''); }} placeholder="http://127.0.0.1:5173 或 :5173" spellCheck={false} autoComplete="off" aria-invalid={!!error} aria-describedby={error ? 'service-preview-error' : 'service-preview-hint'} />
+        <input value={draft} onChange={event => { setDraft(event.target.value); setError(''); }} placeholder="http://127.0.0.1:5173 或 :5173" spellCheck={false} autoComplete="off" aria-invalid={!!error} aria-describedby={error ? errorId : hintId} />
       </label>
       <button type="submit" className="button primary small-button">打开</button>
       {activeUrl && <>
@@ -80,8 +83,8 @@ export default function ServicePreviewPanel({ open, close, inert }: { open: bool
     <div className="service-preview-suggestions" aria-label="常用地址">
       {suggestions.map(item => <button type="button" key={item.url} className={activeUrl === item.url ? 'active' : ''} onClick={() => openUrl(item.url)}>{item.label}</button>)}
     </div>
-    {error ? <p id="service-preview-error" className="service-preview-error" role="alert">{error}</p>
-      : <p id="service-preview-hint" className="service-preview-hint">地址相对于浏览器所在网络。远程打开 Dili 时请用运行 Codex 的机器 IP（如 10.11.1.111），不要用 127.0.0.1。若页面空白，多半被站点禁止嵌入，请点「新标签打开」。</p>}
+    {error ? <p id={errorId} className="service-preview-error" role="alert">{error}</p>
+      : <p id={hintId} className="service-preview-hint">直连预览：地址须能从当前浏览器访问；公网主机端口转发尚未接入。站点禁止嵌入时可在新标签打开。</p>}
     <div className="service-preview-frame-wrap">
       {!activeUrl && <div className="service-preview-empty"><Globe2 size={28} /><p>粘贴 Vite / 本地服务地址后点打开</p><p>例如 <code>http://10.11.1.111:5173/</code></p></div>}
       {activeUrl && <>

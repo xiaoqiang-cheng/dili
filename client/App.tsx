@@ -7,7 +7,7 @@ import {
   GitFork, Globe2, LoaderCircle, MessageSquare, Pencil, Pin, PinOff, Play, Plus,
   Radio, Search, Send, Settings2, Share2, SlidersHorizontal, Square, UsersRound, X,
   PanelBottomOpen, Volume2, VolumeX, TerminalSquare, Link2, PanelLeftOpen, PanelLeftClose,
-  FilePenLine, Palette, Maximize2, Minimize2,
+  FilePenLine, Palette, Maximize2, Minimize2, PanelRightOpen,
 } from 'lucide-react';
 import type { AppState, StatePatch, Backend, DiscoveredSession, Delivery, Group, GroupDetail, GroupMessage, Session, SessionStatus } from '../shared/types';
 import { applyStatePatch } from './state';
@@ -19,13 +19,13 @@ import DirectoryField from './DirectoryField';
 import { copyToClipboard } from './clipboard';
 import { useWorkspaceRoute, workspaceHash, type View } from './navigation';
 import ActivityView from './ActivityView';
-import WorkspaceExplorer, { Splitter } from './WorkspaceExplorer';
+import { Splitter } from './WorkspaceExplorer';
+import PreviewWorkspace from './PreviewWorkspace';
+import { usePreviewWorkspace } from './usePreviewWorkspace';
 import ShellTerminalDock from './ShellTerminalDock';
 import VoiceSettings from './VoiceSettings';
 import { AgentSetupControls, StartupSettings } from './SetupSettings';
 import type { AgentSetupInfo } from '../shared/setup';
-import ScratchpadPanel from './ScratchpadPanel';
-import ServicePreviewPanel from './ServicePreviewPanel';
 import AppearanceDialog from './AppearanceDialog';
 import InterfaceZoom from './InterfaceZoom';
 import BackendLogo from './BackendLogo';
@@ -92,7 +92,7 @@ function HelpDialog({ close }: { close: () => void }) {
       <ul className="status-guide"><li><span className="status-badge running">运行中</span><span>后端正在执行任务。</span></li><li><span className="status-badge waiting">等待输入 / 审批</span><span>需要你进入会话回复或决定。</span></li><li><span className="status-badge idle">空闲 / 已停止</span><span>当前没有执行任务；不代表工作已验收。</span></li><li><span className="status-badge unknown">状态未知</span><span>目前没有足够信息确认状态，进入原生会话查看。</span></li></ul>
       <p>标有“估测”的状态来自终端输出。卡片上的提醒、来源说明和原生会话可帮助你判断；断线时保留最后收到的状态。</p>
       <h3>保留你的工作方式</h3><p>置顶联系人始终在最前；然后依次是有红点提醒、正在执行任务、无红点等待输入的会话，其余在后。同层默认按上次输入时间，也可改为创建时间或名称；没有输入时间时排在该层有输入记录的联系人之后。有新提醒的联系人显示红点，打开会话后消失。桌面左侧列表切换联系人，右侧继续会话；手机进入单会话后可返回列表。每个页面独立保存搜索和筛选，刷新后继续使用；Fork 继承上下文，原联系人保留。</p>
-      <h3>网页服务预览</h3><p>顶栏地球图标可打开本机或局域网服务（如 <code>http://10.11.1.111:5173/</code>）。也可输入 <code>:5173</code>。远程打开 Dili 时请用运行 Codex 的机器 IP；若嵌入预览空白，用「新标签打开」。</p>
+      <h3>统一预览面板</h3><p>文件浏览、文件／Git diff 预览、随手记和网页服务都在右侧预览面板显示。顶部标签可切换或关闭，＋菜单可打开新网页；隐藏面板保留所有标签。文件固定属于打开时的工作目录，切换联系人不会改变来源；随手记继续自动保存同一份笔记。</p><h3>网页服务预览</h3><p>顶栏地球图标可打开本机或局域网服务（如 <code>http://10.11.1.111:5173/</code>）。也可输入 <code>:5173</code>。地址须能从当前浏览器访问；公网主机端口转发尚未接入，localhost 指向当前浏览器所在设备。站点禁止嵌入时可用「新标签打开」。</p>
     </div><div className="modal-footer"><button className="button primary" onClick={close}>知道了</button></div>
   </ModalShell>;
 }
@@ -113,13 +113,17 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   useEffect(() => () => clearTimeout(contactsScrollTimer.current), []);
   const [modal, setModal] = useState<Modal>(null);
   const [selection, setSelection] = useState('');
-  const [workspaceOpen, setWorkspaceOpen] = useState(() => readLocalPreference('sessiondeck.explorer-open') === 'on');
-  const [scratchpadOpen, setScratchpadOpen] = useState(() => readLocalPreference('sessiondeck.scratchpad-open') === 'on');
-  const [servicePreviewOpen, setServicePreviewOpen] = useState(() => readLocalPreference('sessiondeck.service-preview-open') === 'on');
-  const toggleScratchpad = () => setScratchpadOpen(value => !value);
-  const toggleServicePreview = () => setServicePreviewOpen(value => !value);
-  useEffect(() => { writeLocalPreference('sessiondeck.scratchpad-open', scratchpadOpen ? 'on' : 'off'); }, [scratchpadOpen]);
-  useEffect(() => { writeLocalPreference('sessiondeck.service-preview-open', servicePreviewOpen ? 'on' : 'off'); }, [servicePreviewOpen]);
+  const [workspaceSessionId, setWorkspaceSessionId] = useState<string | null>(null);
+  const preview = usePreviewWorkspace();
+  const activePreview = preview.tabs.find(tab => tab.id === preview.activeId);
+  const workspaceOpen = preview.open && activePreview?.kind === 'explorer';
+  const scratchpadOpen = preview.open && activePreview?.kind === 'note';
+  const servicePreviewOpen = preview.open && activePreview?.kind === 'web';
+  const toggleScratchpad = preview.openNote;
+  const toggleServicePreview = () => {
+    const existing = preview.tabs.find(tab => tab.kind === 'web');
+    if (existing) preview.select(existing.id); else preview.openWeb();
+  };
   // The rail is collapsed by default and only expands on request, never on hover.
   const [railOpen, setRailOpen] = useState(() => readLocalPreference('sessiondeck.rail') === 'open');
   const toggleRail = () => { setRailOpen(value => { writeLocalPreference('sessiondeck.rail', value ? 'closed' : 'open'); return !value; }); };
@@ -139,7 +143,6 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   // Only an explicit open (card, activity, group link) starts the agent. Route
   // restores, reloads, history and route changes keep today's no-launch rule.
   const autoStartRef = useRef<{ id: string; mode?: 'terminal' | 'chat' } | null>(null);
-  const [workspaceSessionId, setWorkspaceSessionId] = useState<string | null>(null);
   const [privateViews, setPrivateViews] = useState<Record<string, string>>(() => Object.fromEntries(
     ['claude', 'codex', 'dsh'].map(backend => {
       const saved = readLocalPreference(`sessiondeck.private-view.${backend}`);
@@ -210,7 +213,6 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
       invoker.focus({ preventScroll: true });
     }
   }, [selected?.id]);
-  useEffect(() => { writeLocalPreference('sessiondeck.explorer-open', workspaceOpen ? 'on' : 'off'); }, [workspaceOpen]);
   useEffect(() => {
     if (!selected) return;
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -532,8 +534,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   const listView = !!state && view !== 'activity' && view !== 'backends';
   const connectionLabel = connected ? '本地服务已连接' : hasConnected ? '连接中断 · 正在重连' : '正在连接本地服务';
   const workspaceSession = sessions.find(session => session.id === workspaceSessionId) ?? sessions.find(session => !session.archived);
-  // The explorer is one app-wide sidebar. Inside a session it follows that
-  // session's directory; on list views it keeps the last chosen workspace.
+  // New file tabs capture their workspace instead of following contact changes.
   const explorerSession = selected ?? workspaceSession;
   const contactMaxWidth = Math.max(220, Math.min(420, workspaceWidth - 320));
   const effectiveContactWidth = Math.min(contactWidth, contactMaxWidth);
@@ -580,7 +581,8 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
               <label className="filter-group"><span>状态</span><select aria-label="按状态筛选" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as SessionStatus | 'all' | 'attention' | 'unread')}><option value="all">全部状态</option><option value="attention">需要处理</option><option value="unread">未读提醒</option><option value="running">运行中</option><option value="waiting_input">等待输入</option><option value="waiting_approval">等待审批</option><option value="idle">空闲</option><option value="error">异常</option><option value="stopped">已停止</option><option value="unknown">状态未知</option></select></label>
               <label className="filter-group"><span>排序</span><select aria-label="联系人排序" value={contactSort} onChange={(event) => setContactSort(event.target.value as ContactSort)}><option value="input">上次输入时间</option><option value="created">创建时间</option><option value="name">名称</option></select></label>
             </FilterMenu></>}
-          <button className={`icon-button ${workspaceOpen ? 'active' : ''}`} aria-label="打开资源管理器" title="打开资源管理器" disabled={!workspaceSession} onClick={() => setWorkspaceOpen((value) => !value)}><Folder size={17} /></button>
+          <button className={`icon-button ${preview.open ? 'active' : ''}`} aria-label="打开预览面板" title={preview.open ? '隐藏预览面板' : '打开预览面板'} aria-expanded={preview.open} onClick={() => { if (preview.open) preview.hide(); else if (preview.tabs.length) preview.show(); else if (explorerSession) preview.openExplorer(explorerSession); else preview.openNote(); }}><PanelRightOpen size={17} /></button>
+          <button className={`icon-button ${workspaceOpen ? 'active' : ''}`} aria-label="打开资源管理器" title="打开资源管理器" disabled={!explorerSession} onClick={() => { if (explorerSession) preview.openExplorer(explorerSession); }}><Folder size={17} /></button>
           <button className={`icon-button ${servicePreviewOpen ? 'active' : ''}`} aria-label="打开网页服务" title="网页服务预览" aria-expanded={servicePreviewOpen} onClick={toggleServicePreview}><Globe2 size={17} /></button>
           <button className={`icon-button ${terminalPanelOpen ? 'active' : ''}`} aria-label="打开终端" title={terminalPanelOpen ? '终端面板已打开' : '打开底部终端'} disabled={!state} onClick={() => openTerminalPanel(selected?.id)}><PanelBottomOpen size={17} /></button>
           <button className={`icon-button ${scratchpadOpen ? 'active' : ''}`} aria-label="打开随手记" title="随手记" aria-expanded={scratchpadOpen} onClick={toggleScratchpad}><FilePenLine size={17} /></button>
@@ -594,7 +596,6 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     </header>
 
     <div className="app-body">
-    {workspaceOpen && explorerSession && <WorkspaceExplorer key={explorerSession.id} session={explorerSession} close={() => setWorkspaceOpen(false)} picker={!selected ? <label className="workspace-picker"><span>工作目录</span><select aria-label="资源管理器工作区" value={explorerSession.id} onChange={event => setWorkspaceSessionId(event.target.value)}>{sessions.filter(session => !session.archived || session.id === explorerSession.id).map(session => <option key={session.id} value={session.id}>{session.title} · {shortPath(session.cwd)}</option>)}</select></label> : undefined} />}
     <div className="app-main">
     <div ref={workspaceAreaRef} className={`workspace-area ${listView ? 'contacts-workspace' : ''} ${contactsScrolling ? 'contacts-scrolling' : ''} ${selected ? 'session-active' : ''}`} style={{ '--contacts-width': `${effectiveContactWidth}px` } as CSSProperties} onScroll={event => { if (listView && event.target === event.currentTarget) revealContactScrollbar(); }}>
     <main className={`main-content ${listView ? 'contacts-pane' : ''}`} aria-label={listView ? '联系人列表' : undefined} inert={!!modal} hidden={!!selected && !listView} onScroll={() => { if (listView) revealContactScrollbar(); }}>
@@ -638,7 +639,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
           {selected.groupId && <button className="icon-button session-extra-action" aria-label="分享结果到群组" title="分享结果到群组" onClick={() => setModal({ type: 'share', session: selected, text: selection })}><Share2 size={15} /></button>}
           {selected.nativeUrl && <a className="icon-button session-extra-action" aria-label="原生窗口" title="在新窗口打开原生界面" target="_blank" rel="noreferrer" href={selected.nativeUrl}><ExternalLink size={15} /></a>}
           <details key={selected.id} className="session-info"><summary title="更多"><Ellipsis size={16} /><span className="sr-only">会话信息</span></summary><div className="session-info-content">
-            <button className="text-button compact-session-action" onClick={() => setScratchpadOpen(true)}><FilePenLine size={13} />随手记</button>
+            <button className="text-button compact-session-action" onClick={preview.openNote}><FilePenLine size={13} />随手记</button>
             <button className="text-button compact-session-action" onClick={() => setModal({ type: 'appearance' })}><Palette size={13} />外观主题</button>
             <button className="text-button compact-session-action" onClick={() => setModal({ type: 'rename', session: selected })}><Pencil size={13} />改名</button>
             <button className="text-button compact-lifecycle" disabled={!!busy || !selected.running && (selected.archived || !selectedBackend?.installed)} onClick={() => selected.running ? void run(`stop:${selected.id}`, () => api(`/sessions/${selected.id}/stop`, {}), '已停止进程，原生会话历史仍保留') : void startSelected()}>{selected.running ? <Square size={13} /> : <Play size={13} />}{selected.running ? stopLabel : startLabel}</button>
@@ -672,8 +673,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     </div>
     {state && <ShellTerminalDock open={terminalPanelOpen} sessionId={terminalSessionId} requestedShellId={setupShellId} onClose={() => setTerminalPanelOpen(false)} inert={!!modal} />}
     </div>
-    <ScratchpadPanel open={scratchpadOpen} close={() => setScratchpadOpen(false)} inert={!!modal} />
-    <ServicePreviewPanel open={servicePreviewOpen} close={() => setServicePreviewOpen(false)} inert={!!modal} />
+    <PreviewWorkspace controller={preview} sessions={sessions} currentSession={explorerSession} inert={!!modal} />
     </div>
 
     </div>

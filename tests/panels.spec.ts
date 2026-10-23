@@ -60,7 +60,7 @@ test('bottom terminal runs real shell commands, isolates split shells and surviv
   }
 });
 
-test('workspace sidebar renders markdown and real git diff without blocking the session header', async ({ page, request }) => {
+test('unified preview keeps files and git diffs in tabs beside the conversation and terminal', async ({ page, request }) => {
   const root = await mkdtemp(join(tmpdir(), 'sessiondeck-panels-'));
   const git = (args: string[]) => promisify(execFile)('git', args, { cwd: root });
   try {
@@ -75,88 +75,53 @@ test('workspace sidebar renders markdown and real git diff without blocking the 
     await page.getByRole('button', { name: `进入 ${session.title} 的会话`, exact: true }).click();
     const drawer = page.getByRole('dialog', { name: `${session.title} 的私聊` });
     await expect(page.getByRole('complementary', { name: '资源管理器' })).toHaveCount(0);
-    // The session header carries no copy of topbar actions.
-    await expect(drawer.getByRole('button', { name: /资源管理器|终端面板/ })).toHaveCount(0);
     await page.getByRole('button', { name: '打开资源管理器', exact: true }).click();
+    const panel = page.getByRole('complementary', { name: '统一预览面板' });
     const explorer = page.getByRole('complementary', { name: '资源管理器' });
-    await expect(explorer.locator('.workspace-preview-pane')).toHaveCount(0);
+    await expect(panel).toBeVisible();
     await explorer.getByRole('button', { name: /README\.md/ }).click();
-    await expect(explorer.locator('.workspace-preview .chat-markdown h1')).toHaveText('Sidebar preview');
-    const treeBounds = await explorer.locator('.workspace-list-pane').boundingBox();
-    const previewBounds = await explorer.locator('.workspace-preview-pane').boundingBox();
-    expect(previewBounds!.x).toBeGreaterThanOrEqual(treeBounds!.x + treeBounds!.width - 1);
-    expect(Math.abs(previewBounds!.y - treeBounds!.y)).toBeLessThan(2);
-
-    // The sidebar spans the body; opening the terminal dock does not shorten it.
-    const explorerHeight = (await explorer.boundingBox())!.height;
-    await page.getByRole('button', { name: '打开终端', exact: true }).click();
-    const dock = page.getByRole('region', { name: '底部终端面板' });
-    await expect(dock).toBeVisible();
-    expect(Math.abs((await explorer.boundingBox())!.height - explorerHeight)).toBeLessThan(2);
-    const dockBounds = (await dock.boundingBox())!;
-    expect(dockBounds.x).toBeGreaterThanOrEqual((await explorer.boundingBox())!.x + (await explorer.boundingBox())!.width - 1);
-    await dock.getByRole('button', { name: '隐藏终端面板', exact: true }).click();
-
-    const drag = async (separator: Locator, dx: number) => {
-      const box = (await separator.boundingBox())!;
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-      await page.mouse.down();
-      await page.mouse.move(box.x + box.width / 2 + dx / 2, box.y + box.height / 2);
-      await page.mouse.move(box.x + box.width / 2 + dx, box.y + box.height / 2);
-      await page.mouse.up();
-    };
-    const treeSplitter = explorer.getByRole('separator', { name: '调整文件树宽度', exact: true });
-    const previewSplitter = explorer.getByRole('separator', { name: '调整预览宽度', exact: true });
-    const initialTree = Number(await treeSplitter.getAttribute('aria-valuenow'));
-    const initialPreview = Number(await previewSplitter.getAttribute('aria-valuenow'));
-    await drag(treeSplitter, 60);
-    await expect.poll(async () => Number(await treeSplitter.getAttribute('aria-valuenow'))).toBe(initialTree + 60);
-    expect(Math.round((await explorer.locator('.workspace-list-pane').boundingBox())!.width)).toBe(initialTree + 60);
-    await drag(previewSplitter, -80);
-    await expect.poll(async () => Number(await previewSplitter.getAttribute('aria-valuenow'))).toBe(initialPreview - 80);
-    expect(Math.round((await explorer.locator('.workspace-preview-pane').boundingBox())!.width)).toBe(initialPreview - 80);
-    await treeSplitter.focus();
-    await treeSplitter.press('ArrowLeft');
-    await expect(treeSplitter).toHaveAttribute('aria-valuenow', String(initialTree + 36));
-
+    await expect(panel.getByRole('heading', { name: 'Sidebar preview' })).toBeVisible();
+    await expect(panel.getByRole('tab', { name: 'README.md', exact: true })).toHaveAttribute('aria-selected', 'true');
+    expect((await panel.boundingBox())!.x).toBeGreaterThanOrEqual((await drawer.boundingBox())!.x + (await drawer.boundingBox())!.width - 1);
+    await panel.getByRole('tab', { name: `文件 · ${session.title}`, exact: true }).click();
+    await explorer.getByRole('button', { name: /README\.md/ }).click();
+    await expect(panel.getByRole('tab')).toHaveCount(2);
+    await panel.getByRole('tab', { name: `文件 · ${session.title}`, exact: true }).click();
     await explorer.getByRole('button', { name: /^Git diff/ }).click();
     await explorer.getByRole('button', { name: /README\.md/ }).click();
-    const diff = explorer.locator('.workspace-diff');
+    const diff = panel.locator('.workspace-diff');
     await expect(diff.getByRole('table', { name: '并排差异' })).toBeVisible();
     await expect(diff.locator('.diff-stats')).toHaveText('+1−1');
     await expect(diff.locator('td.diff-code.diff-added')).toHaveText('**Updated content**');
     await expect(diff.locator('td.diff-code.diff-removed')).toHaveText('**Rendered text**');
-    await expect(diff.locator('td.diff-code.diff-added mark')).toHaveText('Updated content');
     await diff.getByRole('button', { name: '内联显示', exact: true }).click();
     await expect(diff.getByRole('table', { name: '内联差异' })).toBeVisible();
-    await expect(diff.locator('tr.diff-added .diff-sign')).toHaveText('+');
-    // The persistent contacts leave a narrow conversation beside the preview.
-    // Hide secondary metadata there and keep the title and close action usable.
-    expect((await drawer.boundingBox())!.width).toBeLessThan(620);
-    await expect(drawer.getByRole('navigation', { name: '会话关系' })).toBeHidden();
-    await expect(drawer.locator('.drawer-title h2')).toHaveText(session.title);
-    await expect(drawer.getByRole('button', { name: '关闭会话', exact: true })).toBeInViewport();
-    expect((await drawer.locator('.drawer-header').boundingBox())!.height).toBeLessThanOrEqual(49);
-    await expect(drawer.getByRole('group', { name: '会话显示方式' }).getByRole('button', { name: '原生终端', exact: true })).toBeInViewport();
-    await drawer.locator('summary').filter({ hasText: '会话信息' }).click();
-    const infoBounds = (await drawer.locator('.session-info-content').boundingBox())!;
-    const drawerBounds = (await drawer.boundingBox())!;
-    expect(infoBounds.x).toBeGreaterThanOrEqual(drawerBounds.x);
-    expect(infoBounds.x + infoBounds.width).toBeLessThanOrEqual(drawerBounds.x + drawerBounds.width);
-    await drawer.locator('summary').filter({ hasText: '会话信息' }).click();
-    await page.screenshot({ path: 'artifacts/workspace-sidebar.png' });
-    await drawer.getByRole('button', { name: '关闭会话', exact: true }).click();
-    await expect(drawer).not.toBeVisible();
-    await expect(explorer).toBeVisible();
-    await expect(page.getByLabel('资源管理器工作区', { exact: true })).toHaveValue(session.id);
-    await page.getByRole('button', { name: '关闭资源管理器', exact: true }).click();
-    await page.getByRole('button', { name: '打开资源管理器', exact: true }).click();
-    await expect(explorer).toBeVisible();
-    await expect.poll(async () => Number(await explorer.getByRole('separator', { name: '调整文件树宽度' }).getAttribute('aria-valuenow'))).toBe(initialTree + 36);
+    const panelHeight = (await panel.boundingBox())!.height;
+    await page.getByRole('button', { name: '打开终端', exact: true }).click();
+    const dock = page.getByRole('region', { name: '底部终端面板' });
+    await expect(dock).toBeVisible();
+    expect(Math.abs((await panel.boundingBox())!.height - panelHeight)).toBeLessThan(2);
+    expect((await dock.boundingBox())!.x + (await dock.boundingBox())!.width).toBeLessThanOrEqual((await panel.boundingBox())!.x + 1);
+    await dock.getByRole('button', { name: '隐藏终端面板', exact: true }).click();
+    const splitter = panel.getByRole('separator', { name: '调整预览面板宽度' });
+    const initial = Number(await splitter.getAttribute('aria-valuenow'));
+    await splitter.focus(); await splitter.press('ArrowLeft');
+    await expect(splitter).toHaveAttribute('aria-valuenow', String(initial + 24));
+    await page.reload();
+    await expect(panel.getByRole('tab')).toHaveCount(3);
+    await expect(splitter).toHaveAttribute('aria-valuenow', String(initial + 24));
+    await expect(diff.getByRole('table', { name: '内联差异' })).toBeVisible();
+    await page.getByRole('button', { name: '隐藏预览面板' }).click();
+    await expect(panel).toBeHidden();
+    await page.getByRole('button', { name: '打开预览面板' }).click();
+    await expect(panel.getByRole('tab')).toHaveCount(3);
+    await page.screenshot({ path: 'artifacts/unified-preview-desktop.png' });
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({ path: 'artifacts/workspace-mobile.png' });
-    await expect(page.getByRole('button', { name: '关闭资源管理器', exact: true })).toBeInViewport();
+    await expect(panel.getByRole('button', { name: '返回工作台' })).toBeInViewport();
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.screenshot({ path: 'artifacts/unified-preview-mobile.png' });
+    await panel.getByRole('button', { name: '返回工作台' }).click();
+    await expect(panel).toBeHidden();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -188,17 +153,19 @@ test('workspace sidebar previews HTML in a sandbox and plays local media', async
     const explorer = page.getByRole('complementary', { name: '资源管理器' });
     await explorer.getByRole('button', { name: /^site$/ }).click();
     await explorer.getByRole('button', { name: /index\.html/ }).click();
-    const frame = explorer.frameLocator('iframe[title="预览 site/index.html"]');
+    const panel = page.getByRole('complementary', { name: '统一预览面板' });
+    const frame = panel.frameLocator('iframe[title="预览 site/index.html"]');
     await expect(frame.locator('#title')).toHaveText('Codex site');
-    await expect(explorer.locator('iframe[title="预览 site/index.html"]')).toHaveAttribute('sandbox', 'allow-scripts allow-forms');
-    await explorer.getByRole('button', { name: '查看源码', exact: true }).click();
-    await expect(explorer.locator('.workspace-html-preview pre')).toContainText('Codex site');
-    await explorer.getByRole('button', { name: '预览网页', exact: true }).click();
+    await expect(panel.locator('iframe[title="预览 site/index.html"]')).toHaveAttribute('sandbox', 'allow-scripts allow-forms');
+    await panel.getByRole('button', { name: '查看源码', exact: true }).click();
+    await expect(panel.locator('.workspace-html-preview pre')).toContainText('Codex site');
+    await panel.getByRole('button', { name: '预览网页', exact: true }).click();
     await expect(frame.locator('#title')).toHaveText('Codex site');
 
+    await panel.getByRole('tab', { name: `文件 · ${session.title}`, exact: true }).click();
     await explorer.getByRole('button', { name: /dot\.png/ }).click();
-    await expect(explorer.locator('.workspace-media-stage img')).toHaveAttribute('src', new RegExp(`/api/sessions/${session.id}/workspace/raw/dot\\.png$`));
-    await expect(explorer.locator('.workspace-media-stage img')).toBeVisible();
+    await expect(panel.locator('.workspace-media-stage img')).toHaveAttribute('src', new RegExp(`/api/sessions/${session.id}/workspace/raw/dot\\.png$`));
+    await expect(panel.locator('.workspace-media-stage img')).toBeVisible();
     await page.screenshot({ path: 'artifacts/workspace-html-preview.png' });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
