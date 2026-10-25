@@ -1,6 +1,6 @@
 {
   "name": "dili-workbench",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": false,
   "type": "module",
   "description": "Dili (嘀哩工作台): a local-first web home for Claude Code, Codex and DeepSeek Harness sessions",
