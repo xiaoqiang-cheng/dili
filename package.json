@@ -1,6 +1,6 @@
 {
   "name": "dili-workbench",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": false,
   "type": "module",
   "description": "Dili (嘀哩工作台): a local-first web home for Claude Code, Codex and DeepSeek Harness sessions",
@@ -12,7 +12,7 @@
     "dev": "tsx watch server/index.ts --dev",
     "start": "tsx server/index.ts",
     "build": "tsc --noEmit && tsx scripts/build-client.ts",
-    "test": "tsx --test --test-concurrency=6 server/*.test.ts scripts/fixtures/*.test.ts",
+    "test": "tsx --test --test-concurrency=1 server/*.test.ts scripts/fixtures/*.test.ts",
     "check": "tsc --noEmit",
     "build:relay": "tsx scripts/build-relay.ts",
     "prepare:relay-clients": "tsx scripts/prepare-relay-clients.ts",
