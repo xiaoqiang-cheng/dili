@@ -12,7 +12,12 @@ const SHARE_HASH = /^#\/share\/([A-Za-z0-9_-]{20,128})$/;
 export default function AuthGate() {
   const [status, setStatus] = useState<AuthStatus | null>(null);
   const [error, setError] = useState('');
-  const [shareToken] = useState(() => SHARE_HASH.exec(location.hash)?.[1] ?? null);
+  const [shareToken, setShareToken] = useState(() => SHARE_HASH.exec(location.hash)?.[1] ?? null);
+  useEffect(() => {
+    const changed = () => setShareToken(SHARE_HASH.exec(location.hash)?.[1] ?? null);
+    window.addEventListener('hashchange', changed);
+    return () => window.removeEventListener('hashchange', changed);
+  }, []);
   const load = useCallback(async () => {
     try {
       const response = await fetch(appUrl('/api/auth/status'));
@@ -29,13 +34,14 @@ export default function AuthGate() {
   const accept = (next: AuthStatus) => {
     // Clear the one-time link from the address bar and history before continuing.
     if (SHARE_HASH.test(location.hash)) history.replaceState(history.state, '', `${location.pathname}${location.search}#/`);
+    setShareToken(null);
     void getToken(true).catch(() => {});
     setStatus(next);
   };
 
   if (error && !status) return <div className="auth-page"><div className="auth-card"><p className="form-error">{error}</p><button className="button secondary" onClick={() => void load()}>重试</button></div></div>;
   if (!status) return <div className="auth-page"><LoaderCircle className="spin" size={22} /></div>;
-  if (shareToken && status.kind !== 'share') return <RedeemPage token={shareToken} done={accept} />;
+  if (shareToken) return <RedeemPage key={shareToken} token={shareToken} done={accept} />;
   if (status.kind === 'anonymous') return <LoginPage passwordSet={status.passwordSet} done={accept} />;
   if (status.kind === 'share') return <Suspense fallback={<div className="auth-page"><LoaderCircle className="spin" size={22} /></div>}><ShareApp status={status} /></Suspense>;
   return <App auth={status} />;

@@ -40,6 +40,7 @@ test('group share entry, live collaboration, read-only access and revocation', a
     const readResponse = await request.post(`/api/groups/${group.id}/shares`, { headers, data: { mode: 'read', ttlDays: 1 } });
     const readLink = await readResponse.json();
     await guest.getByRole('button', { name: '退出共享' }).click();
+    await expect(guest.getByRole('heading', { name: '登录 Dili' })).toBeVisible();
     await guest.goto(`${remote.origin}/#/share/${readLink.url.split('/#/share/')[1]}`);
     await guest.getByLabel('你的名字').fill('只读访客');
     await guest.getByRole('button', { name: '进入会话' }).click();
