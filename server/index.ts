@@ -291,6 +291,17 @@ async function ensureCodexBridge() {
   await codexBridge.start();
   return codexBridge;
 }
+/** Drop one thread's observer; when nothing else is running, park the app-server
+ * so Codex releases zombie writers Desktop would otherwise see as "另一个应用". */
+async function releaseCodexNative(nativeId: string, sessionId?: string) {
+  codexBridge.releaseSession(nativeId);
+  if (sessionId) {
+    codexRuns.delete(sessionId);
+    launchIds.delete(sessionId);
+    expectedNativeIds.delete(sessionId);
+  }
+  if (codexRuns.size === 0) await codexBridge.stop().catch(() => undefined);
+}
 function observeNative(item: Session) {
   if (demo || !item.running || closing || codexRuns.has(item.id) || claudeRuns.has(item.id)) return;
   const launchId = launchIds.get(item.id);
@@ -922,7 +933,7 @@ app.post('/api/sessions/:id/fork', async (req, res) => {
     // identity before exposing the card; a failed fork never becomes a fake child.
     const native = await bridge.forkSession(parent.nativeSessionId, cwd, parent.executionMode);
     child = store.addSession({ backend: parent.backend, title, cwd, groupId: targetGroupId, parentId: parent.id, executionMode: parent.executionMode ?? 'default', ...(parent.nativeSettings ? { nativeSettings: parent.nativeSettings } : {}), origin: 'forked', nativeSessionId: native.nativeSessionId, running: false, status: 'idle', statusSource: 'native', statusDetail: '已通过 Codex 原生能力 Fork，点击进入' });
-    bridge.releaseSession(native.nativeSessionId);
+    await releaseCodexNative(native.nativeSessionId);
   } else {
     child = store.addSession({ backend: parent.backend, title, cwd, groupId: targetGroupId, parentId: parent.id, executionMode: parent.executionMode ?? 'default', ...(parent.nativeSettings ? { nativeSettings: parent.nativeSettings } : {}), origin: 'forked', nativeSessionId: demo ? `demo-${randomUUID()}` : parent.nativeSessionId, forkPending: !demo, statusDetail: demo ? '演示分支已创建' : '待启动：将调用原生 Fork，原会话保持独立' });
   }
@@ -1073,8 +1084,7 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
     if (launchIds.get(item.id) === launchId) launchIds.delete(item.id);
     expectedNativeIds.delete(item.id);
     const nativeRun = codexRuns.get(item.id);
-    codexRuns.delete(item.id);
-    if (nativeRun) codexBridge.releaseSession(nativeRun.nativeId);
+    if (nativeRun) await releaseCodexNative(nativeRun.nativeId, item.id);
     const claudeRun = claudeRuns.get(item.id);
     if (claudeRun) {
       await claudeBridge.closeSession(claudeRun.nativeId);
@@ -1091,7 +1101,16 @@ app.post('/api/sessions/:id/stop', async (req, res) => {
   const item = session(String(req.params.id));
   if (starting.has(item.id)) fail('会话正在启动，请稍后再停止');
   if (stopping.has(item.id)) fail('会话正在停止，请等待回收完成', 409);
-  if (!item.running) return res.json(item);
+  // Already stopped in the UI can still leave a Codex writer inside app-server.
+  // Force-release so Desktop is not blocked by a "stopped" contact.
+  if (!item.running) {
+    if (item.backend === 'codex' && !demo && item.nativeSessionId) {
+      await releaseCodexNative(item.nativeSessionId, item.id);
+      status(item.id, { status: 'stopped', statusSource: 'native', statusDetail: '已停止 Codex 当前任务，点「恢复原生会话」才会重新占用' });
+      broadcast();
+    }
+    return res.json(session(item.id));
+  }
   stopping.add(item.id);
   status(item.id, { status: 'unknown', statusSource: 'process', statusDetail: '正在停止，等待原生任务和进程退出' });
   broadcast();
@@ -1104,17 +1123,16 @@ app.post('/api/sessions/:id/stop', async (req, res) => {
       await claudeBridge.closeSession(item.nativeSessionId);
       claudeRuns.delete(item.id); launchIds.delete(item.id); expectedNativeIds.delete(item.id);
       status(item.id, { running: false, status: 'stopped', statusSource: 'native', statusDetail: '已停止 Claude 图形会话，可恢复原生上下文' });
-    } else if (item.backend === 'codex' && !demo && codexRuns.has(item.id) && item.nativeSessionId) {
-      // Interrupt only this thread's active turn, then close its TUI. The
-      // native session remains resumable and its approvals stay Codex-owned.
-      await codexBridge.stopSession(item.nativeSessionId);
+    } else if (item.backend === 'codex' && !demo && item.nativeSessionId) {
+      // Interrupt only this thread's active turn, then close its TUI and park
+      // the app-server when idle so zombie writers cannot block Desktop.
+      if (codexRuns.has(item.id)) await codexBridge.stopSession(item.nativeSessionId);
       await terminals.stop(item.id);
-      codexBridge.releaseSession(item.nativeSessionId);
-      codexRuns.delete(item.id); launchIds.delete(item.id); expectedNativeIds.delete(item.id);
-      status(item.id, { running: false, status: 'stopped', statusSource: 'native', statusDetail: '已停止 Codex 当前任务，可重新进入会话' });
+      await releaseCodexNative(item.nativeSessionId, item.id);
+      status(item.id, { running: false, status: 'stopped', statusSource: 'native', statusDetail: '已停止 Codex 当前任务，点「恢复原生会话」才会重新占用' });
     } else {
       await terminals.stop(item.id);
-      status(item.id, { running: false, status: 'stopped', statusSource: 'process', statusDetail: '已停止，可恢复原生会话' });
+      status(item.id, { running: false, status: 'stopped', statusSource: 'process', statusDetail: '已停止，点「恢复原生会话」才会重新占用' });
     }
     broadcast(); res.json(session(item.id));
   } catch (error) {
@@ -1326,7 +1344,7 @@ terminals.on('exit', (id: string, exitCode: number) => {
     stopping.add(id);
     void codexBridge.stopSession(nativeRun.nativeId).catch(error => {
       if (!closing) status(id, { status: 'error', statusSource: 'native', statusDetail: `终端已退出，无法确认任务取消：${error instanceof Error ? error.message : '连接异常'}` });
-    }).finally(() => { codexBridge.releaseSession(nativeRun.nativeId); stopping.delete(id); });
+    }).finally(() => { void releaseCodexNative(nativeRun.nativeId).finally(() => { stopping.delete(id); }); });
   }
   status(id, { running: false, status: exitCode === 0 ? 'stopped' : 'error', statusSource: 'process', statusDetail: `原生进程已退出（${exitCode}）` }, '会话进程已退出');
   terminalEvent(id, { type: 'exit', exitCode });

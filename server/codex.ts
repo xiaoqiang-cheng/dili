@@ -544,6 +544,7 @@ export class CodexBridge {
     this.clearChatRequests(connection);
     this.answeredChatRequests.delete(connection);
     for (const [id, observer] of this.observers) if (observer === connection) this.chat.connected(id, false, 'Codex 原生连接已断开，请重新连接。');
+    this.connections.delete(connection);
     if (connection.closed) return;
     connection.closed = true;
     for (const pending of connection.pending.values()) {
@@ -551,7 +552,14 @@ export class CodexBridge {
       pending.reject(new Error('Codex app-server 连接已关闭'));
     }
     connection.pending.clear();
-    connection.ws.terminate();
+    // Prefer a graceful close so Codex releases the thread writer; terminate is
+    // a fallback when the peer ignores the close handshake.
+    try {
+      if (connection.ws.readyState === WebSocket.OPEN || connection.ws.readyState === WebSocket.CLOSING) connection.ws.close();
+      else connection.ws.terminate();
+    } catch {
+      try { connection.ws.terminate(); } catch { /* already gone */ }
+    }
   }
 
   private async connect(allowStart = true): Promise<RpcConnection> {
@@ -900,45 +908,43 @@ export class CodexBridge {
     // A dead app-server cannot own a live turn. Stopping its former TUI must
     // not launch a replacement service or resurrect the archived thread.
     if (!this.ready) return;
-    const existing = this.observers.get(id);
-    const connection = existing ?? await this.connect();
-    const temporary = !existing;
-    try {
-      if (temporary) {
-        const resumed = await this.call(connection, 'thread/resume', { threadId: id, excludeTurns: true });
-        if (resumed.error) throw this.rpcError(resumed, 'Codex 任务停止前恢复失败');
-        if ((resumed.result as { thread?: Thread } | undefined)?.thread?.id !== id) throw new Error('Codex 返回了不匹配的停止目标');
-      }
-      let turnId = this.turnIds.get(id);
-      if (!turnId) {
-        // The fallback only needs the current status. If no turn ID was
-        // observed on this connection, report that clearly instead of
-        // requesting all historical turns and exceeding the payload limit.
-        const current = await this.call(connection, 'thread/read', { threadId: id, includeTurns: false });
-        if (current.error) throw this.rpcError(current, '无法读取 Codex 当前任务');
-        const thread = (current.result as { thread?: Thread } | undefined)?.thread;
-        if (thread?.id !== id) throw new Error('Codex 返回了不匹配的停止目标');
-        const turns = thread.turns ?? [];
-        const active = [...turns].reverse().find(turn => turn.status === 'inProgress');
-        turnId = active?.id;
-        if (turnId) this.turnIds.set(id, turnId);
-        else if (thread.status?.type === 'active') throw new Error('Codex 任务仍在执行，但尚未返回可中断的轮次，请在原生终端中停止');
-      }
-      if (!turnId) {
-        this.emitStatus(id, { status: 'idle', detail: 'Codex 当前没有正在执行的任务', timestamp: now() });
-        return;
-      }
-      const response = await this.call(connection, 'turn/interrupt', { threadId: id, turnId });
-      if (response.error && !/no active turn/i.test(response.error.message ?? '')) throw this.rpcError(response, 'Codex 任务停止失败');
-      this.clearChatRequests(connection, id);
-      this.chat.event(id, 'turn/completed', { turn: { id: turnId, status: 'interrupted' } });
+    const connection = this.observers.get(id);
+    // No retained observer means we do not own the writer. Resuming just to
+    // interrupt would steal the thread from Desktop / another native client.
+    if (!connection || connection.closed) {
       this.turnIds.delete(id);
       this.completed.delete(id);
       this.nativeAttention.delete(id);
-      this.emitStatus(id, { status: 'idle', detail: 'Codex 当前任务已停止，原生会话仍保留', timestamp: now() });
-    } finally {
-      if (temporary) { this.closeConnection(connection); this.connections.delete(connection); }
+      this.emitStatus(id, { status: 'idle', detail: 'Codex 当前没有由本服务持有的会话连接', timestamp: now() });
+      return;
     }
+    let turnId = this.turnIds.get(id);
+    if (!turnId) {
+      // The fallback only needs the current status. If no turn ID was
+      // observed on this connection, report that clearly instead of
+      // requesting all historical turns and exceeding the payload limit.
+      const current = await this.call(connection, 'thread/read', { threadId: id, includeTurns: false });
+      if (current.error) throw this.rpcError(current, '无法读取 Codex 当前任务');
+      const thread = (current.result as { thread?: Thread } | undefined)?.thread;
+      if (thread?.id !== id) throw new Error('Codex 返回了不匹配的停止目标');
+      const turns = thread.turns ?? [];
+      const active = [...turns].reverse().find(turn => turn.status === 'inProgress');
+      turnId = active?.id;
+      if (turnId) this.turnIds.set(id, turnId);
+      else if (thread.status?.type === 'active') throw new Error('Codex 任务仍在执行，但尚未返回可中断的轮次，请在原生终端中停止');
+    }
+    if (!turnId) {
+      this.emitStatus(id, { status: 'idle', detail: 'Codex 当前没有正在执行的任务', timestamp: now() });
+      return;
+    }
+    const response = await this.call(connection, 'turn/interrupt', { threadId: id, turnId });
+    if (response.error && !/no active turn/i.test(response.error.message ?? '')) throw this.rpcError(response, 'Codex 任务停止失败');
+    this.clearChatRequests(connection, id);
+    this.chat.event(id, 'turn/completed', { turn: { id: turnId, status: 'interrupted' } });
+    this.turnIds.delete(id);
+    this.completed.delete(id);
+    this.nativeAttention.delete(id);
+    this.emitStatus(id, { status: 'idle', detail: 'Codex 当前任务已停止，原生会话仍保留', timestamp: now() });
   }
 
   /** Release one observer when a card is archived or its native process stops. */

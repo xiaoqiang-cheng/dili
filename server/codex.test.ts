@@ -103,6 +103,28 @@ test('Codex imports expose native writer conflicts and can fork without stopping
   }
 });
 
+test('parking the app-server after releaseSession frees the writer for Desktop', async t => {
+  const executable = await findExecutable('codex');
+  if (!executable) return t.skip('codex CLI is not installed');
+  const root = await mkdtemp(join(tmpdir(), 'sessiondeck-codex-park-'));
+  const env = { ...process.env, CODEX_HOME: join(root, 'home') };
+  const owner = new CodexBridge({ executable, dataDir: join(root, 'owner'), port: 0, env });
+  const desktop = new CodexBridge({ executable, dataDir: join(root, 'desktop'), port: 0, env });
+  try {
+    const session = await owner.createSession(root, 'Stop for Desktop');
+    await assert.rejects(desktop.openSession(session.nativeSessionId, root), /其他原生客户端占用/);
+    // Closing the observer socket is not always enough; a live app-server can
+    // keep a zombie writer with no clients. Parking matches Dili's idle stop.
+    owner.releaseSession(session.nativeSessionId);
+    await owner.stop();
+    assert.equal((await desktop.openSession(session.nativeSessionId, root)).nativeSessionId, session.nativeSessionId);
+  } finally {
+    await desktop.close();
+    await owner.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Codex bridge reports status notifications by native thread ID', async t => {
   const executable = await findExecutable('codex');
   if (!executable) return t.skip('codex CLI is not installed');

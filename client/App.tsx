@@ -141,8 +141,10 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     observer.observe(area);
     return () => observer.disconnect();
   }, []);
-  // Only an explicit open (card, activity, group link) starts the agent. Route
-  // restores, reloads, history and route changes keep today's no-launch rule.
+  // Explicit open (card, activity, group link) starts a never-stopped agent.
+  // After stop, opening the panel alone must not reclaim the Codex writer lock
+  // (Desktop / other native clients); resume stays on the lifecycle button.
+  // Route restores, reloads and history keep today's no-launch rule.
   const autoStartRef = useRef<{ id: string; mode?: 'terminal' | 'chat' } | null>(null);
   const [privateViews, setPrivateViews] = useState<Record<string, string>>(() => Object.fromEntries(
     ['claude', 'codex', 'dsh'].map(backend => {
@@ -550,6 +552,9 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     if (!pending || !selected || !state || pending.id !== selected.id) return;
     autoStartRef.current = null;
     if (selected.running || selected.archived || !selectedBackend?.installed) return;
+    // Stopped contacts open for reading only. An explicit mode (attention /
+    // delivery) still starts so the user can answer without a second click.
+    if (selected.status === 'stopped' && !pending.mode) return;
     void startSelected(pending.mode);
     // Runs once per explicit open; the ref, not the dependency list, gates it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
