@@ -90,6 +90,13 @@ export class ClaudeChatBridge {
     return run?.alive ? { ...run.snapshot, items: run.snapshot.items.map(item => ({ ...item })), requests: [...run.snapshot.requests] } : undefined;
   }
   async readChat(id: string): Promise<AgentChatSnapshot> {
+    const run = this.runs.get(id);
+    // A completed burst can evict live items before the asynchronous history
+    // cursor catches up. Do not pair the final tail with an older cursor:
+    // callers would permanently skip the messages between the two pages.
+    while (run?.alive && !run.snapshot.activeTurnId && run.historyRefresh) {
+      await run.historyRefresh;
+    }
     const snapshot = this.chatSnapshot(id);
     if (snapshot) return snapshot;
     if (!this.history) throw new Error('Claude 图形连接尚未启动');
@@ -350,7 +357,10 @@ export class ClaudeChatBridge {
         if (item) { item.status = block.is_error ? 'failed' : 'completed'; item.output = (typeof block.content === 'string' ? block.content : JSON.stringify(block.content) ?? '').slice(0, 24_000); }
       }
     } else if (row.type === 'result') {
-      if (run.inheritedHistory || run.snapshot.truncated) this.refreshHistoryCursor(id, run);
+      if (run.inheritedHistory || run.snapshot.truncated) {
+        run.historyDirty = true;
+        this.refreshHistoryCursor(id, run);
+      }
       const turnId = run.snapshot.activeTurnId;
       const failed = row.is_error === true || row.subtype !== 'success';
       this.finish(run, failed);
