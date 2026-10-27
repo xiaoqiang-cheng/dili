@@ -35,12 +35,9 @@ export default function PairMachine({ local }: { local: boolean }) {
         if (!status.settings.publicUrl || status.tunnel.state !== 'connected') throw new Error(status.tunnel.error || '远程连接未就绪，请稍后重试或检查机器的连接设置');
         destination = status.settings.publicUrl;
       }
-      const identity = await api<{ machineId?: string; localUrl?: string }>('/config');
       const callback = new URL(returnUrl);
       const result = new URLSearchParams({ paired: target, nonce: params.get('nonce') || '' });
       if (destination) result.set('remote', destination);
-      if (identity.machineId) result.set('machineId', identity.machineId);
-      if (local && identity.localUrl) result.set('local', identity.localUrl);
       callback.hash = `/machines?${result}`;
       return callback.href;
     })();
