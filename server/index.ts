@@ -71,6 +71,8 @@ mkdirSync(terminalImageDir, { recursive: true, mode: 0o700 });
 const token = randomBytes(32).toString('hex');
 const instanceId = randomUUID();
 const auth = new AuthStore(store.db, token);
+const machineId = auth.setting<string>('machine-id') ?? randomBytes(32).toString('hex');
+auth.setSetting('machine-id', machineId);
 const DEVICE_COOKIE = 'sessiondeck_device';
 const LOCAL_OWNER: Principal = { kind: 'owner', local: true };
 // The remote listener binds loopback only; the SSH tunnel carries it to the
@@ -299,6 +301,15 @@ function observeNative(item: Session) {
 }
 
 app.disable('x-powered-by');
+// This read-only identity check exposes no session data and accepts no cookies.
+// Only the local listener can answer it; other API routes retain their guards.
+app.get('/.well-known/dili-local', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  if (isRemote(req) || !allowedRequest({ headers: { host: req.headers.host } }, port, wildcardHost)) return res.sendStatus(403);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  if (!validToken(req.query.machineId, machineId)) return res.sendStatus(404);
+  res.json({ matched: true });
+});
 app.use((req, res, next) => {
   const remote = isRemote(req);
   if (remote ? !allowedRemoteRequest(req, remoteSettings().publicUrl, remoteSettings().localPort) : !allowedRequest(req, port, wildcardHost)) return res.status(403).json({ error: '请求来源不被允许' });
@@ -406,7 +417,7 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-app.get('/api/config', (_req, res) => res.json({ csrfToken: auth.csrf(principalOf(res)) }));
+app.get('/api/config', (_req, res) => res.json({ csrfToken: auth.csrf(principalOf(res)), ...(principalOf(res).kind === 'owner' ? { machineId, localUrl: isRemote(_req) ? `http://localhost:${port}/` : `http://${_req.headers.host}/` } : {}) }));
 app.get('/api/state', (_req, res) => res.json(viewState(principalOf(res))));
 app.get('/api/scratchpad', (_req, res) => res.json(scratchpad.read()));
 app.patch('/api/scratchpad', (req, res) => res.json(scratchpad.save(req.body)));

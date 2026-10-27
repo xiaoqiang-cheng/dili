@@ -1,3 +1,4 @@
+import type { Machine } from './machine-store';
 import { appUrl } from './urls';
 
 export function machineHome() {
@@ -34,3 +35,15 @@ export function capturePairingInvite() {
 capturePairingInvite();
 export function pairingInvite() { return incomingInvite; }
 export function clearPairingInvite() { incomingInvite = ''; }
+
+/** One bounded probe per click; no scanning, cookies or background polling. */
+export async function preferredMachineUrl(machine: Machine): Promise<string> {
+  if (!machine.localUrl || !machine.machineId) return machine.url;
+  try {
+    const probe = new URL('.well-known/dili-local', machine.localUrl);
+    probe.searchParams.set('machineId', machine.machineId);
+    const response = await fetch(probe, { credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(800) });
+    if (response.ok && (await response.json()).matched === true) return machine.localUrl;
+  } catch { /* Offline, wrong device or browser policy: use the remote link. */ }
+  return machine.url;
+}

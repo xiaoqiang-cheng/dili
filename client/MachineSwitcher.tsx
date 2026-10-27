@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ChevronDown, Pin } from 'lucide-react';
 import { readMachines } from './machine-store';
-import { machineHome, openMachine, publicMachineUrl } from './machine-links';
+import { machineHome, openMachine, publicMachineUrl, preferredMachineUrl } from './machine-links';
 import { appUrl } from './urls';
 import { readWorkspaceRoute, workspaceHash } from './navigation';
 
@@ -43,7 +43,14 @@ export default function MachineSwitcher() {
         if (recent[url]?.hash) target.hash = workspaceHash(readWorkspaceRoute(recent[url].hash));
         return <a key={url} href={target.href} aria-current={url === current ? 'page' : undefined} title={machine.url} onClick={event => {
           setExpanded(false);
-          if (url === current) event.preventDefault();
+          if (url === current) { event.preventDefault(); return; }
+          if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+          event.preventDefault();
+          void preferredMachineUrl(machine).then(destination => {
+            const preferred = new URL(openMachine(destination, home));
+            preferred.hash = target.hash;
+            location.assign(preferred.href);
+          });
         }}>{machine.name}</a>;
       })}</div>
       <button className="machine-switch-pin" aria-label="固定机器切换条" aria-pressed={pinned} onClick={() => { setPinned(!pinned); setExpanded(false); }} title="固定展开"><Pin size={14} /></button>

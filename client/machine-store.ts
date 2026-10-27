@@ -1,5 +1,5 @@
 const KEY = 'dili.machines.v1';
-export type Machine = { url: string; name: string };
+export type Machine = { url: string; name: string; localUrl?: string; machineId?: string };
 export function machineUrl(value: string) {
   const url = new URL(value.trim());
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('请输入完整的 http(s) 机器地址，不含密码、查询参数或分享链接。');
@@ -10,7 +10,7 @@ export function readMachines(): Machine[] {
   try {
     const value: unknown = JSON.parse(localStorage.getItem(KEY) || '[]');
     return Array.isArray(value) ? value.slice(0, 100).flatMap(item => {
-      try { return typeof item.name === 'string' ? [{ url: machineUrl(item.url), name: item.name.slice(0, 80) }] : []; } catch { return []; }
+      try { return typeof item.name === 'string' ? [{ url: machineUrl(item.url), name: item.name.slice(0, 80), ...(typeof item.localUrl === 'string' ? { localUrl: machineUrl(item.localUrl) } : {}), ...(typeof item.machineId === 'string' && /^[a-f0-9]{64}$/.test(item.machineId) ? { machineId: item.machineId } : {}) }] : []; } catch { return []; }
     }) : [];
   } catch { return []; }
 }

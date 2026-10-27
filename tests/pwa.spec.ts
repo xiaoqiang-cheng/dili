@@ -98,6 +98,8 @@ test('pairing prompts for the target password without persisting it and supports
 });
 
 test('a machine on another origin returns to the launcher and opens its own contacts', async ({ page, baseURL }) => {
+  // Exercise the remote path when a local candidate is not reachable.
+  await page.route('**/.well-known/dili-local?*', route => route.abort());
   const proxy = createServer((incoming, outgoing) => {
     const upstream = httpRequest(new URL(incoming.url!, baseURL), response => {
       outgoing.writeHead(response.statusCode!, response.headers); response.pipe(outgoing);
@@ -137,6 +139,7 @@ test('install entry explains platform steps and return uses existing workspace n
 test.describe('machine card remote pairing', () => {
   test.use({ serviceWorkers: 'block' });
   test('redeems a card invite once, replaces the local URL and opens remote contacts', async ({ page, baseURL }) => {
+    await page.route('**/.well-known/dili-local?*', route => route.abort());
     const proxy = createServer((incoming, outgoing) => {
       const upstream = httpRequest(new URL(incoming.url!, baseURL), response => { outgoing.writeHead(response.statusCode!, response.headers); response.pipe(outgoing); });
       upstream.on('error', () => { outgoing.writeHead(502); outgoing.end(); }); incoming.pipe(upstream);
@@ -292,4 +295,35 @@ test('compact machine tabs retain return navigation and restore a saved workspac
   await tabs.getByRole('link', { name: '工作电脑', exact: true }).click();
   await expect(tabs).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+});
+
+test('local machine probe verifies identity without exposing owner APIs cross-origin', async ({ request, baseURL }) => {
+  const config = await (await request.get('/api/config')).json();
+  expect(config.machineId).toMatch(/^[a-f0-9]{64}$/);
+  expect(config.localUrl).toBe(baseURL + '/');
+  const probe = await request.get('/.well-known/dili-local?machineId=' + config.machineId, { headers: { Origin: 'https://dili.discoverpaw.com' } });
+  expect(probe.status()).toBe(200);
+  expect(probe.headers()['access-control-allow-origin']).toBe('*');
+  expect(await probe.json()).toEqual({ matched: true });
+  expect((await request.get('/.well-known/dili-local?machineId=wrong')).status()).toBe(404);
+  expect((await request.get('/api/config', { headers: { Origin: 'https://dili.discoverpaw.com' } })).status()).toBe(403);
+});
+
+for (const outcome of ['match', 'wrong', 'unreachable'] as const) test(`machine card uses verified local address or remote fallback: ${outcome}`, async ({ page, baseURL }) => {
+  const machineId = 'a'.repeat(64);
+  const remote = baseURL + '/remote-machine/';
+  await page.addInitScript(({ remote, localUrl, machineId }) => {
+    localStorage.setItem('dili.machines.v1', JSON.stringify([{ url: remote, name: '直连测试', localUrl, machineId }]));
+  }, { remote, localUrl: baseURL + '/', machineId });
+  let probes = 0;
+  await page.route('**/.well-known/dili-local?*', async route => {
+    probes++;
+    expect(new URL(route.request().url()).searchParams.get('machineId')).toBe(machineId);
+    if (outcome === 'unreachable') await route.abort();
+    else await route.fulfill({ status: outcome === 'match' ? 200 : 404, json: { matched: outcome === 'match' } });
+  });
+  await page.goto('/#/machines');
+  await page.getByRole('link', { name: /直连测试/ }).click();
+  await expect.poll(() => new URL(page.url()).pathname).toBe(outcome === 'match' ? '/' : '/remote-machine/');
+  await expect.poll(() => probes).toBe(1);
 });
