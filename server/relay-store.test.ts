@@ -25,3 +25,22 @@ test('expiring relay invites retain their existing deadline behavior', () => {
   assert.ok(Date.parse(created.expiresAt!) > Date.now());
   db.close();
 });
+
+test('device rate limits are validated, stored per device, and a reconnect request is one-shot', () => {
+  const db = new DatabaseSync(':memory:');
+  const store = new RelayStore(db, 19000, 19010);
+  const { secret } = decodeInvite(store.createInvite('https://example.test/connect', '', 1).invite);
+  const device = store.redeem(secret, newSecret(), newSecret(), '开发机');
+  assert.equal(device.bandwidthLimit, undefined);
+  assert.equal(store.setBandwidth(device.id, '2mb').bandwidthLimit, '2MB');
+  assert.equal(store.setBandwidth(device.id, '').bandwidthLimit, null);
+  for (const bad of ['fast', '0MB', '2GB', '2000MB', 12]) assert.throws(() => store.setBandwidth(device.id, bad), /限速/);
+  store.seen(device.id, true);
+  assert.ok(store.device(device.id)!.lastLoginAt);
+  store.requestReconnect(device.id);
+  assert.equal(store.takeReconnect(device.id), true);
+  assert.equal(store.takeReconnect(device.id), false);
+  store.revokeDevice(device.id);
+  assert.throws(() => store.setBandwidth(device.id, '1MB'), /已撤销/);
+  db.close();
+});

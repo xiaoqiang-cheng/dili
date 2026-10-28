@@ -2,7 +2,7 @@ import express from 'express';
 import type { RelayBandwidth } from './relay-bandwidth.ts';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { RelayStore } from './relay-store.ts';
+import { DEFAULT_DEVICE_BANDWIDTH, RelayStore } from './relay-store.ts';
 import { validToken } from './security.ts';
 import { relayUrl } from './invite.ts';
 import { FRP_ARCHIVE_HASHES, frpArchive } from '../shared/frp.ts';
@@ -76,7 +76,10 @@ export function createRelayApp(store: RelayStore, options: RelayOptions) {
     next();
   });
   app.get('/connect/api/admin/bandwidth', (_req, res) => res.json(options.bandwidth?.snapshot() ?? { available: false, error: '带宽采样未启用', history: [], current: null }));
-  app.get('/connect/api/admin/state', (_req, res) => res.json({ devices: store.devices(), invites: store.invites(), requests: store.requests(), domains }));
+  app.get('/connect/api/admin/state', (_req, res) => res.json({
+    devices: store.devices().map(device => ({ ...device, publicUrl: `${device.serverUrl ?? serverUrl}/d/${device.id}`, effectiveBandwidth: device.bandwidthLimit ?? DEFAULT_DEVICE_BANDWIDTH })),
+    invites: store.invites(), requests: store.requests(), domains, defaultBandwidth: DEFAULT_DEVICE_BANDWIDTH,
+  }));
   app.post('/connect/api/admin/requests/:id/review', (req, res) => {
     if (typeof req.body.approve !== 'boolean') return res.status(400).json({ error: '审批参数无效' });
     const selectedUrl = domainUrls.get(req.body.domain || domains[0]);
@@ -93,6 +96,12 @@ export function createRelayApp(store: RelayStore, options: RelayOptions) {
   });
   app.delete('/connect/api/admin/invites/:id', (req, res) => { store.revokeInvite(String(req.params.id)); res.json({ ok: true }); });
   app.delete('/connect/api/admin/devices/:id', (req, res) => { store.revokeDevice(String(req.params.id)); res.json({ ok: true }); });
+  // A new limit applies when the device's tunnel reconnects; "apply now" forces that.
+  app.patch('/connect/api/admin/devices/:id', (req, res) => {
+    const device = store.setBandwidth(String(req.params.id), req.body.bandwidthLimit ?? null);
+    if (req.body.applyNow === true && device.connected) store.requestReconnect(device.id);
+    res.json(device);
+  });
 
   // Only Caddy and frps on this machine reach these paths; neither is publicly routed.
   app.get('/internal/route', (req, res) => {
@@ -117,7 +126,10 @@ export function createRelayApp(store: RelayStore, options: RelayOptions) {
     let allowed = !!device;
     if (op === 'NewProxy') allowed &&= content.proxy_type === 'tcp' && content.proxy_name === `${device!.id}.web` && content.remote_port === device!.port && !content.group;
     if (!['Login', 'NewProxy', 'Ping', 'NewWorkConn'].includes(String(op))) allowed = false;
-    if (allowed && (op === 'Login' || op === 'Ping')) store.seen(device!.id);
+    if (allowed && op === 'Ping' && store.takeReconnect(device!.id)) return res.json({ reject: true, reject_reason: 'relay settings changed, reconnecting' });
+    if (allowed && (op === 'Login' || op === 'Ping')) store.seen(device!.id, op === 'Login');
+    // The relay, not the client, decides the device's rate: its own limit or the default.
+    if (allowed && op === 'NewProxy') return res.json({ reject: false, unchange: false, content: { ...content, bandwidth_limit: device!.bandwidthLimit ?? DEFAULT_DEVICE_BANDWIDTH, bandwidth_limit_mode: 'server' } });
     res.json(allowed ? { reject: false, unchange: true } : { reject: true, reject_reason: 'invalid device credential or revoked device' });
   });
   app.use((_req, res) => res.status(404).json({ error: '接口不存在' }));

@@ -2,7 +2,18 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { encodeInvite, newSecret, secretHash, relayUrl } from './invite.ts';
 
-export interface RelayDevice { id: string; name: string; port: number; createdAt: string; revokedAt: string | null; lastSeenAt: string | null; connected: boolean; serverUrl?: string }
+/** bandwidthLimit is a frp rate such as "2MB" or "500KB"; null means the default. */
+export interface RelayDevice { id: string; name: string; port: number; createdAt: string; revokedAt: string | null; lastSeenAt: string | null; connected: boolean; serverUrl?: string; bandwidthLimit?: string | null; lastLoginAt?: string | null }
+/** Applied when a device has no own limit; matches what clients have always requested. */
+export const DEFAULT_DEVICE_BANDWIDTH = '20MB';
+const BANDWIDTH = /^([1-9]\d{0,4})(KB|MB)$/;
+export function validBandwidth(value: unknown): string | null {
+  if (value === null || value === '') return null;
+  if (typeof value !== 'string' || !BANDWIDTH.test(value.trim().toUpperCase())) fail('限速格式为数字加 KB 或 MB，例如 500KB、2MB');
+  const [, amount, unit] = BANDWIDTH.exec(value.trim().toUpperCase())!;
+  if (unit === 'MB' && Number(amount) > 1000) fail('限速最大 1000MB');
+  return `${amount}${unit}`;
+}
 type DeviceRow = RelayDevice & { credentialHash: string; claimHash: string; inviteHash: string };
 export type InviteRequest = { id: string; email: string; name: string; createdAt: string; status: 'pending' | 'approved' | 'rejected'; reviewedAt: string | null; inviteId?: string };
 type RequestRow = InviteRequest & { claimHash: string; sealedInvite?: string };
@@ -99,7 +110,23 @@ export class RelayStore {
     const row = this.rows().find(row => row.id === id && !row.revokedAt && row.credentialHash === secretHash(credential));
     return row ? this.device(row.id) : null;
   }
-  seen(id: string) { const row = this.rows().find(item => item.id === id); if (row && !row.revokedAt) { row.lastSeenAt = new Date().toISOString(); this.save(row); } }
+  seen(id: string, login = false) { const row = this.rows().find(item => item.id === id); if (row && !row.revokedAt) { row.lastSeenAt = new Date().toISOString(); if (login) row.lastLoginAt = row.lastSeenAt; this.save(row); } }
+  setBandwidth(id: string, value: unknown) {
+    const row = this.rows().find(item => item.id === id);
+    if (!row) fail('设备不存在', 404);
+    if (row.revokedAt) fail('设备已撤销', 409);
+    row.bandwidthLimit = validBandwidth(value); this.save(row);
+    return this.device(id)!;
+  }
+  /** One-shot: the device's next heartbeat is rejected so frpc reconnects and the
+   * relay re-applies its current limit. Cleared when that rejection is sent. */
+  requestReconnect(id: string) {
+    const row = this.rows().find(item => item.id === id);
+    if (!row || row.revokedAt) fail('设备不存在或已撤销', 404);
+    this.reconnects.add(id);
+  }
+  takeReconnect(id: string) { return this.reconnects.delete(id); }
+  private reconnects = new Set<string>();
   revokeDevice(id: string) { const row = this.rows().find(item => item.id === id); if (!row) fail('设备不存在', 404); row.revokedAt ??= new Date().toISOString(); this.save(row); }
 }
 const randomBytesId = () => newSecret().slice(0, 16).toLowerCase().replace(/_/g, 'x').replace(/-/g, 'y');

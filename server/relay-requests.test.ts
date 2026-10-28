@@ -64,3 +64,39 @@ test('approval expiry supports one hour, one day, seven days and permanent, reje
     assert.equal(store.requests().find(row => row.id === receipt.id)!.status, 'pending');
   } finally { db.close(); }
 });
+
+test('the relay forces each device\'s rate limit on its tunnel and can make a device reconnect to apply it', async t => {
+  const db = new DatabaseSync(':memory:'), store = new RelayStore(db);
+  const server = createServer().listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); db.close(); });
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  const origin = `http://127.0.0.1:${address.port}`, base = `${origin}/connect`;
+  server.on('request', createRelayApp(store, { serverUrl: base, adminToken: 'admin-fixture', pluginToken: 'plugin-fixture', adminHtml: resolve('relay/index.html') }));
+  const admin = (path: string, method = 'GET', body?: object) => fetch(`${base}/api/admin${path}`, { method, headers: { 'content-type': 'application/json', authorization: 'Bearer admin-fixture' }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const credential = newSecret();
+  const device = store.redeem(decodeInvite(store.createInvite(base, '', 1).invite).secret, newSecret(), credential, '限速设备');
+  const plugin = async (op: string, content: object) => (await fetch(`${origin}/internal/frp/plugin-fixture?op=${op}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content }) })).json() as Promise<{ reject: boolean; unchange?: boolean; content?: { bandwidth_limit?: string; bandwidth_limit_mode?: string } }>;
+  const user = { user: device.id, metas: { credential } };
+  const proxy = { user, proxy_type: 'tcp', proxy_name: `${device.id}.web`, remote_port: device.port, bandwidth_limit: '999MB', bandwidth_limit_mode: 'client' };
+  // The client's own request is ignored: the default applies until an admin sets one.
+  let created = await plugin('NewProxy', proxy);
+  assert.equal(created.reject, false); assert.equal(created.unchange, false);
+  assert.deepEqual([created.content?.bandwidth_limit, created.content?.bandwidth_limit_mode], ['20MB', 'server']);
+  assert.equal((await admin(`/devices/${device.id}`, 'PATCH', { bandwidthLimit: 'nope' })).status, 400);
+  assert.equal((await (await admin(`/devices/${device.id}`, 'PATCH', { bandwidthLimit: '512KB' })).json() as { bandwidthLimit: string }).bandwidthLimit, '512KB');
+  created = await plugin('NewProxy', proxy);
+  assert.equal(created.content?.bandwidth_limit, '512KB');
+  // "Apply now" on a connected device rejects exactly one heartbeat so frpc reconnects.
+  assert.equal((await plugin('Login', { user: device.id, metas: { credential } })).reject, false);
+  await admin(`/devices/${device.id}`, 'PATCH', { bandwidthLimit: '1MB', applyNow: true });
+  assert.equal((await plugin('Ping', { user })).reject, true);
+  assert.equal((await plugin('Ping', { user })).reject, false);
+  const state = await (await admin('/state')).json() as { defaultBandwidth: string; devices: { id: string; effectiveBandwidth: string; publicUrl: string; lastLoginAt: string | null }[] };
+  const row = state.devices.find(item => item.id === device.id)!;
+  assert.equal(state.defaultBandwidth, '20MB');
+  assert.equal(row.effectiveBandwidth, '1MB');
+  assert.equal(row.publicUrl, `${base}/d/${device.id}`);
+  assert.ok(row.lastLoginAt);
+  assert.equal((await fetch(`${base}/api/admin/devices/${device.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 401);
+});
