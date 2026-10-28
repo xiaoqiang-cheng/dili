@@ -1,5 +1,6 @@
 import MachineSwitcher from './MachineSwitcher';
-import { updateAppBadge } from './app-badge';
+import { badgeCount, updateAppBadge } from './app-badge';
+import { playChime } from './chime';
 import AppVersion from './AppVersion';
 import { AUTO_MODE_NOTE, type ExecutionMode } from '../shared/execution';
 import { claudePermissionChoices, claudePermissionLabel } from '../shared/permissions';
@@ -177,6 +178,8 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   const sessionsRef = useRef<Session[] | null>(null);
   const stateRevisionRef = useRef(0);
   const stateRef = useRef<AppState | null>(null);
+  /** Notification clicks outlive the render that created them; always open with the latest router. */
+  const openGroupRef = useRef<(id: string) => void>(() => {});
   const serverSnapshotRef = useRef<{ instanceId: string; revision: number } | null>(null);
   const seenServerInstancesRef = useRef(new Set<string>());
   const operationRef = useRef(false);
@@ -247,18 +250,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
       if (unlock || context.state !== 'running') return;
       if (performance.now() - lastSoundRef.current < 800) return;
       lastSoundRef.current = performance.now();
-      const now = context.currentTime;
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-      oscillator.type = 'sine';
-      oscillator.frequency.setValueAtTime(880, now);
-      oscillator.frequency.exponentialRampToValueAtTime(660, now + 0.12);
-      gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(0.075, now + 0.012);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
-      oscillator.connect(gain); gain.connect(context.destination);
-      oscillator.onended = () => { oscillator.disconnect(); gain.disconnect(); };
-      oscillator.start(now); oscillator.stop(now + 0.18);
+      playChime(context);
     } catch {
       // Audio is an optional enhancement. Browser policy or missing audio
       // devices must never prevent state updates and system notifications.
@@ -292,7 +284,8 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     if (sessionsRef.current) {
       for (const session of next.sessions) {
         const previous = sessionsRef.current.find((old) => old.id === session.id);
-        if (previous && !session.archived && attention(session) && session.unread > previous.unread) {
+        const memberTurn = !!session.groupId && session.status !== 'waiting_approval' && session.status !== 'error';
+        if (previous && !session.archived && attention(session) && session.unread > previous.unread && !memberTurn) {
           if (soundRef.current) notificationSound();
           if (!notificationRef.current || typeof Notification === 'undefined' || Notification.permission !== 'granted') continue;
           try {
@@ -303,6 +296,19 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
             setNotifications(false); writeLocalPreference('sessiondeck.notifications', 'off');
           }
         }
+      }
+    }
+    const previousGroups = stateRef.current?.groups;
+    if (previousGroups) {
+      for (const group of next.groups) {
+        const before = previousGroups.find(old => old.id === group.id);
+        if (!before || (group.unread ?? 0) <= (before.unread ?? 0)) continue;
+        if (soundRef.current) notificationSound();
+        if (!notificationRef.current || typeof Notification === 'undefined' || Notification.permission !== 'granted') continue;
+        try {
+          const notification = new Notification(`${group.title} · 新回复`, { body: group.lastMessage ? `${group.lastMessage.senderName}：${group.lastMessage.text}` : '群聊有新消息', tag: `group:${group.id}`, icon: '/favicon.svg?v=shared-centre' });
+          notification.onclick = () => { window.focus(); openGroupRef.current(group.id); notification.close(); };
+        } catch { setNotifications(false); writeLocalPreference('sessiondeck.notifications', 'off'); }
       }
     }
     stateRef.current = next; sessionsRef.current = next.sessions; setState(next);
@@ -412,7 +418,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     const timer = setInterval(() => setClock(Date.now()), 30_000);
     return () => { clearInterval(timer); clearTimeout(toastTimer.current); };
   }, []);
-  const unreadCount = state?.sessions.reduce((count, session) => count + (!session.archived && pending(session) ? session.unread : 0), 0) ?? 0;
+  const unreadCount = badgeCount(state);
   useEffect(() => { updateAppBadge(unreadCount); }, [unreadCount]);
   useEffect(() => () => { updateAppBadge(0); }, []);
   useEffect(() => {
@@ -441,6 +447,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     finally { operationRef.current = false; setBusy(null); }
   };
   const navigate = (next: View) => updateRoute({ view: next, selectedId: null });
+  openGroupRef.current = (id: string) => navigate(`group:${id}`);
   const openSession = (session: Session, invoker?: HTMLElement, mode?: 'terminal' | 'chat') => {
     const source = invoker ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     if (source && source !== document.body && !source.closest('.session-drawer, .modal-overlay')) {

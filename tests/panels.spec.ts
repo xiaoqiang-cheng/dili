@@ -239,8 +239,9 @@ test('notification sounds work without system notification permission and respec
       state = 'suspended'; currentTime = 0; destination = {};
       resume() { this.state = 'running'; target.resumes++; return Promise.resolve(); }
       close() { return Promise.resolve(); }
-      createOscillator() { const parameter = { setValueAtTime() {}, exponentialRampToValueAtTime() {} }; return { frequency: parameter, connect() {}, disconnect() {}, start() { target.tones++; }, stop() {} }; }
-      createGain() { return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {}, disconnect() {} }; }
+      // A chime is several plucks with two partials each; its fundamental at the first note marks one chime.
+      createOscillator() { const parameter = { value: 0, setValueAtTime(value: number, at: number) { if (at === 0.01 && value === 1568 && this.first) target.tones++; this.first = false; }, exponentialRampToValueAtTime() {}, first: true }; return { type: 'sine', frequency: parameter, connect() {}, disconnect() {}, start() {}, stop() {} }; }
+      createGain() { return { gain: { value: 1, setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {}, disconnect() {} }; }
     }
     class StateSource extends EventTarget {
       onopen: (() => void) | null = null;
