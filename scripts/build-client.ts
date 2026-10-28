@@ -44,6 +44,23 @@ export async function publishClientBuild(staging: string, destination: string) {
   }
   await copyDirectory(staging, destination);
   await copyAtomically(index, join(destination, 'index.html'));
+  await pruneStaleAssets(join(staging, 'assets'), join(destination, 'assets'));
+}
+
+/** Old hashed chunks stay for a week so long-open tabs can still lazy-load them;
+ * anything older that the current build no longer ships is removed. Without this
+ * every rebuild accumulates another copy of every chunk. Each publish rewrites the
+ * current build's files, so their modification time is always fresh. */
+export async function pruneStaleAssets(current: string, live: string, maxAgeMs = 7 * 86400_000, now = Date.now()) {
+  const shipped = new Set(await readdir(current).catch(() => [] as string[]));
+  let removed = 0;
+  for (const entry of await readdir(live, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isFile() || shipped.has(entry.name)) continue;
+    const path = join(live, entry.name);
+    if (now - (await stat(path)).mtimeMs < maxAgeMs) continue;
+    await rm(path, { force: true }); removed++;
+  }
+  return removed;
 }
 
 async function buildClient() {

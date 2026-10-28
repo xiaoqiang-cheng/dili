@@ -1531,7 +1531,11 @@ if (process.argv.includes('--dev')) {
     if (!base) return next();
     res.type('application/manifest+json').send(remoteManifest(readFileSync(join(dist, 'manifest.webmanifest'), 'utf8'), base));
   });
-  app.use(express.static(dist, { index: false }));
+  // Built assets have content hashes in their names and never change: cache them
+  // for a year so reopening a machine (especially through the relay) sends no
+  // revalidation requests. index.html, sw.js and the manifest stay revalidated.
+  app.use('/assets', express.static(join(dist, 'assets'), { index: false, immutable: true, maxAge: '365d', fallthrough: false }));
+  app.use(express.static(dist, { index: false, setHeaders: res => res.setHeader('Cache-Control', 'no-cache') }));
   app.get('/{*path}', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.type('html').send(remoteHtml(readFileSync(join(dist, 'index.html'), 'utf8'), isRemote(req) ? remoteBase(remoteSettings()) : ''));
