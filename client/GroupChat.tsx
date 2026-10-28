@@ -189,9 +189,17 @@ export default function GroupChat({ onShare, group, detail, members, demo, busy,
   const sourceMessage = sourceMessageId ? messagesById.get(sourceMessageId) : undefined;
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
-  // Viewing the group reads its member replies.
+  // Viewing the group reads its member replies, but only while this window is
+  // actually in front; replies that arrive in the background wait for focus.
   const staleReminders = activeMembers.filter(member => member.unread > 0 && member.status !== 'waiting_approval' && member.status !== 'error').length;
-  useEffect(() => { if ((group.unread ?? 0) > 0 || staleReminders > 0) markRead(); }, [group.unread, staleReminders, markRead]);
+  useEffect(() => {
+    if (!((group.unread ?? 0) > 0 || staleReminders > 0)) return;
+    const read = () => { if (document.visibilityState === 'visible' && document.hasFocus()) markRead(); };
+    read();
+    window.addEventListener('focus', read);
+    document.addEventListener('visibilitychange', read);
+    return () => { window.removeEventListener('focus', read); document.removeEventListener('visibilitychange', read); };
+  }, [group.unread, staleReminders, markRead]);
 
   const jumpToMessage = useCallback((id: string) => {
     const element = document.getElementById(`group-message-${id}`);

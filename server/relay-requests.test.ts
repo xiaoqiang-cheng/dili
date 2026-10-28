@@ -85,6 +85,9 @@ test('the relay forces each device\'s rate limit on its tunnel and can make a de
   assert.deepEqual([created.content?.bandwidth_limit, created.content?.bandwidth_limit_mode], ['20MB', 'server']);
   assert.equal((await admin(`/devices/${device.id}`, 'PATCH', { bandwidthLimit: 'nope' })).status, 400);
   assert.equal((await (await admin(`/devices/${device.id}`, 'PATCH', { bandwidthLimit: '512KB' })).json() as { bandwidthLimit: string }).bandwidthLimit, '512KB');
+  const noted = await (await admin(`/devices/${device.id}`, 'PATCH', { note: ' 书房台式机 ' })).json() as { note: string; bandwidthLimit: string };
+  assert.deepEqual([noted.note, noted.bandwidthLimit], ['书房台式机', '512KB']);
+  assert.equal((await admin(`/devices/${device.id}`, 'PATCH', { note: 'x'.repeat(201) })).status, 400);
   created = await plugin('NewProxy', proxy);
   assert.equal(created.content?.bandwidth_limit, '512KB');
   // "Apply now" on a connected device rejects exactly one heartbeat so frpc reconnects.

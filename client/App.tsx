@@ -360,18 +360,18 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     } catch (cause) { setError(cause instanceof Error ? cause.message : '无法标记已读'); }
   }, []);
   // Viewing a session reads its reminders, whether or not you type anything.
-  // Re-run on every new reminder while it stays open and the tab is visible.
+  // Re-run on every new reminder while it stays open; a window that is hidden or
+  // behind other windows keeps them until it comes back to the front.
   useEffect(() => {
-    if (!selected?.id || !selected.unread || document.visibilityState !== 'visible') return;
+    if (!selected?.id || !selected.unread) return;
     const id = selected.id;
-    const timer = setTimeout(() => { void markRead(id); }, 300);
-    return () => clearTimeout(timer);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = () => { clearTimeout(timer); if (document.visibilityState === 'visible' && document.hasFocus()) timer = setTimeout(() => { void markRead(id); }, 300); };
+    read();
+    window.addEventListener('focus', read);
+    document.addEventListener('visibilitychange', read);
+    return () => { clearTimeout(timer); window.removeEventListener('focus', read); document.removeEventListener('visibilitychange', read); };
   }, [selected?.id, selected?.unread, markRead]);
-  useEffect(() => {
-    const onVisible = () => { if (document.visibilityState === 'visible' && stateRef.current && selectedId) { const item = stateRef.current.sessions.find(session => session.id === selectedId); if (item?.unread) void markRead(item.id); } };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
-  }, [selectedId, markRead]);
   useEffect(() => {
     void refresh().catch(() => {});
     const stream = new EventSource(appUrl('/api/events'));

@@ -98,8 +98,14 @@ export function createRelayApp(store: RelayStore, options: RelayOptions) {
   app.delete('/connect/api/admin/devices/:id', (req, res) => { store.revokeDevice(String(req.params.id)); res.json({ ok: true }); });
   // A new limit applies when the device's tunnel reconnects; "apply now" forces that.
   app.patch('/connect/api/admin/devices/:id', (req, res) => {
-    const device = store.setBandwidth(String(req.params.id), req.body.bandwidthLimit ?? null);
-    if (req.body.applyNow === true && device.connected) store.requestReconnect(device.id);
+    const id = String(req.params.id);
+    let device = store.device(id);
+    if ('note' in req.body) device = store.setNote(id, req.body.note);
+    if ('bandwidthLimit' in req.body) {
+      device = store.setBandwidth(id, req.body.bandwidthLimit);
+      if (req.body.applyNow === true && device.connected) store.requestReconnect(device.id);
+    }
+    if (!device) return res.status(404).json({ error: '设备不存在' });
     res.json(device);
   });
 

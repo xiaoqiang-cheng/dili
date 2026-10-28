@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { encodeInvite, newSecret, secretHash, relayUrl } from './invite.ts';
 
-/** bandwidthLimit is a frp rate such as "2MB" or "500KB"; null means the default. */
-export interface RelayDevice { id: string; name: string; port: number; createdAt: string; revokedAt: string | null; lastSeenAt: string | null; connected: boolean; serverUrl?: string; bandwidthLimit?: string | null; lastLoginAt?: string | null }
+/** note is the admin's own remark, never sent to the device. bandwidthLimit is a frp rate such as "2MB" or "500KB"; null means the default. */
+export interface RelayDevice { id: string; name: string; port: number; createdAt: string; revokedAt: string | null; lastSeenAt: string | null; connected: boolean; serverUrl?: string; bandwidthLimit?: string | null; lastLoginAt?: string | null; note?: string }
 /** Applied when a device has no own limit; matches what clients have always requested. */
 export const DEFAULT_DEVICE_BANDWIDTH = '20MB';
 const BANDWIDTH = /^([1-9]\d{0,4})(KB|MB)$/;
@@ -116,6 +116,13 @@ export class RelayStore {
     if (!row) fail('设备不存在', 404);
     if (row.revokedAt) fail('设备已撤销', 409);
     row.bandwidthLimit = validBandwidth(value); this.save(row);
+    return this.device(id)!;
+  }
+  setNote(id: string, value: unknown) {
+    const row = this.rows().find(item => item.id === id);
+    if (!row) fail('设备不存在', 404);
+    if (typeof value !== 'string' || value.length > 200) fail('备注最多 200 字');
+    row.note = value.trim(); this.save(row);
     return this.device(id)!;
   }
   /** One-shot: the device's next heartbeat is rejected so frpc reconnects and the
