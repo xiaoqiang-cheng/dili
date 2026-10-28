@@ -16,6 +16,13 @@ export default function MachineSwitcher() {
   const [expanded, setExpanded] = useState(false);
   const [pinned, setPinned] = useState(false);
   const [recent, setRecent] = useState(visits);
+  // Switching is a full page load of another machine; show it at once instead of a frozen page.
+  const [switching, setSwitching] = useState('');
+  useEffect(() => {
+    const restored = (event: PageTransitionEvent) => { if (event.persisted) setSwitching(''); };
+    window.addEventListener('pageshow', restored);
+    return () => window.removeEventListener('pageshow', restored);
+  }, []);
   const home = machineHome();
   useEffect(() => {
     const save = () => {
@@ -35,6 +42,7 @@ export default function MachineSwitcher() {
   const name = machines.find(machine => publicMachineUrl(machine.url) === current)?.name || '当前机器';
   const visible = expanded || pinned;
   return <div className="machine-switcher">
+    {switching && <div className="machine-switching" role="status" aria-live="polite"><span className="machine-switching-bar" />正在切换到 {switching}…</div>}
     <button className="machine-switch-toggle" aria-label="切换机器" aria-expanded={visible} onClick={() => { if (pinned) setPinned(false); setExpanded(!visible); }} title={name}><span>{name}</span><ChevronDown size={12} /></button>
     {visible && <nav className="machine-switch-tabs" aria-label="切换已添加机器">
       <div className="machine-switch-scroll">{ordered.map(machine => {
@@ -43,7 +51,8 @@ export default function MachineSwitcher() {
         if (recent[url]?.hash) target.hash = workspaceHash(readWorkspaceRoute(recent[url].hash));
         return <a key={url} href={target.href} aria-current={url === current ? 'page' : undefined} title={machine.url} onClick={event => {
           setExpanded(false);
-          if (url === current) event.preventDefault();
+          if (url === current) { event.preventDefault(); return; }
+          if (!event.button && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) setSwitching(machine.name);
         }}>{machine.name}</a>;
       })}</div>
       <button className="machine-switch-pin" aria-label="固定机器切换条" aria-pressed={pinned} onClick={() => { setPinned(!pinned); setExpanded(false); }} title="固定展开"><Pin size={14} /></button>
