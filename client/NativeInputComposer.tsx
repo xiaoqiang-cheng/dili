@@ -37,7 +37,12 @@ function read(id: string, backend?: string): Draft {
   try { const value = JSON.parse(sessionStorage.getItem(key(id)) || 'null'); if (value && typeof value.text === 'string') return { text:value.text.slice(0,30000), attachments:Array.isArray(value.attachments) ? value.attachments.filter((item: ChatAttachment)=>item && typeof item.id === 'string' && typeof item.name === 'string').slice(0,8) : [], queue:readQueue(value.queue), ...(typeof value.pending === 'string' ? {pending:value.pending} : {}), ...(value.pendingMessage && typeof value.pendingMessage.text === 'string' && Array.isArray(value.pendingMessage.attachments) ? {pendingMessage:value.pendingMessage} : {}) }; } catch { /* invalid drafts are ignored */ }
   return {text:'',attachments:[]};
 }
-export default function NativeInputComposer({session,onTerminal,onSent,onActivityChange}: {session:Session;onTerminal():void;onSent?():void;onActivityChange?(phase:'sending'|'accepted'|null):void}) {
+export default function NativeInputComposer({session,onTerminal,onSent,onActivityChange,onPendingChange}: {
+  session:Session;onTerminal():void;onSent?():void;
+  onActivityChange?(phase:'sending'|'accepted'|null):void;
+  /** Keep a visible user bubble while native receipt is still in flight. */
+  onPendingChange?(pending: { text: string } | null):void;
+}) {
   const [voiceActive,setVoiceActive] = useState(false);
   const [draft,setDraft] = useState(() => read(session.id, session.backend));
   const [busy,setBusy] = useState(false), [uploading,setUploading] = useState(false), [preview,setPreview] = useState(false), [error,setError] = useState('');
@@ -49,9 +54,11 @@ export default function NativeInputComposer({session,onTerminal,onSent,onActivit
   const compact = useCompactLayout();
   useEffect(() => {
     active.current = true;
-    const refresh = (event: Event) => { if ((event as CustomEvent).detail?.id === session.id) { const value = read(session.id); latest.current = value; setDraft(value); } };
+    const refresh = (event: Event) => { if ((event as CustomEvent).detail?.id === session.id) { const value = read(session.id); latest.current = value; setDraft(value); onPendingChange?.(value.pendingMessage ? { text: value.pendingMessage.text } : null); } };
     window.addEventListener('dili:native-draft', refresh);
-    return () => {active.current = false; window.removeEventListener('dili:native-draft', refresh);};
+    const initial = latest.current;
+    onPendingChange?.(initial.pendingMessage ? { text: initial.pendingMessage.text } : null);
+    return () => {active.current = false; window.removeEventListener('dili:native-draft', refresh); onPendingChange?.(null);};
   },[session.id]);
   function update(value: Draft) {
     let saved = true;
@@ -66,6 +73,7 @@ export default function NativeInputComposer({session,onTerminal,onSent,onActivit
     const current = active.current ? latest.current : read(session.id);
     if (current.pending !== pending) return;
     update({text:!sent.queueId && current.text === sent.text ? '' : current.text, attachments:sent.queueId ? current.attachments : current.attachments.filter(item=>!sent.attachments.includes(item.id)), queue:current.queue?.filter(item=>item.id!==sent.queueId)});
+    // Keep the optimistic bubble until conversation history confirms the text.
     if (active.current) { onActivityChange?.('accepted'); onSent?.(); }
   }
   useAutoGrow(fieldRef, draft.text, compact);
@@ -87,6 +95,7 @@ export default function NativeInputComposer({session,onTerminal,onSent,onActivit
       const sent: Sent = {text:source.text, attachments:source.attachments.map(item=>item.id), ...(queued ? {queueId:queued.id} : {})};
       pending = messageId();
       if (!update({...current,pending,pendingMessage:sent})) { update({...current,pending:undefined,pendingMessage:undefined}); pending = undefined; throw new Error('无法保存本次发送状态，请允许浏览器存储后重试'); }
+      onPendingChange?.({ text: sent.text });
       const result = await api<{status:string;submitted?:boolean;error?:string}>('/sessions/' + session.id + '/input', {...sent,generation:native.generation,requestId:pending,submit:true});
       if (result.status !== 'accepted' || !result.submitted) throw new Error(result.error || '发送结果待确认，请核对发送结果或原生会话，避免重复发送');
       complete(pending,sent);
@@ -94,6 +103,7 @@ export default function NativeInputComposer({session,onTerminal,onSent,onActivit
       if (pending && cause instanceof ApiError && cause.status >= 400 && cause.status < 500) {
         const current = active.current ? latest.current : read(session.id);
         if (current.pending === pending) update({...current,pending:undefined,pendingMessage:undefined});
+        if (active.current) onPendingChange?.(null);
       }
       if (active.current) { onActivityChange?.(null); setError(cause instanceof Error ? cause.message : '发送失败'); }
       if (queued) { const current = active.current ? latest.current : read(session.id); update({...current,queue:current.queue?.map(item=>item.id===queued.id ? {...item,paused:true} : item)}); }
@@ -142,7 +152,7 @@ export default function NativeInputComposer({session,onTerminal,onSent,onActivit
     <button type="button" className="icon-button composer-tools-toggle" aria-label="更多输入工具" aria-expanded={toolsOpen} onClick={() => setToolsOpen(open => !open)}><Plus size={18} /></button>
     {['claude','dsh'].includes(session.backend) ? <ImageAttachments sessionId={session.id} items={draft.attachments} onChange={change=>{ const current = active.current ? latest.current : read(session.id); update({...current,attachments:change(current.attachments)}); }} onBusy={setUploading} disabled={!!draft.pending || busy || session.archived}>{field}</ImageAttachments> : field}
     {error && <p className="attachment-error" role="alert">{error}</p>}
-    {draft.pending && !busy && <div role="status"><p>{draft.pendingMessage ? '发送结果待确认；草稿已保留，不会自动重发。' : '上次填入结果待确认，请先核对原生会话。'}</p>{draft.pendingMessage && <button type="button" className="text-button" onClick={()=>void checkSend()}>核对发送结果</button>}<button type="button" className="text-button" onClick={onTerminal}>查看原生会话</button><button type="button" className="text-button" onClick={()=>update({...latest.current,pending:undefined,pendingMessage:undefined})}>已核对，恢复草稿</button></div>}
+    {draft.pending && !busy && <div role="status"><p>{draft.pendingMessage ? '发送结果待确认；草稿已保留，不会自动重发。请先核对原生会话是否已出现这条消息。' : '上次填入结果待确认，请先核对原生会话。'}</p>{draft.pendingMessage && <button type="button" className="text-button" onClick={()=>void checkSend()}>核对发送结果</button>}<button type="button" className="text-button" onClick={onTerminal}>查看原生会话</button><button type="button" className="text-button" onClick={()=>{ update({...latest.current,pending:undefined,pendingMessage:undefined}); onPendingChange?.(null); }}>已核对，恢复草稿</button></div>}
     <div className="chat-composer-footer native-input-footer"><span className="composer-hint" data-actionable={busy || !!draft.pending || session.status === 'waiting_approval' || !session.running || undefined}>{busy ? '正在发送…' : draft.pending ? '请先核对上一条消息的发送结果' : session.status === 'waiting_approval' ? '请先在原生终端中处理审批' : !session.running ? '请先启动会话，草稿已保留' : 'Enter 发送 · Shift + Enter 换行'}</span><div><VoiceInput sessionId={session.id} disabled={session.archived || busy || !!draft.pending} onActive={setVoiceActive} insert={text => { if (!update({...latest.current,text:appendVoiceText(latest.current.text,text)})) throw new Error("草稿保存失败，识别文字保留在下方"); }} /><button className="text-button composer-preview-toggle" type="button" aria-pressed={preview} onClick={()=>setPreview(value=>!value)}>Markdown 预览</button>{session.status==='running' && <button type="button" className="text-button composer-queue" disabled={!canSend} onClick={()=>void enqueue()}>加入队列</button>}<button type="button" className="button primary small-button composer-send" disabled={!canSend} onClick={()=>{ setToolsOpen(false); void send(); }}>{busy ? '正在发送…' : '发送'}</button></div></div>
   </div></ResizableComposer></>;
 }

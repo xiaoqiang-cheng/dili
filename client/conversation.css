@@ -27,5 +27,7 @@
 .conversation-scroller { min-width:0; }
 .conversation-message-highlighted .conversation-text,.conversation-message.from-user:focus-visible .conversation-text { outline:2px solid var(--accent); outline-offset:3px; }
 .conversation-message.from-user:focus { outline:none; }
+.conversation-message.pending .conversation-text { opacity: 0.72; border: 1px dashed var(--line-strong); }
+.conversation-message.pending .conversation-message-meta span { color: var(--muted); }
 
 .conversation-primary { position:relative; display:flex; flex:1; min-width:0; min-height:0; flex-direction:column; }

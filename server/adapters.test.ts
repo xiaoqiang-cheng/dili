@@ -300,6 +300,35 @@ test('one damaged dsh cache row cannot hide healthy metadata, and oversized cach
   assert.deepEqual(await discoverSessions('dsh', { dshHome: home }), []);
 });
 
+test('DSH discovery reads per-session projcache titles used by current Harness builds', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'deck-dsh-projcache-files-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const cwd = join(home, 'work'), id = `session-${randomUUID()}`, stale = `session-${randomUUID()}`;
+  await mkdir(join(home, 'storages', 'session_projcache', 'sessions'), { recursive: true });
+  await mkdir(join(home, 'sessions', '--work--', id), { recursive: true });
+  // Legacy monolithic cache is stale / wrong; the per-session file must win.
+  await writeFile(join(home, 'storages', 'session_projcache.json'), JSON.stringify({ tables: { sessions: {
+    [id]: { identity: { cwd, createdAt: Date.now() - 60_000 }, rows: { title: { val: '过期标题' } } },
+    [stale]: { identity: { cwd, createdAt: Date.now() - 120_000 }, rows: { title: { val: '仅旧缓存' } } },
+  } } }));
+  await writeFile(join(home, 'storages', 'session_projcache', 'sessions', `${id}.json`), JSON.stringify({
+    version: 1,
+    record: {
+      identity: { cwd, createdAt: Date.now() },
+      rows: {
+        title: { ver: 1, seq: 3, val: '定位回放工作区' },
+        sessionListMetadata: { val: { lastPromptAt: Date.now() } },
+      },
+    },
+  }));
+  // Session log header has no title; without projcache files this would be the default label.
+  await writeFile(join(home, 'sessions', '--work--', id, 'session.v4.jsonl'), JSON.stringify({ type: 'session', version: 4, id, createdAt: Date.now(), cwd }) + '\n');
+  const rows = await discoverSessions('dsh', { dshHome: home });
+  assert.equal(rows.find(row => row.nativeSessionId === id)?.title, '定位回放工作区');
+  assert.equal(rows.find(row => row.nativeSessionId === stale)?.title, '仅旧缓存');
+  assert.ok(!rows.some(row => row.title === 'DeepSeek Harness 会话' && row.nativeSessionId === id));
+});
+
 test('DSH accepts both id forms, launches dsh-tui in a PTY, and discovers 0.2 session logs by header', async t => {
   assert.equal(validateNativeId('dsh', `session-${randomUUID()}`).startsWith('session-'), true);
   const bare = randomUUID();

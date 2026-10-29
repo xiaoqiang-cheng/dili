@@ -53,12 +53,21 @@ export default function ConversationPane({ session, onTerminal, onSelection, all
   const current = snapshot?.identity === identity ? snapshot : null;
   const activityKey = JSON.stringify([session.running, session.status, session.statusSource, session.lastActivity, session.lastAttentionKey]);
   const [submissionActivity, setSubmissionActivity] = useState<{ identity: string; key: string; phase: 'sending' | 'accepted' } | null>(null);
+  const [pendingSend, setPendingSend] = useState<{ identity: string; text: string } | null>(null);
   const localActivity = submissionActivity?.identity === identity ? submissionActivity : null;
+  const localPending = pendingSend?.identity === identity ? pendingSend : null;
   // A native transition takes over the optimistic bridge. In particular, an
   // approval, completion or stop that arrives before the send response wins.
   useEffect(() => {
     if (submissionActivity && (submissionActivity.identity !== identity || submissionActivity.key !== activityKey) && submissionActivity.phase !== 'sending') setSubmissionActivity(null);
   }, [identity, activityKey, submissionActivity]);
+  useEffect(() => {
+    if (pendingSend && pendingSend.identity !== identity) setPendingSend(null);
+  }, [identity, pendingSend]);
+  useEffect(() => {
+    if (!localPending || !current?.transcript.messages.some(message => message.role === 'user' && message.text === localPending.text)) return;
+    setPendingSend(null);
+  }, [current, localPending]);
   const activityPhase = session.archived || !session.running || session.status === 'error' || session.status === 'stopped' || session.status === 'waiting_approval' ? null
     : localActivity?.phase === 'sending' ? 'sending'
     : session.status === 'running' ? 'working'
@@ -212,13 +221,18 @@ export default function ConversationPane({ session, onTerminal, onSelection, all
           : <ol className="chat-messages conversation-messages">{transcript!.messages.map(message => <li key={message.id} data-message-id={message.id} tabIndex={message.role === 'user' ? -1 : undefined} className={`chat-message chat-${message.role} conversation-message from-${message.role}${message.id === highlightedInput ? ' conversation-message-highlighted' : ''}`}>
             <div className="chat-message-heading conversation-message-meta"><strong>{message.role === 'user' ? '你' : backendName[session.backend]}</strong>{messageTime(message.createdAt) && <time dateTime={message.createdAt}>{messageTime(message.createdAt)}</time>}</div>
             <div className="chat-message-body conversation-text">{message.role === 'assistant' ? <Markdown text={message.text} /> : message.text}</div>
-          </li>)}</ol>}
+          </li>)}
+          {localPending && !transcript!.messages.some(message => message.role === 'user' && message.text === localPending.text) && <li className="chat-message chat-user conversation-message from-user pending" aria-busy={localActivity?.phase === 'sending' || undefined}>
+            <div className="chat-message-heading conversation-message-meta"><strong>你</strong><span>{localActivity?.phase === 'sending' ? '发送中' : '待确认'}</span></div>
+            <div className="chat-message-body conversation-text">{localPending.text || '[图片]'}</div>
+          </li>}
+          </ol>}
     </div>
     {!atBottom && !empty && <button type="button" className="chat-latest" onClick={scrollToBottom}><ArrowDownToLine size={13} />回到最新消息</button>}
     </div>
     <ConversationOutline id={outlineId} open={outlineOpen} compact={compactOutline} entries={transcript?.messages.filter(message => message.role === 'user') ?? []} selectedId={selectedInput} truncated={transcript?.truncated ?? false} close={closeOutline} select={jumpToInput} />
     </div>
     <ChatActivity phase={activityPhase} />
-    {allowInput && session.backend !== 'codex' && <NativeInputComposer key={session.id} session={session} onTerminal={onTerminal} onActivityChange={phase => setSubmissionActivity(previous => phase === 'sending' ? { identity, key: activityKey, phase } : phase === 'accepted' && previous?.identity === identity ? { ...previous, phase } : null)} onSent={() => { followBottom.current = true; refresh.current(); }} />}
+    {allowInput && session.backend !== 'codex' && <NativeInputComposer key={session.id} session={session} onTerminal={onTerminal} onActivityChange={phase => setSubmissionActivity(previous => phase === 'sending' ? { identity, key: activityKey, phase } : phase === 'accepted' && previous?.identity === identity ? { ...previous, phase } : null)} onPendingChange={pending => setPendingSend(pending ? { identity, text: pending.text } : null)} onSent={() => { followBottom.current = true; refresh.current(); }} />}
   </section>;
 }

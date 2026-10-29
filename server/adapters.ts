@@ -333,7 +333,28 @@ async function dshSessions(home: string): Promise<Candidate[]> {
   return [...byId.values()].sort((a, b) => b.lastActivity.localeCompare(a.lastActivity)).slice(0, DISCOVERY_LIMIT);
 }
 
+/** Current DSH builds store one projection file per session under
+ * `storages/session_projcache/sessions/<id>.json` (`{ version, record }`).
+ * Older builds kept a single `session_projcache.json` with `tables.sessions`. */
+function dshProjcacheRecord(nativeSessionId: string, raw: unknown): Candidate | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !DSH_ID.test(nativeSessionId)) return null;
+  const wrapped = raw as { record?: unknown };
+  const item = (wrapped.record && typeof wrapped.record === 'object' && !Array.isArray(wrapped.record) ? wrapped.record : raw) as {
+    identity?: { cwd?: string; createdAt?: number }; rows?: Record<string, { val?: unknown }>;
+  };
+  if (!validCwd(item.identity?.cwd)) return null;
+  const meta = item.rows?.sessionListMetadata?.val as { lastPromptAt?: number } | undefined;
+  return {
+    backend: 'dsh', nativeSessionId,
+    title: label(item.rows?.title?.val, 'DeepSeek Harness 会话'),
+    cwd: item.identity.cwd,
+    createdAt: iso(item.identity.createdAt),
+    lastActivity: iso(meta?.lastPromptAt ?? item.identity.createdAt),
+  };
+}
+
 async function dshProjcacheSessions(home: string): Promise<Candidate[]> {
+  const byId = new Map<string, Candidate>();
   try {
     const file = await open(join(home, 'storages', 'session_projcache.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     let content: string;
@@ -341,23 +362,47 @@ async function dshProjcacheSessions(home: string): Promise<Candidate[]> {
       const info = await file.stat();
       // This is a metadata cache, not an unbounded session transcript. Refuse
       // unexpectedly large replacements before allocating/parsing their body.
-      if (!info.isFile() || info.size > 16 * 1024 * 1024) return [];
-      const buffer = Buffer.alloc(info.size);
-      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
-      content = buffer.subarray(0, bytesRead).toString('utf8');
+      if (info.isFile() && info.size <= 16 * 1024 * 1024) {
+        const buffer = Buffer.alloc(info.size);
+        const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+        content = buffer.subarray(0, bytesRead).toString('utf8');
+      } else content = '';
     } finally { await file.close(); }
-    const doc = JSON.parse(content);
-    if (!doc || typeof doc !== 'object' || !doc.tables?.sessions || typeof doc.tables.sessions !== 'object' || Array.isArray(doc.tables.sessions)) return [];
-    const rows: Candidate[] = [];
-    for (const [nativeSessionId, raw] of Object.entries(doc.tables?.sessions ?? {})) {
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
-      const item = raw as { identity?: { cwd?: string; createdAt?: number }; rows?: Record<string, { val?: unknown }> };
-      if (!DSH_ID.test(nativeSessionId) || !validCwd(item.identity?.cwd)) continue;
-      const meta = item.rows?.sessionListMetadata?.val as { lastPromptAt?: number } | undefined;
-      rows.push({ backend: 'dsh', nativeSessionId, title: label(item.rows?.title?.val, 'DeepSeek Harness 会话'), cwd: item.identity.cwd, createdAt: iso(item.identity.createdAt), lastActivity: iso(meta?.lastPromptAt ?? item.identity.createdAt) });
+    if (content) {
+      const doc = JSON.parse(content);
+      if (doc && typeof doc === 'object' && doc.tables?.sessions && typeof doc.tables.sessions === 'object' && !Array.isArray(doc.tables.sessions)) {
+        for (const [nativeSessionId, raw] of Object.entries(doc.tables.sessions as Record<string, unknown>)) {
+          const row = dshProjcacheRecord(nativeSessionId, raw);
+          if (row) byId.set(nativeSessionId, row);
+        }
+      }
     }
-    return rows.sort((a, b) => b.lastActivity.localeCompare(a.lastActivity)).slice(0, DISCOVERY_LIMIT);
-  } catch { return []; }
+  } catch { /* Legacy cache is optional once per-session projections exist. */ }
+
+  try {
+    const names = await opendirEntries(join(home, 'storages', 'session_projcache', 'sessions'));
+    for (const entry of names) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      const nativeSessionId = entry.name.slice(0, -'.json'.length);
+      if (!DSH_ID.test(nativeSessionId)) continue;
+      try {
+        const file = await open(join(home, 'storages', 'session_projcache', 'sessions', entry.name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        let content: string;
+        try {
+          const info = await file.stat();
+          if (!info.isFile() || info.size > 256 * 1024) continue;
+          const buffer = Buffer.alloc(info.size);
+          const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+          content = buffer.subarray(0, bytesRead).toString('utf8');
+        } finally { await file.close(); }
+        const row = dshProjcacheRecord(nativeSessionId, JSON.parse(content));
+        // Per-session projections are the current source of truth for titles.
+        if (row) byId.set(nativeSessionId, row);
+      } catch { /* skip damaged one-off projections */ }
+    }
+  } catch { /* Directory layout is absent on older DSH installs. */ }
+
+  return [...byId.values()].sort((a, b) => b.lastActivity.localeCompare(a.lastActivity)).slice(0, DISCOVERY_LIMIT);
 }
 
 const discoveries = new Map<string, Promise<Candidate[]>>();

@@ -32,6 +32,7 @@ import type { AuthStatus, RemoteSettings, RemoteStatus, ShareMode } from '../sha
 import { demoBackends, seedDemo, demoCommand } from './demo.ts';
 import { getBackendInfo, buildLaunch, discoverSessions, resolveNativeSessionId, validateNativeId, findExecutable, effectiveClaudeSettings } from './adapters.ts';
 import { DshBridge } from './dsh.ts';
+import { submitDshInject } from './dsh-inject.ts';
 import { NativeStatusWatcher } from './native-status.ts';
 import { nativeHookPatch } from './native-events.ts';
 import { acquireInstanceLock } from './instance-lock.ts';
@@ -268,8 +269,10 @@ function groupId(value: unknown): string | null {
   return id;
 }
 function info(id: Backend) { return backends.find(b => b.id === id)!; }
-/** DeepSeek Harness runs in a PTY like Claude/Codex when dsh-tui is installed; otherwise through its native Web UI. */
-const dshWeb = (item: Pick<Session, 'backend'>) => item.backend === 'dsh' && !demo && !info('dsh').capabilities.terminal;
+/** DeepSeek Harness runs in a PTY like Claude/Codex when dsh-tui is installed; otherwise through its native Web UI.
+ * SESSIONDECK_DSH_PREFER_WEB=1 forces the Web bridge even when dsh-tui is on PATH — needed when the TUI
+ * mounts but cannot accept prompts (version skew / GenUI focus), which otherwise breaks share send. */
+const dshWeb = (item: Pick<Session, 'backend'>) => item.backend === 'dsh' && !demo && (!info('dsh').capabilities.terminal || process.env.SESSIONDECK_DSH_PREFER_WEB === '1');
 function status(id: string, patch: Partial<Session>, activity?: string) {
   if (closing) return;
   const old = session(id);
@@ -617,19 +620,47 @@ const chatApi = registerAgentChat(app, {
 app.post('/api/directories/list', async (req, res) => {
   res.json(await listDirectories(req.body.path, { showHidden: req.body.showHidden === true }));
 });
+/** PTY sessions use the live terminal generation; Web DeepSeek has no PTY, so
+ * mint a stable token from the launch so the composer can enable Send. */
+function inputGeneration(item: Session): string | null {
+  return terminals.generation(item.id) ?? (dshWeb(item) && item.running && item.nativeSessionId ? `web:${launchIds.get(item.id) ?? item.nativeSessionId}` : null);
+}
 app.get('/api/sessions/:id/input', (req, res) => {
   const item = session(String(req.params.id));
   const requestId = req.query.requestId;
   if (requestId !== undefined && (typeof requestId !== 'string' || !/^[a-zA-Z0-9_-]{16,100}$/.test(requestId))) fail('发送标识无效');
-  res.json({ generation: terminals.generation(item.id), nativeSessionId: item.nativeSessionId, directSubmit: true, ...(typeof requestId === 'string' ? { submission: submissions.get(item.id, requestId) ?? null } : {}) });
+  res.json({ generation: inputGeneration(item), nativeSessionId: item.nativeSessionId, directSubmit: true, ...(typeof requestId === 'string' ? { submission: submissions.get(item.id, requestId) ?? null } : {}) });
 });
+/** PTY paste can look successful while dsh-tui ignores the bytes (GenUI focus,
+ * mid-turn UI, etc.). Only native status/history proves the prompt landed. */
+async function confirmDshTerminalSubmit(item: Session, text: string, startedAt: number): Promise<boolean> {
+  const needle = text.replace(/\s+/g, ' ').trim().slice(0, 120);
+  if (!needle || !item.nativeSessionId) return false;
+  const deadline = Date.now() + 4_000;
+  while (Date.now() < deadline) {
+    if (closing) return false;
+    const current = store.session(item.id);
+    if (!current?.running || current.nativeSessionId !== item.nativeSessionId) return false;
+    if (current.status === 'running' && current.statusSource === 'native' && Date.parse(current.lastActivity || '') >= startedAt - 500) return true;
+    await new Promise<void>(accept => setTimeout(accept, 200));
+  }
+  try {
+    const current = store.session(item.id);
+    if (!current?.nativeSessionId) return false;
+    const transcript = await conversations.read(current);
+    return transcript.messages.some(message => message.role === 'user'
+      && message.text.replace(/\s+/g, ' ').includes(needle)
+      && (!message.createdAt || Date.parse(message.createdAt) >= startedAt - 2_000));
+  } catch { return false; }
+}
+
 app.post('/api/sessions/:id/input', async (req, res) => {
   const item = session(String(req.params.id));
   if (demo || item.backend === 'codex' || item.archived || !item.running || item.forkPending || starting.has(item.id) || stopping.has(item.id)) fail('请先启动会话后发送消息',409);
   if (req.body.submit !== undefined && typeof req.body.submit !== 'boolean') fail('发送方式无效');
   const submit = req.body.submit === true;
   if (item.status === 'waiting_approval') fail('请先在原生终端中处理审批',409);
-  const generation = terminals.generation(item.id);
+  const generation = inputGeneration(item);
   if (!generation || req.body.generation !== generation) fail('原生终端已变化，请核对后重新填入',409);
   if (typeof req.body.text !== 'string' || req.body.text.length > 30000 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(req.body.text)) fail('内容无效或超过 30000 字符');
   if (typeof req.body.requestId !== 'string' || !/^[a-zA-Z0-9_-]{16,100}$/.test(req.body.requestId)) fail('发送标识无效');
@@ -640,24 +671,56 @@ app.post('/api/sessions/:id/input', async (req, res) => {
   const payload = [req.body.text,req.body.attachments ?? [], ...(submit ? [true] : [])];
   const { created, submission } = submissions.begin(item.id,req.body.requestId, generation, JSON.stringify(payload));
   if (!created) return res.json({ ...submission, staged:!submit, submitted:submit && submission.status === 'accepted' });
+  const inputAt = new Date().toISOString();
   try {
     if (submit) {
-      await terminals.submit(item.id, req.body.text, images, generation, item.backend, () => {
+      const validateLive = () => {
         const current = store.session(item.id);
         if (!current || current.archived || !current.running || current.nativeSessionId !== item.nativeSessionId || starting.has(item.id) || stopping.has(item.id)) fail('会话状态已变化，请核对原生会话',409);
         if (current.status === 'waiting_approval') fail('请先在原生终端中处理审批',409);
-      });
+      };
+      // dsh-tui holds the native write handle, so session.prompt from a second
+      // Web bridge is refused. Prefer the RPC only when no PTY is attached
+      // (Web-only DeepSeek). With a live TUI, use its inject socket (same path
+      // as dsh.nvim) instead of PTY paste — GenUI focus/dialogs often swallow
+      // bracketed paste. Images still need the terminal paste path.
+      const preferNativePrompt = item.backend === 'dsh' && !!item.nativeSessionId && !!req.body.text.trim() && !images.length && !terminals.has(item.id);
+      const preferInject = item.backend === 'dsh' && !!item.nativeSessionId && !!req.body.text.trim() && !images.length && terminals.has(item.id);
+      if (preferNativePrompt) {
+        validateLive();
+        await dsh.prompt(item.nativeSessionId!, req.body.text);
+      } else if (preferInject) {
+        validateLive();
+        const startedAt = Date.now();
+        await submitDshInject(item.nativeSessionId!, req.body.text);
+        if (!await confirmDshTerminalSubmit(item, req.body.text, startedAt)) {
+          throw new Error('原生会话未确认收到这条消息。请到终端核对是否已出现后再决定是否重发');
+        }
+      } else {
+        if (!terminals.has(item.id)) fail('请先启动会话后发送消息', 409);
+        const startedAt = Date.now();
+        await terminals.submit(item.id, req.body.text, images, generation, item.backend, validateLive);
+        if (item.backend === 'dsh' && !await confirmDshTerminalSubmit(item, req.body.text, startedAt)) {
+          throw new Error('原生会话未确认收到这条消息。请到终端核对是否已出现后再决定是否重发');
+        }
+      }
     } else {
       // Group/task staging remains a separate, user-confirmed operation.
+      if (!terminals.has(item.id)) fail('请先启动会话后填入', 409);
       for (const image of images) terminals.stagePath(item.id, image, generation, item.backend);
       if (req.body.text.trim()) terminals.stage(item.id, (images.length ? ' ' : '') + req.body.text);
     }
-    res.json({ ...submissions.finish(item.id,req.body.requestId,{status:'accepted'}), staged:!submit, submitted:submit });
+    const accepted = submissions.finish(item.id,req.body.requestId,{status:'accepted'});
+    if (submit) updatePreview(item, { messages: [{ id: req.body.requestId, role: 'user', text: req.body.text.trim() || '[图片]', createdAt: inputAt }], truncated: false }, false);
+    res.json({ ...accepted, staged:!submit, submitted:submit });
   } catch (cause) {
     const error = cause instanceof Error ? cause.message : '原生发送结果未知';
-    const result = submissions.finish(item.id,req.body.requestId,{status:'unknown',error});
-    // Pasted content may already be native: keep the request ID pending.
-    res.status(202).json({ ...result, staged:!submit, submitted:false });
+    const rejected = cause instanceof DeliveryNotAcceptedError || (cause as { status?: number }).status === 409;
+    const result = submissions.finish(item.id,req.body.requestId,{status: rejected ? 'rejected' : 'unknown', error});
+    // Pasted content may already be native: keep the request ID pending unless
+    // the native API clearly refused before queueing.
+    if (rejected) res.status(409).json({ ...result, staged:!submit, submitted:false, error });
+    else res.status(202).json({ ...result, staged:!submit, submitted:false });
   }
 });
 app.get('/api/sessions/:id/conversation', async (req, res) => {
@@ -1245,6 +1308,8 @@ async function deliverNow(id: string, options: { autoStart?: boolean } = {}) {
   if (images.length && targetWeb) fail('DeepSeek Harness 网页会话暂不支持图片任务，请使用终端会话接收；图片已保留在群聊中');
   deliveryLocks.add(id);
   try {
+    // Web-only DeepSeek uses session.prompt; dsh-tui already owns the write
+    // handle, so those contacts stay on terminal staging for the user to submit.
     const deliveryStatus = targetWeb || agentChat ? 'sent' : 'staged';
     const pending = sendDelivery(store, id, deliveryStatus, async () => {
       if (agentChat) {

@@ -512,7 +512,9 @@ export class DshBridge {
   async prompt(id: string, text: string): Promise<void> {
     validateNativeId('dsh', id);
     if (!text.trim()) throw new Error('消息不能为空');
-    if (!this.ready) throw new Error('请先打开 DeepSeek Harness 会话');
+    // Private chat and group delivery both need the native Web RPC, including
+    // when the contact is attached through dsh-tui rather than the Web UI.
+    await this.start();
     await this.rpc('session.prompt', { sessionId: id, ...(this.modern ? { requestId: randomUUID() } : {}), mode: 'queue', content: [{ type: 'text', text }] });
   }
 
