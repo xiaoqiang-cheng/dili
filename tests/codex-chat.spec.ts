@@ -1142,3 +1142,29 @@ test('desktop composer hides the phone tray toggle and keeps every tool on one r
   }));
   for (const y of rows) expect(Math.abs(y - rows[0])).toBeLessThan(6);
 });
+
+for (const agent of ['codex', 'claude'] as const) test(`${agent} reopens recent messages before a slow refresh without enabling stale controls`, async ({ page }) => {
+  const app = await fixture(page, agent);
+  const name = agent === 'claude' ? 'Claude' : 'Codex';
+  Object.assign(app.contact, { running: true, nativeSessionId: 'cached-native', interactionMode: 'chat', executionTransport: 'structured' });
+  app.current.snapshot = { ...app.current.snapshot, nativeSessionId: 'cached-native', connected: true, items: [{ id: 'old-answer', type: 'assistant', text: '上次已经读过的回答', status: 'completed' }] };
+  await app.open();
+  await expect(page.getByText('上次已经读过的回答', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '关闭会话', exact: true }).click();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route(`**/api/sessions/${app.contact.id}/chat`, async route => {
+    await gate;
+    await route.fulfill({ json: { ...app.current.snapshot, revision: 2, items: [{ id: 'new-answer', type: 'assistant', text: '刚刚同步的最新回答', status: 'completed' }] } });
+  });
+  try {
+    await page.getByRole('button', { name: `进入 ${app.contact.title} 的会话`, exact: true }).click();
+    await expect(page.getByText('上次已经读过的回答', { exact: true })).toBeVisible();
+    await expect(page.getByText('正在同步最新对话…', { exact: true })).toBeVisible();
+    await page.getByLabel(`给 ${name} 发送消息`).fill('保留草稿，等待确认');
+    await expect(page.getByRole('button', { name: '发送', exact: true })).toBeDisabled();
+  } finally { release(); }
+  await expect(page.getByText('刚刚同步的最新回答', { exact: true })).toBeVisible();
+  await expect(page.getByText('上次已经读过的回答', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '发送', exact: true })).toBeEnabled();
+});

@@ -1,3 +1,4 @@
+import { transcriptViews } from './chat-view-cache';
 import { PaneToolOverflow, SessionToolbar, useSessionChrome } from './SessionToolbar';
 import './chat-presentation.css';
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
@@ -30,7 +31,7 @@ export default function ConversationPane({ session, onTerminal, onSelection, all
 }) {
   const chrome = useSessionChrome();
   const identity = `${session.id}:${session.nativeSessionId ?? ''}:${session.forkPending}`;
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(() => { const transcript = transcriptViews.get(session); return transcript ? { identity, transcript, syncedAt: new Date() } : null; });
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
@@ -92,6 +93,8 @@ export default function ConversationPane({ session, onTerminal, onSelection, all
     let pendingRefresh = false;
     let pendingManual = false;
     let previous: ConversationTranscript | undefined;
+    const cached = transcriptViews.get(session);
+    setSnapshot(cached ? { identity, transcript: cached, syncedAt: new Date() } : null);
     setLoading(true); setRefreshing(false); setError(''); setAtBottom(true);
     followBottom.current = true; anchor.current = null;
     selectionCallback.current?.('');
@@ -117,6 +120,7 @@ export default function ConversationPane({ session, onTerminal, onSelection, all
         if (!previous || JSON.stringify(previous) !== JSON.stringify(transcript)) {
           captureAnchor();
           previous = transcript;
+          transcriptViews.put(session, transcript);
           setSnapshot({ identity, transcript, syncedAt: new Date() });
         }
         setError('');

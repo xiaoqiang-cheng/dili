@@ -1,3 +1,4 @@
+import { syncChatViews, chatViews, transcriptViews } from './chat-view-cache';
 import MachineSwitcher from './MachineSwitcher';
 import { badgeCount, updateAppBadge } from './app-badge';
 import { playChime } from './chime';
@@ -283,6 +284,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
       if (seen.size > 8) seen.delete(seen.values().next().value!);
       serverSnapshotRef.current = { instanceId: next.instanceId, revision: next.revision };
     }
+    syncChatViews(next);
     next = applyPendingGroupReads(next, groupReadReceiptsRef.current);
     stateRevisionRef.current += 1;
     setConnectionError('');
@@ -440,7 +442,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   }, []);
   const unreadCount = badgeCount(state);
   useEffect(() => { updateAppBadge(unreadCount); }, [unreadCount]);
-  useEffect(() => () => { updateAppBadge(0); }, []);
+  useEffect(() => () => { updateAppBadge(0); chatViews.clear(); transcriptViews.clear(); }, []);
   useEffect(() => {
     document.title = `${unreadCount ? `(${unreadCount}) ` : ''}${selected?.title ?? currentGroup?.title ?? ({ contacts: '会话联系人', attention: '需要你处理', running: '正在运行', archive: '已归档', backends: '连接与能力', activity: '最近活动' } as Record<string, string>)[view] ?? '会话联系人'} · Dili`;
   }, [unreadCount, selected?.title, currentGroup?.title, view]);
