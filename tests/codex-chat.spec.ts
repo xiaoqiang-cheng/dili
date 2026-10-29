@@ -1,8 +1,17 @@
 import { mutationHeaders, test } from './fixtures';
 import { expectUnifiedConversation } from './conversation-layout';
+import { copyPrompt, expectMessageCopy } from './chat-copy';
 import { expect, type Page } from '@playwright/test';
 import type { AppState, Session } from '../shared/types';
 import type { CodexChatAnswer, CodexChatItem, CodexChatPatch, CodexChatSnapshot, CodexChatSubmission } from '../shared/chat';
+
+for (const backend of ['codex', 'claude'] as const) test(`${backend} user messages support selection and copy in standalone and mobile views`, async ({ page }) => {
+  const app = await fixture(page, backend); await app.open();
+  await app.patch({ items: [{ id: 'copy-user', type: 'user', status: 'completed', text: copyPrompt }] });
+  await expectMessageCopy(page, page.locator('[data-chat-item="copy-user"]'));
+  await page.screenshot({ path: `artifacts/${backend}-message-copy-mobile.png` });
+  expect(app.requests.filter(item => item.path === 'messages')).toHaveLength(0);
+});
 
 test('Codex shows activity before the first token and follows tools, replies, approvals and completion', async ({ page }) => {
   const app = await fixture(page); await app.open();

@@ -6,6 +6,7 @@ import { ArrowDownToLine, List, MessageSquare, RefreshCw, TerminalSquare } from 
 import type { ConversationTranscript, Session } from '../shared/types';
 import { api } from './api';
 import Markdown from './Markdown';
+import MessageCopy from './MessageCopy';
 import { interfaceScale } from './zoom';
 import { dismissKeyboard } from './useCompactLayout';
 import NativeInputComposer from './NativeInputComposer';
@@ -214,7 +215,7 @@ export default function ConversationPane({ session, onTerminal, onSelection, all
           <p>{session.forkPending ? '启动 Fork 后，这里将显示新会话的记录。' : !session.nativeSessionId ? '启动原生会话并发送第一条消息后，记录会显示在这里。' : '原生记录保存后会出现在这里；可刷新记录或进入终端继续。'}</p>
           <button className="button secondary" onClick={onTerminal}><TerminalSquare size={14} />进入原生终端</button></div>
           : <ol className="chat-messages conversation-messages">{transcript!.messages.map(message => <li key={message.id} data-message-id={message.id} tabIndex={message.role === 'user' ? -1 : undefined} className={`chat-message chat-${message.role} conversation-message from-${message.role}${message.id === highlightedInput ? ' conversation-message-highlighted' : ''}`}>
-            <div className="chat-message-heading conversation-message-meta"><strong>{message.role === 'user' ? '你' : backendName[session.backend]}</strong>{messageTime(message.createdAt) && <time dateTime={message.createdAt}>{messageTime(message.createdAt)}</time>}</div>
+            <div className="chat-message-heading conversation-message-meta"><strong>{message.role === 'user' ? '你' : backendName[session.backend]}</strong>{messageTime(message.createdAt) && <time dateTime={message.createdAt}>{messageTime(message.createdAt)}</time>}<MessageCopy text={message.text} /></div>
             <div className="chat-message-body conversation-text">{message.role === 'assistant' ? <Markdown text={message.text} /> : message.text}</div>
           </li>)}</ol>}
     </div>

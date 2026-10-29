@@ -10,6 +10,7 @@ import type { Session } from '../shared/types';
 import type { AgentChatHistoryPage, AgentChatItem, AgentChatPatch, AgentChatSnapshot, AgentChatSubmission } from '../shared/chat';
 import { api, ApiError } from './api';
 import Markdown from './Markdown';
+import MessageCopy from './MessageCopy';
 import { interfaceScale } from './zoom';
 import ImageAttachments from './ImageAttachments';
 import type { ChatAttachment } from '../shared/attachments';
@@ -59,7 +60,7 @@ function requestId() {
 
 const MessageItem = memo(function MessageItem({ item, highlighted = false, agentName = 'Codex' }: { item: AgentChatItem; highlighted?: boolean; agentName?: string }) {
   if (item.type === 'assistant' || item.type === 'user') return <article className={`chat-message chat-${item.type} codex-message codex-${item.type}${highlighted ? ' codex-message-highlighted' : ''}`} data-chat-item={item.id} tabIndex={item.type === 'user' ? -1 : undefined}>
-    <div className="chat-message-heading codex-message-heading"><strong>{item.type === 'user' ? '你' : agentName}</strong>{item.status === 'inProgress' && <span><LoaderCircle size={11} className="spin" />正在回复</span>}{item.status === 'failed' && <span>未完成</span>}</div>
+    <div className="chat-message-heading codex-message-heading"><strong>{item.type === 'user' ? '你' : agentName}</strong>{item.status === 'inProgress' && <span><LoaderCircle size={11} className="spin" />正在回复</span>}{item.status === 'failed' && <span>未完成</span>}<MessageCopy text={item.text} /></div>
     <div className="chat-message-body codex-message-body">{item.type === 'assistant' ? <Markdown text={item.text || '…'} /> : <><p>{item.text}</p>{!!item.imageCount && <p className="codex-image-count">附带 {item.imageCount} 张图片</p>}</>}</div>
   </article>;
   if (item.type === 'notice') return <p className="codex-inline-notice" data-chat-item={item.id}>{item.text}</p>;

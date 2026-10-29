@@ -14,7 +14,7 @@ export async function copyToClipboard(text: string): Promise<void> {
   (focused?.closest('[role="dialog"]') ?? document.body).append(input);
   try {
     input.focus({ preventScroll: true }); input.select();
-    if (!document.execCommand('copy')) throw new Error('浏览器无法访问剪贴板，请选中目录后手动复制');
+    if (!document.execCommand('copy')) throw new Error('浏览器无法访问剪贴板，请选中文字后手动复制');
   } finally {
     input.remove();
     if (focused?.isConnected) focused.focus({ preventScroll: true });

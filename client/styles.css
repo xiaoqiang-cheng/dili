@@ -852,7 +852,8 @@ select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--line-stro
 /* Installed to the home screen: no browser chrome, so the page itself is the app. */
 @media (display-mode: standalone) {
   body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
-  input, textarea, .terminal-container, .conversation-text, .chat-markdown, .workspace-preview, .diff-view, code, pre { -webkit-user-select: text; user-select: text; }
+  input, textarea, .terminal-container, .chat-message-body, .conversation-text, .chat-markdown, .workspace-preview, .diff-view, code, pre { -webkit-user-select: text; user-select: text; }
+  .chat-message-body { -webkit-touch-callout: default; }
   .topbar { -webkit-app-region: drag; }
   .topbar button, .topbar input, .topbar a { -webkit-app-region: no-drag; }
 }
