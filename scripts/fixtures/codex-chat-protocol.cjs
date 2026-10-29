@@ -48,7 +48,7 @@ if (args[0] !== 'app-server') {
   wss.on('connection', socket => {
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
-    socket.on('message', raw => {
+    socket.on('message', async raw => {
       const message = JSON.parse(String(raw)), params = message.params || {};
       if (!message.method) {
         log({ event: 'answer', id: message.id, result: message.result, error: message.error, client: socket.clientName });
@@ -117,6 +117,13 @@ if (args[0] !== 'app-server') {
         turn.items.push(item); emit(thread.id, 'item/completed', { turnId: turn.id, item });
         result = { turnId: turn.id };
       } else if (message.method === 'turn/interrupt') {
+        if (fs.existsSync(dir + '/fail-interrupt')) { send(socket, { id: message.id, error: { code: -1, message: 'Fixture interrupt rejected' } }); return; }
+        if (fs.existsSync(dir + '/hold-interrupt')) {
+          log({ event: 'interrupt-held', nativeId: params.threadId });
+          await new Promise(resolve => {
+            const timer = setInterval(() => { if (!fs.existsSync(dir + '/hold-interrupt')) { clearInterval(timer); resolve(); } }, 10);
+          });
+        }
         thread = threads.get(params.threadId); const turn = thread?.turns.at(-1);
         if (!turn || turn.id !== params.turnId) { send(socket, { id: message.id, error: { code: -1, message: 'Wrong turn' } }); return; }
         turn.status = 'interrupted'; thread.status = { type: 'idle' };

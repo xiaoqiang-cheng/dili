@@ -73,6 +73,77 @@ async function launch(t: test.TestContext) {
   return { directory, request, calls, stream, create, snapshot, current, base, csrfToken };
 }
 
+test('archive stops a graphical Codex turn, preserves history, and leaves other threads running', { timeout: 30_000 }, async t => {
+  const f = await launch(t), { request, snapshot, current, calls } = f;
+  const source = await f.create('Archive target'), other = await f.create('Keep running');
+  const started = await request<Session>(`/api/sessions/${source.id}/start`, 'POST', { mode: 'chat' });
+  await request(`/api/sessions/${other.id}/start`, 'POST', { mode: 'chat' });
+  await request(`/api/sessions/${source.id}/chat/messages`, 'POST', { requestId: randomUUID(), text: 'HOLD archive context' });
+  await until(async () => !!(await snapshot(source.id)).activeTurnId, 'Target turn did not start');
+  const archived = await request<Session>(`/api/sessions/${source.id}`, 'PATCH', { archived: true });
+  assert.equal(archived.archived, true); assert.equal(archived.running, false); assert.equal(archived.status, 'stopped');
+  assert.equal(archived.nativeSessionId, started.nativeSessionId);
+  assert.equal((await current(other.id)).running, true);
+  assert.ok((await calls()).some(call => call.method === 'turn/interrupt' && call.params?.threadId === started.nativeSessionId));
+  assert.ok((await snapshot(source.id)).items.some(item => item.text.includes('HOLD archive context')));
+  await request(`/api/sessions/${source.id}/start`, 'POST', { mode: 'chat' }, 400);
+  const restored = await request<Session>(`/api/sessions/${source.id}`, 'PATCH', { archived: false });
+  assert.equal(restored.running, false); assert.equal(restored.nativeSessionId, started.nativeSessionId);
+  const resumed = await request<Session>(`/api/sessions/${source.id}/start`, 'POST', { mode: 'chat' });
+  assert.equal(resumed.nativeSessionId, started.nativeSessionId);
+  assert.ok((await snapshot(source.id)).items.some(item => item.text.includes('HOLD archive context')));
+});
+
+test('archive failure keeps the contact visible and shutdown locks out concurrent lifecycle changes', { timeout: 30_000 }, async t => {
+  const f = await launch(t), { request, snapshot, current } = f;
+  const source = await f.create('Archive interruption failure');
+  await request(`/api/sessions/${source.id}/start`, 'POST', { mode: 'chat' });
+  await request(`/api/sessions/${source.id}/chat/messages`, 'POST', { requestId: randomUUID(), text: 'HOLD' });
+  await until(async () => !!(await snapshot(source.id)).activeTurnId, 'Target turn did not start');
+  await writeFile(join(f.directory, 'fail-interrupt'), '1');
+  await request(`/api/sessions/${source.id}`, 'PATCH', { archived: true }, 400);
+  const failed = await current(source.id);
+  assert.equal(failed.archived, false); assert.equal(failed.running, true);
+  assert.match(failed.statusDetail, /停止未完成.*Fixture interrupt rejected/);
+  await rm(join(f.directory, 'fail-interrupt'));
+  await writeFile(join(f.directory, 'hold-interrupt'), '1');
+  const archiving = request<Session>(`/api/sessions/${source.id}`, 'PATCH', { archived: true });
+  // Consume a possible rejection immediately, while still checking its result below.
+  void archiving.catch(() => {});
+  try {
+    await until(async () => (await f.calls()).some(call => call.event === 'interrupt-held'), 'Archive did not enter native shutdown');
+    const stopping = await current(source.id);
+    assert.equal(stopping.archived, false, 'Do not hide a contact before shutdown completes');
+    await request(`/api/sessions/${source.id}/start`, 'POST', { mode: 'chat' }, 409);
+    await request(`/api/sessions/${source.id}`, 'PATCH', { archived: false }, 409);
+    await request(`/api/sessions/${source.id}`, 'PATCH', { archived: true }, 409);
+  } finally { await rm(join(f.directory, 'hold-interrupt')); }
+  const archived = await archiving;
+  assert.equal(archived.archived, true); assert.equal(archived.running, false);
+});
+
+test('archive closes a graphical Claude process without losing its saved native history', { timeout: 30_000 }, async t => {
+  const f = await launch(t), { request, snapshot } = f;
+  const source = await request<Session>('/api/sessions', 'POST', { backend: 'claude', title: 'Claude archive', cwd: f.directory }, 201);
+  const started = await request<Session>(`/api/sessions/${source.id}/start`, 'POST', { mode: 'chat' });
+  await request(`/api/sessions/${source.id}/chat/messages`, 'POST', { requestId: randomUUID(), text: 'HOLD' });
+  await until(async () => !!(await snapshot(source.id)).activeTurnId, 'Claude turn did not start');
+  const archived = await request<Session>(`/api/sessions/${source.id}`, 'PATCH', { archived: true });
+  assert.equal(archived.archived, true); assert.equal(archived.running, false); assert.equal(archived.status, 'stopped');
+  assert.equal(archived.nativeSessionId, started.nativeSessionId);
+  const saved = await readFile(join(f.directory, 'claude-home', 'projects', 'fixture', `${started.nativeSessionId}.jsonl`), 'utf8');
+  assert.match(saved, /HOLD/);
+  const launches = (await readFile(join(f.directory, 'claude-print-launches.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line) as { pid: number; args: string[] });
+  const native = launches.find(launch => launch.args.includes(started.nativeSessionId!));
+  assert.ok(native);
+  assert.throws(() => process.kill(native.pid, 0), { code: 'ESRCH' }, 'Archive must wait for the Claude process to exit');
+  const restored = await request<Session>(`/api/sessions/${source.id}`, 'PATCH', { archived: false });
+  assert.equal(restored.running, false);
+  const resumed = await request<Session>(`/api/sessions/${source.id}/start`, 'POST', { mode: 'chat' });
+  assert.equal(resumed.nativeSessionId, started.nativeSessionId);
+  assert.ok((await snapshot(source.id)).items.some(item => item.text.includes('HOLD')));
+});
+
 test('graphical Codex starts without a TUI, streams once per request ID, and attaches the exact native thread', { timeout: 30_000 }, async t => {
   const fixture = await launch(t), { request, calls, snapshot } = fixture;
   const source = await fixture.create('Graphical native source');

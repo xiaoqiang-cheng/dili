@@ -876,14 +876,12 @@ app.post('/api/sessions', async (req, res) => {
   if (item.groupId) await briefNewMember(item, req.body.briefing);
   res.status(201).json(session(item.id));
 });
-app.patch('/api/sessions/:id', (req, res) => {
+app.patch('/api/sessions/:id', async (req, res) => {
   const item = session(String(req.params.id));
   const patch: Partial<Session> = {};
   if ('title' in req.body) patch.title = text(req.body.title, '名称');
   for (const key of ['pinned', 'archived'] as const) if (key in req.body) {
     if (typeof req.body[key] !== 'boolean') fail('无效的布尔值');
-    if (key === 'archived' && starting.has(item.id)) fail('会话正在启动，请稍后再归档');
-    if (key === 'archived' && req.body[key] && item.running) fail('请先停止会话，再归档');
     patch[key] = req.body[key];
   }
   // Leaving a group keeps the contact and its private session; only membership ends.
@@ -893,6 +891,15 @@ app.patch('/api/sessions/:id', (req, res) => {
     if (!['idle', 'waiting_input', 'waiting_approval', 'unknown'].includes(choice)) fail('不支持的手动状态');
     Object.assign(patch, { status: choice, statusSource: 'manual', statusDetail: '由你手动标记' });
   }
+  if (patch.archived === true) {
+    // Keep the lifecycle lock through the archive write: a concurrent start
+    // must never slip between native shutdown and the archived flag.
+    return res.json(await stopSession(item.id, () => store.updateSession(item.id, {
+      ...patch, status: 'stopped', running: false, errorCode: null,
+      statusSource: 'process', statusDetail: '已停止并归档，原生会话历史保留',
+    })));
+  }
+  if ('archived' in patch && (starting.has(item.id) || stopping.has(item.id))) fail('会话正在连接或停止，请稍后重试', 409);
   const updated = store.updateSession(item.id, patch); broadcast(); res.json(updated);
 });
 app.post('/api/sessions/:id/read', (req, res) => { const item = store.updateSession(session(String(req.params.id)).id, { unread: 0 }); broadcast(); res.json(item); });
@@ -1136,24 +1143,24 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
 }
 app.post('/api/sessions/:id/start', async (req, res) => { res.json(await startSession(String(req.params.id), req.body ?? {})); });
 
-app.post('/api/sessions/:id/stop', async (req, res) => {
-  const item = session(String(req.params.id));
+async function stopSession(id: string, afterStop?: () => Session): Promise<Session> {
+  const item = session(id);
   if (starting.has(item.id)) fail('会话正在启动，请稍后再停止');
   if (stopping.has(item.id)) fail('会话正在停止，请等待回收完成', 409);
-  // Already stopped in the UI can still leave a Codex writer inside app-server.
-  // Force-release so Desktop is not blocked by a "stopped" contact.
-  if (!item.running) {
-    if (item.backend === 'codex' && !demo && item.nativeSessionId) {
-      await releaseCodexNative(item.nativeSessionId, item.id);
-      status(item.id, { status: 'stopped', statusSource: 'native', statusDetail: '已停止 Codex 当前任务，点「恢复原生会话」才会重新占用' });
-      broadcast();
-    }
-    return res.json(session(item.id));
-  }
   stopping.add(item.id);
-  status(item.id, { status: 'unknown', statusSource: 'process', statusDetail: '正在停止，等待原生任务和进程退出' });
-  broadcast();
   try {
+    // Already stopped in the UI can still leave a Codex writer inside app-server.
+    // Force-release so Desktop is not blocked by a "stopped" contact.
+    if (!item.running) {
+      if (item.backend === 'codex' && !demo && item.nativeSessionId) {
+        await releaseCodexNative(item.nativeSessionId, item.id);
+        status(item.id, { status: 'stopped', statusSource: 'native', statusDetail: '已停止 Codex 当前任务，点「恢复原生会话」才会重新占用' });
+      }
+      const result = afterStop?.() ?? session(item.id);
+      broadcast(); return result;
+    }
+    status(item.id, { status: 'unknown', statusSource: 'process', statusDetail: '正在停止，等待原生任务和进程退出' });
+    broadcast();
     if (dshWeb(item)) {
       if (item.nativeSessionId) await dsh.stopSession(item.nativeSessionId);
       launchIds.delete(item.id);
@@ -1173,12 +1180,14 @@ app.post('/api/sessions/:id/stop', async (req, res) => {
       await terminals.stop(item.id);
       status(item.id, { running: false, status: 'stopped', statusSource: 'process', statusDetail: '已停止，点「恢复原生会话」才会重新占用' });
     }
-    broadcast(); res.json(session(item.id));
+    const result = afterStop?.() ?? session(item.id);
+    broadcast(); return result;
   } catch (error) {
     status(item.id, { status: 'error', statusSource: 'process', statusDetail: `停止未完成：${error instanceof Error ? error.message : '请核对原生进程'}` });
     throw error;
   } finally { stopping.delete(item.id); }
-});
+}
+app.post('/api/sessions/:id/stop', async (req, res) => { res.json(await stopSession(String(req.params.id))); });
 
 function memberWorktree(id: string) {
   const item = session(id);
