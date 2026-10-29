@@ -1182,7 +1182,14 @@ app.patch('/api/groups/:id', (req, res) => {
   if ('archived' in req.body) { if (typeof req.body.archived !== 'boolean') fail('无效的布尔值'); patch.archived = req.body.archived; }
   const group = store.updateGroup(String(req.params.id), patch); broadcast(); res.json(group);
 });
-app.post('/api/groups/:id/read', (req, res) => { const group = store.markGroupRead(String(req.params.id)); broadcast(); res.json(group); });
+app.post('/api/groups/:id/read', (req, res) => {
+  const group = store.markGroupRead(String(req.params.id));
+  broadcast();
+  const snapshot = state();
+  const members = snapshot.sessions.filter(item => item.groupId === group.id)
+    .map(({ id, unread, updatedAt }) => ({ id, unread, updatedAt }));
+  res.json({ ...group, members, instanceId, revision: snapshot.revision });
+});
 app.get('/api/groups/:id', (req, res) => {
   if (req.query.since !== undefined && typeof req.query.since !== 'string') fail('历史版本无效');
   if (req.query.before !== undefined && typeof req.query.before !== 'string') fail('历史游标无效');

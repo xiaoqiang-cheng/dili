@@ -17,8 +17,8 @@ import {
   PanelBottomOpen, Volume2, VolumeX, TerminalSquare, Link2, PanelLeftOpen, PanelLeftClose,
   FilePenLine, Palette, Maximize2, Minimize2, PanelRightOpen,
 } from 'lucide-react';
-import type { AppState, StatePatch, Backend, DiscoveredSession, Group, GroupMessage, Session, SessionStatus } from '../shared/types';
-import { applyStatePatch } from './state';
+import type { AppState, StatePatch, Backend, DiscoveredSession, Group, GroupReadReceipt, GroupMessage, Session, SessionStatus } from '../shared/types';
+import { applyGroupRead, applyStatePatch } from './state';
 import { api, ApiError, getToken } from './api';
 import { useGroupHistory } from './group-history';
 import TerminalPane from './TerminalPane';
@@ -471,7 +471,14 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     autoStartRef.current = { id: session.id, mode };
     setSelectedId(session.id); setSelection('');
   };
-  const markGroupRead = useCallback(() => { if (groupId) void api(`/groups/${groupId}/read`, {}).catch(() => {}); }, [groupId]);
+  const markGroupRead = useCallback(() => {
+    if (!groupId) return;
+    void api<GroupReadReceipt>(`/groups/${groupId}/read`, {}).then(receipt => {
+      stateRef.current = applyGroupRead(stateRef.current, receipt);
+      sessionsRef.current = stateRef.current?.sessions ?? null;
+      setState(current => applyGroupRead(current, receipt));
+    }).catch(cause => setError(cause instanceof Error ? cause.message : '无法标记群聊已读'));
+  }, [groupId]);
   const openSessionForInput = (session: Session) => {
     const mode = ['codex', 'claude'].includes(session.backend) && session.interactionMode === 'chat' && !state?.demo ? 'chat' : 'terminal';
     if (session.backend !== 'dsh' || state?.demo || state?.backends.find(item => item.id === 'dsh')?.capabilities.terminal) selectPrivateView(session.backend, mode);
@@ -669,12 +676,12 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
       {currentGroup ? <>
           {currentGroup && groupError && <div className="error-banner" role="alert"><span>群组动态加载失败：{groupError}</span><button className="text-button" onClick={() => setGroupReload((value) => value + 1)}>重试群组动态</button></div>}
           {currentGroup && !groupError && (!detail || detail.group.id !== currentGroup.id) && <div className="loading-state" role="status"><LoaderCircle size={20} className="spin" /><p>正在读取群组动态…</p></div>}
-          {currentGroup && detail && detail.group.id === currentGroup.id && <GroupChat onShare={() => setModal({ type: 'shareLink', group: currentGroup })} key={currentGroup.id} group={currentGroup} detail={detail} loadOlder={loadOlder} loadingOlder={loadingOlder} readSource={readSource} resolveDelivery={(delivery, resolution) => void run(`resolve:${delivery.id}`, () => api(`/deliveries/${delivery.id}/resolve`, { attemptId: delivery.attempts?.at(-1)?.id, resolution }), '已记录核对结果')} members={sessions.filter((session) => session.groupId === groupId)} demo={state.demo} busy={busy}
+          {currentGroup && detail && detail.group.id === currentGroup.id && <GroupChat active={!selected && !modal} onShare={() => setModal({ type: 'shareLink', group: currentGroup })} key={currentGroup.id} group={currentGroup} detail={detail} loadOlder={loadOlder} loadingOlder={loadingOlder} readSource={readSource} resolveDelivery={(delivery, resolution) => void run(`resolve:${delivery.id}`, () => api(`/deliveries/${delivery.id}/resolve`, { attemptId: delivery.attempts?.at(-1)?.id, resolution }), '已记录核对结果')} members={sessions.filter((session) => session.groupId === groupId)} demo={state.demo} busy={busy}
             chatCapable={(member) => !state.demo && ['codex', 'claude'].includes(member.backend) && !!state.backends.find((backend) => backend.id === member.backend)?.capabilities.graphicalChat}
             confirmReplace={(message, draft, proceed) => setModal({ type: 'replaceDraft', draft, sourceName: message.senderName || '我', proceed })}
             post={async (body) => {
               let failures: { sessionId: string; error: string }[] = [];
-              const ok = await run('message', async () => { const result = await api<GroupMessage & { deliveryErrors?: { sessionId: string; error: string }[] }>(`/groups/${currentGroup.id}/messages`, body); failures = result.deliveryErrors ?? []; }, body.kind === 'task' ? '任务已发送，成员的回复会自动回到群里' : '已记录到群聊');
+              const ok = await run('message', async () => { const result = await api<GroupMessage & { deliveryErrors?: { sessionId: string; error: string }[] }>(`/groups/${currentGroup.id}/messages`, body); failures = result.deliveryErrors ?? []; });
               if (ok && failures.length) setError(failures.map((failure) => `${sessions.find((session) => session.id === failure.sessionId)?.title ?? '成员'}：${failure.error}`).join('；') + '。可在任务下方重试或取消。');
               return ok;
             }}

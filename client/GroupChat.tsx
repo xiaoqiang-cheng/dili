@@ -126,7 +126,8 @@ function MemberPane({ member, chatCapable, open }: { member: Session; chatCapabl
   </section>;
 }
 
-export default function GroupChat({ onShare, group, detail, members, demo, busy, chatCapable, post, deliver, cancel, open, confirmReplace, loadOlder, loadingOlder, readSource, resolveDelivery, addMember, editGroup, removeMember, markRead, back, openWorkspace, notify }: {
+export default function GroupChat({ active = true, onShare, group, detail, members, demo, busy, chatCapable, post, deliver, cancel, open, confirmReplace, loadOlder, loadingOlder, readSource, resolveDelivery, addMember, editGroup, removeMember, markRead, back, openWorkspace, notify }: {
+  active?: boolean;
   onShare?: () => void;
   group: Group; detail: GroupDetail; members: Session[]; demo: boolean; busy: string | null;
   chatCapable: (member: Session) => boolean;
@@ -191,15 +192,15 @@ export default function GroupChat({ onShare, group, detail, members, demo, busy,
 
   // Viewing the group reads its member replies, but only while this window is
   // actually in front; replies that arrive in the background wait for focus.
-  const staleReminders = activeMembers.filter(member => member.unread > 0 && member.status !== 'waiting_approval' && member.status !== 'error').length;
+  const staleReminders = activeMembers.filter(member => member.unread > 0 && member.status !== 'waiting_approval' && member.status !== 'error').map(member => `${member.id}:${member.unread}:${member.updatedAt}`).join(',');
   useEffect(() => {
-    if (!((group.unread ?? 0) > 0 || staleReminders > 0)) return;
+    if (!active || !((group.unread ?? 0) > 0 || staleReminders)) return;
     const read = () => { if (document.visibilityState === 'visible' && document.hasFocus()) markRead(); };
     read();
     window.addEventListener('focus', read);
     document.addEventListener('visibilitychange', read);
     return () => { window.removeEventListener('focus', read); document.removeEventListener('visibilitychange', read); };
-  }, [group.unread, staleReminders, markRead]);
+  }, [active, group.unread, group.updatedAt, staleReminders, markRead]);
 
   const jumpToMessage = useCallback((id: string) => {
     const element = document.getElementById(`group-message-${id}`);

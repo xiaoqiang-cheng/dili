@@ -142,6 +142,7 @@ test('only-one-member filter, @ mention, quote chips and split columns', async (
   await composer.press('Enter');
   await expect(page.getByText('一条记录', { exact: true })).toBeVisible();
   await expect(composer).toHaveValue('');
+  await expect(page.locator('.toast')).toHaveCount(0);
 
   await page.getByRole('button', { name: '全屏群聊' }).click();
   await expect(page.locator('.group-chat.group-fullscreen')).toBeVisible();
@@ -154,6 +155,42 @@ test('only-one-member filter, @ mention, quote chips and split columns', async (
   await page.screenshot({ path: 'artifacts/group-split.png' });
   await page.getByRole('button', { name: '退出分栏' }).click();
   await expect(page.locator('.group-timeline')).toBeVisible();
+});
+
+test('reading a group clears reply and member badges through HTTP even while the live stream is stalled', async ({ page }) => {
+  const { group, members } = await createGroup(page.request, '已读响应回归');
+  const state = await (await page.request.get('/api/state')).json() as AppState;
+  const current = state.groups.find(item => item.id === group.id)!;
+  current.unread = 2;
+  const member = state.sessions.find(item => item.id === members[0].id)!;
+  member.status = 'waiting_input'; member.unread = 2;
+  await page.addInitScript(() => {
+    const visibility = { value: 'hidden' };
+    Object.assign(window, { testGroupVisibility: visibility });
+    Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => true });
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility.value });
+  });
+  await page.route('**/api/state', route => route.fulfill({ json: state }));
+  await page.route('**/api/events', route => route.fulfill({ contentType: 'text/event-stream', body: `retry: 60000\nevent: state\ndata: ${JSON.stringify(state)}\n\n` }));
+  let reads = 0;
+  await page.route(`**/api/groups/${group.id}/read`, route => {
+    reads++;
+    return route.fulfill({ json: { ...current, unread: 0, instanceId: state.instanceId, revision: state.revision,
+      members: state.sessions.filter(item => item.groupId === group.id).map(item => ({ id: item.id, unread: 0, updatedAt: item.updatedAt })) } });
+  });
+  await page.goto('/#/contacts');
+  const card = page.locator('.group-card').filter({ hasText: group.title });
+  await expect(card.locator('.unread-badge')).toHaveText('2');
+  await card.getByRole('button', { name: `进入群聊 ${group.title}` }).click();
+  await expect(page.getByLabel('群组消息')).toBeVisible();
+  await expect(card.locator('.unread-badge')).toHaveText('2');
+  expect(reads).toBe(0);
+  await page.evaluate(() => {
+    (window as unknown as { testGroupVisibility: { value: string } }).testGroupVisibility.value = 'visible';
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect.poll(() => reads).toBeGreaterThan(0);
+  await expect(card.locator('.unread-badge')).toHaveCount(0);
 });
 
 test.describe('phone group chat', () => {

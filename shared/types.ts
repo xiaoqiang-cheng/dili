@@ -120,6 +120,13 @@ export interface Group {
   updatedAt: string;
 }
 
+/** Authoritative read receipt, including member reminders cleared by reading. */
+export interface GroupReadReceipt extends Group {
+  members: Pick<Session, 'id' | 'unread' | 'updatedAt'>[];
+  instanceId: string;
+  revision: number;
+}
+
 export interface GroupMessage {
   attachments?: ChatAttachment[];
   id: string;
