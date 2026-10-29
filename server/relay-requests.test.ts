@@ -103,3 +103,35 @@ test('the relay forces each device\'s rate limit on its tunnel and can make a de
   assert.ok(row.lastLoginAt);
   assert.equal((await fetch(`${base}/api/admin/devices/${device.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 401);
 });
+
+test('the relay admin can send a device notices that its Dili collects with its own credential', async t => {
+  const db = new DatabaseSync(':memory:'), store = new RelayStore(db);
+  const server = createServer().listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); db.close(); });
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}/connect`;
+  server.on('request', createRelayApp(store, { serverUrl: base, adminToken: 'admin-fixture', pluginToken: 'plugin-fixture', adminHtml: resolve('relay/index.html'), noticeWaitMs: 2000 }));
+  const admin = (path: string, body: object) => fetch(`${base}/api/admin${path}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer admin-fixture' }, body: JSON.stringify(body) });
+  const credential = newSecret();
+  const device = store.redeem(decodeInvite(store.createInvite(base, '', 1).invite).secret, newSecret(), credential, '通知设备');
+  const collect = (after = 0, secret = credential) => fetch(`${base}/api/devices/${device.id}/notices?after=${after}`, { headers: { authorization: `Bearer ${secret}` } });
+  assert.equal((await collect(0, newSecret())).status, 401);
+  assert.equal((await admin(`/devices/${device.id}/notices`, { text: '  ' })).status, 400);
+  assert.equal((await admin(`/devices/${device.id}/notices`, { text: 'x'.repeat(501) })).status, 400);
+  // A waiting device is woken as soon as the admin sends something.
+  const started = Date.now(), waiting = collect();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const sent = await admin(`/devices/${device.id}/notices`, { text: ' 记得更新 Dili ' });
+  assert.equal(sent.status, 201);
+  const first = await (await waiting).json() as { notices: { id: number; text: string }[] };
+  assert.deepEqual(first.notices.map(notice => notice.text), ['记得更新 Dili']);
+  assert.ok(Date.now() - started < 1500);
+  // Until acknowledged a notice is returned again; afterwards the device just waits.
+  assert.equal((await (await collect()).json() as { notices: unknown[] }).notices.length, 1);
+  const quiet = Date.now(), acknowledged = await (await collect(first.notices[0]!.id)).json() as { notices: unknown[] };
+  assert.equal(acknowledged.notices.length, 0); assert.ok(Date.now() - quiet >= 1500);
+  store.revokeDevice(device.id);
+  assert.equal((await admin(`/devices/${device.id}/notices`, { text: 'late' })).status, 409);
+  assert.equal((await collect()).status, 401);
+});

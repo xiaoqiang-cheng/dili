@@ -239,7 +239,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     setTerminalPanelOpen(true);
   }, []);
 
-  const notificationSound = useCallback((unlock = false) => {
+  const notificationSound = useCallback((unlock = false, once = false) => {
     if (typeof window === 'undefined') return;
     const AudioContextCtor = window.AudioContext ?? (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextCtor) return;
@@ -250,7 +250,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
       if (unlock || context.state !== 'running') return;
       if (performance.now() - lastSoundRef.current < 800) return;
       lastSoundRef.current = performance.now();
-      playChime(context);
+      playChime(context, once);
     } catch {
       // Audio is an optional enhancement. Browser policy or missing audio
       // devices must never prevent state updates and system notifications.
@@ -266,7 +266,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   }, [soundEnabled, notificationSound]);
   useEffect(() => () => { void notificationAudioRef.current?.close().catch(() => {}); notificationAudioRef.current = null; }, []);
 
-  const notify = useCallback((message: string) => { setToast(message); clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(''), 4200); }, []);
+  const notify = useCallback((message: string, ms = 4200) => { setToast(message); clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(''), ms); }, []);
   const acceptState = useCallback((next: AppState) => {
     if (typeof next.instanceId === 'string' && typeof next.revision === 'number' && Number.isFinite(next.revision)) {
       const previous = serverSnapshotRef.current;
@@ -383,6 +383,21 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     stream.onopen = () => { touch(); setConnected(true); setHasConnected(true); setGroupReload((value) => value + 1); void getToken(true).catch(() => {}); void refresh().catch(() => {}); };
     stream.onerror = () => setConnected(false);
     stream.addEventListener('ping', touch);
+    // Sent by the relay admin from its device list. Stays on screen longer than an
+    // ordinary toast; sound and system notification follow the reminder settings.
+    stream.addEventListener('notice', (event) => {
+      touch();
+      let notices: { id: number; text: string }[];
+      try { notices = JSON.parse((event as MessageEvent).data); } catch { return; }
+      if (!Array.isArray(notices) || !notices.length) return;
+      const text = notices.map(notice => notice.text).join('\n');
+      notify(`中继通知：${text}`, 15_000);
+      if (soundRef.current) notificationSound(false, true);
+      if (notificationRef.current && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        try { new Notification('Dili · 中继通知', { body: text, tag: `relay-notice:${notices.at(-1)!.id}`, icon: '/favicon.svg?v=shared-centre' }); }
+        catch { /* the in-page toast already shows it */ }
+      }
+    });
     const watchdog = setInterval(() => { if (Date.now() - lastEventAt > 45_000 && document.visibilityState === 'visible') void refresh().catch(() => {}); }, 15_000);
     stream.addEventListener('state', (event) => {
       touch();
@@ -408,7 +423,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
       void resync();
     });
     return () => { live = false; clearInterval(watchdog); stream.close(); };
-  }, [refresh, acceptState]);
+  }, [refresh, acceptState, notify, notificationSound]);
   useEffect(() => {
     const resume = () => { if (document.visibilityState === 'visible') void refresh().catch(() => {}); };
     document.addEventListener('visibilitychange', resume);

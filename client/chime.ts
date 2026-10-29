@@ -29,7 +29,8 @@ function pluck(context: AudioContext, at: number, frequency: number) {
   setTimeout(() => gain.disconnect(), 600);
 }
 
-export function playChime(context: AudioContext) {
+/** `once` plays a single "嘀哩", used for notices from the relay admin. */
+export function playChime(context: AudioContext, once = false) {
   const now = context.currentTime + 0.01;
-  for (const [delay, frequency] of NOTES) pluck(context, now + delay, frequency);
+  for (const [delay, frequency] of once ? NOTES.slice(0, 2) : NOTES) pluck(context, now + delay, frequency);
 }

@@ -20,6 +20,8 @@ import { allowedRemoteRequest, allowedRequest, readCookie, validToken } from './
 import { AuthStore, type Principal } from './auth.ts';
 import { authorize } from './access.ts';
 import { FrpTunnel } from './frp.ts';
+import { RelayNoticePoller } from './relay-notice-poller.ts';
+import type { RelayNotice } from './relay-notices.ts';
 import { decodeInvite } from './invite.ts';
 import { ensureFrp } from './frp-install.ts';
 import { pendingPairing, redeemPairing, revokePairing, type PendingPairing } from './pairing.ts';
@@ -98,6 +100,19 @@ function sealedSetting<T>(key: string): T | null {
 const pairing = () => sealedSetting<RelayPairing>('remote-pairing');
 const tunnel = new Tunnel(dataDir);
 const frpTunnel = new FrpTunnel(dataDir);
+// Notices the relay admin sent this device. Open owner pages show them at once; if
+// none is open they wait (up to a day) for the next page to connect.
+let heldNotices: RelayNotice[] = [];
+function deliverNotices(notices: RelayNotice[]) {
+  const chunk = `event: notice\ndata: ${JSON.stringify(notices)}\n\n`;
+  let shown = false;
+  for (const [client, viewer] of sse) if (!client.destroyed && viewer.principal.kind === 'owner') { client.write(chunk); shown = true; }
+  heldNotices = shown ? [] : [...heldNotices, ...notices].filter(notice => Date.now() - Date.parse(notice.createdAt) < 86400_000).slice(-20);
+}
+const relayNotices = new RelayNoticePoller(() => {
+  const settings = remoteSettings();
+  return !demo && settings.mode === 'invite' && settings.enabled ? pairing() : null;
+}, deliverNotices);
 let remoteBusy = false;
 let pairingStage: RemoteStatus['pairingStage'] = null;
 async function changeRemote<T>(operation: () => Promise<T>): Promise<T> {
@@ -493,6 +508,7 @@ async function applyRemote() {
   const pair = pairing();
   if (settings.mode === 'invite' && settings.enabled && !pair) fail('配对信息不可用，请重新输入邀请码', 409);
   await frpTunnel.configure(settings.mode === 'invite' && settings.enabled && remoteServer.listening ? pair : null, settings.localPort);
+  relayNotices.wake();
 }
 app.get('/api/remote', (_req, res) => res.json(remoteStatus()));
 app.post('/api/remote', async (req, res) => res.json(await changeRemote(async () => {
@@ -727,6 +743,7 @@ app.get('/api/events', (req, res) => {
   const principal = principalOf(res);
   res.write(`event: state\ndata: ${JSON.stringify(viewState(principal))}\n\n`);
   sse.set(res, { principal, device: res.locals.device });
+  if (principal.kind === 'owner' && heldNotices.length) { res.write(`event: notice\ndata: ${JSON.stringify(heldNotices)}\n\n`); heldNotices = []; }
   // A named ping (not a comment) lets the browser notice a stalled stream,
   // for example behind a proxy that buffers or compresses event streams.
   const heartbeat = setInterval(() => res.write('event: ping\ndata: {}\n\n'), 20_000);
@@ -1553,6 +1570,7 @@ server.listen(port, host, () => {
   console.log(`Dili${demo ? ' [演示模式，不调用真实模型]' : ''} → http://${host.includes(':') ? `[${host}]` : host}:${port}\n本地数据：${dataDir}`);
   // Tasks whose member already finished or failed before this start are collected now.
   if (!demo) for (const item of store.sessions()) groupReplies.statusChanged(item);
+  relayNotices.start();
   void applyRemote().then(() => {
     if (remoteServer.listening) console.log(`远程访问监听 → http://127.0.0.1:${remoteSettings().localPort}（需要登录）`);
   }).catch(error => console.error(`远程访问未启动：${error instanceof Error ? error.message : String(error)}`));
@@ -1582,7 +1600,7 @@ function shutdown(exitCode = 0) {
   // let a replacement instance race it against the same native history.
   void (async () => {
     groupReplies.close();
-    const results = await Promise.allSettled([voiceClosed, httpClosed, tunnel.close(), frpTunnel.close(), terminals.close(), shells.close(), dsh.close(), codexBridge.close(), claudeBridge.close()]);
+    const results = await Promise.allSettled([voiceClosed, httpClosed, tunnel.close(), frpTunnel.close(), relayNotices.close(), terminals.close(), shells.close(), dsh.close(), codexBridge.close(), claudeBridge.close()]);
     for (const result of results) if (result.status === 'rejected') { console.error('关闭原生资源失败：', result.reason instanceof Error ? result.reason.message : String(result.reason)); exitCode = 1; }
     try { publisher.close(); store.close(); }
     finally { await instanceLock.release(); }

@@ -3,13 +3,15 @@ import type { RelayBandwidth } from './relay-bandwidth.ts';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { DEFAULT_DEVICE_BANDWIDTH, RelayStore } from './relay-store.ts';
+import { NOTICE_MAX_LENGTH, RelayNotices } from './relay-notices.ts';
 import { validToken } from './security.ts';
 import { relayUrl } from './invite.ts';
 import { FRP_ARCHIVE_HASHES, frpArchive } from '../shared/frp.ts';
 
-export interface RelayOptions { serverUrl: string; domains?: string[]; adminToken: string; pluginToken: string; adminHtml: string; clientsDir?: string; bandwidth?: RelayBandwidth }
+export interface RelayOptions { serverUrl: string; domains?: string[]; adminToken: string; pluginToken: string; adminHtml: string; clientsDir?: string; bandwidth?: RelayBandwidth; notices?: RelayNotices; noticeWaitMs?: number }
 export function createRelayApp(store: RelayStore, options: RelayOptions) {
   const app = express(), serverUrl = relayUrl(options.serverUrl);
+  const notices = options.notices ?? new RelayNotices(), noticeWaitMs = options.noticeWaitMs ?? 25_000;
   const defaultUrl = new URL(serverUrl), domainUrls = new Map<string, string>();
   for (const value of [serverUrl, ...(options.domains ?? [])]) {
     const raw = String(value).trim();
@@ -69,7 +71,19 @@ export function createRelayApp(store: RelayStore, options: RelayOptions) {
   app.post('/connect/api/devices/:id/revoke', limit, (req, res) => {
     const device = store.authenticate(String(req.params.id), req.headers.authorization?.replace(/^Bearer /, ''));
     if (!device) return res.status(401).json({ error: '设备凭证已失效' });
-    store.revokeDevice(device.id); res.json({ ok: true });
+    store.revokeDevice(device.id); notices.forget(device.id); res.json({ ok: true });
+  });
+  // A paired device long-polls here with its own credential; `after` acknowledges
+  // what it has already shown. Not rate limited: it is called continuously, and the
+  // credential is a 256-bit secret.
+  app.get('/connect/api/devices/:id/notices', async (req, res) => {
+    const device = store.authenticate(String(req.params.id), req.headers.authorization?.replace(/^Bearer /, ''));
+    if (!device) return res.status(401).json({ error: '设备凭证已失效' });
+    const after = Number(req.query.after);
+    const aborted = new AbortController();
+    res.on('close', () => aborted.abort());
+    const list = await notices.take(device.id, Number.isSafeInteger(after) && after > 0 ? after : 0, noticeWaitMs, aborted.signal);
+    if (!res.headersSent && !aborted.signal.aborted) res.json({ notices: list });
   });
   app.use('/connect/api/admin', limit, (req, res, next) => {
     if (!validToken(req.headers.authorization?.replace(/^Bearer /, ''), options.adminToken)) return res.status(401).json({ error: '管理密钥不正确' });
@@ -77,7 +91,7 @@ export function createRelayApp(store: RelayStore, options: RelayOptions) {
   });
   app.get('/connect/api/admin/bandwidth', (_req, res) => res.json(options.bandwidth?.snapshot() ?? { available: false, error: '带宽采样未启用', history: [], current: null }));
   app.get('/connect/api/admin/state', (_req, res) => res.json({
-    devices: store.devices().map(device => ({ ...device, publicUrl: `${device.serverUrl ?? serverUrl}/d/${device.id}`, effectiveBandwidth: device.bandwidthLimit ?? DEFAULT_DEVICE_BANDWIDTH })),
+    devices: store.devices().map(device => ({ ...device, publicUrl: `${device.serverUrl ?? serverUrl}/d/${device.id}`, effectiveBandwidth: device.bandwidthLimit ?? DEFAULT_DEVICE_BANDWIDTH, pendingNotices: notices.pending(device.id).length })),
     invites: store.invites(), requests: store.requests(), domains, defaultBandwidth: DEFAULT_DEVICE_BANDWIDTH,
   }));
   app.post('/connect/api/admin/requests/:id/review', (req, res) => {
@@ -95,7 +109,15 @@ export function createRelayApp(store: RelayStore, options: RelayOptions) {
     res.status(201).json(store.createInvite(selectedUrl, req.body.label ?? '', hours));
   });
   app.delete('/connect/api/admin/invites/:id', (req, res) => { store.revokeInvite(String(req.params.id)); res.json({ ok: true }); });
-  app.delete('/connect/api/admin/devices/:id', (req, res) => { store.revokeDevice(String(req.params.id)); res.json({ ok: true }); });
+  app.delete('/connect/api/admin/devices/:id', (req, res) => { store.revokeDevice(String(req.params.id)); notices.forget(String(req.params.id)); res.json({ ok: true }); });
+  app.post('/connect/api/admin/devices/:id/notices', (req, res) => {
+    const device = store.device(String(req.params.id));
+    if (!device) return res.status(404).json({ error: '设备不存在' });
+    if (device.revokedAt) return res.status(409).json({ error: '设备已撤销' });
+    const text = typeof req.body.text === 'string' ? req.body.text.trim() : '';
+    if (!text || text.length > NOTICE_MAX_LENGTH) return res.status(400).json({ error: `通知内容为 1–${NOTICE_MAX_LENGTH} 字` });
+    res.status(201).json({ notice: notices.push(device.id, text), pending: notices.pending(device.id).length, connected: device.connected });
+  });
   // A new limit applies when the device's tunnel reconnects; "apply now" forces that.
   app.patch('/connect/api/admin/devices/:id', (req, res) => {
     const id = String(req.params.id);
