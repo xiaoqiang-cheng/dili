@@ -4,7 +4,7 @@ import ImageAttachments from './ImageAttachments';
 import VoiceInput, { appendVoiceText } from './VoiceInput';
 import GroupImages from './GroupImages';
 import { lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Maximize2, Minimize2, FolderGit2, FolderOpen, GitMerge, RotateCcw, Trash2, ArrowLeft, ArrowRight, AtSign, Check, ChevronDown, ChevronUp, Columns3, LoaderCircle, MessageSquare, Plus, Quote, Send, Settings2, Share2, UserMinus, UsersRound, X } from 'lucide-react';
+import { Maximize2, Minimize2, FolderGit2, FolderOpen, FolderPlus, GitMerge, RotateCcw, Trash2, ArrowLeft, ArrowRight, AtSign, Check, ChevronDown, ChevronUp, Columns3, LoaderCircle, MessageSquare, Plus, Quote, Send, Settings2, Share2, UserMinus, UsersRound, X } from 'lucide-react';
 import type { AgentChatSnapshot } from '../shared/chat';
 import type { Delivery, Group, GroupDetail, GroupMessage, Session, WorktreeStatus } from '../shared/types';
 import { api } from './api';
@@ -126,7 +126,7 @@ function MemberPane({ member, chatCapable, open }: { member: Session; chatCapabl
   </section>;
 }
 
-export default function GroupChat({ active = true, onShare, group, detail, members, demo, busy, chatCapable, post, deliver, cancel, open, confirmReplace, loadOlder, loadingOlder, readSource, resolveDelivery, addMember, editGroup, removeMember, markRead, back, openWorkspace, notify }: {
+export default function GroupChat({ active = true, onShare, group, detail, members, demo, busy, chatCapable, post, deliver, cancel, open, confirmReplace, loadOlder, loadingOlder, readSource, resolveDelivery, addMember, editGroup, editWorkspacePermissions, removeMember, markRead, back, openWorkspace, notify }: {
   active?: boolean;
   onShare?: () => void;
   group: Group; detail: GroupDetail; members: Session[]; demo: boolean; busy: string | null;
@@ -136,7 +136,7 @@ export default function GroupChat({ active = true, onShare, group, detail, membe
   confirmReplace: (message: GroupMessage, draft: string, proceed: () => void) => void;
   loadOlder: () => Promise<void>; loadingOlder: boolean; readSource: (id: string) => Promise<GroupMessage>;
   resolveDelivery: (delivery: Omit<Delivery, 'text'>, resolution: 'confirmed' | 'not_received' | 'cancelled') => void;
-  addMember: () => void; editGroup: () => void; removeMember: (member: Session) => void; markRead: () => void; back: () => void; openWorkspace: (member: Session) => void; notify: (text: string) => void;
+  addMember: () => void; editGroup: () => void; editWorkspacePermissions?: () => void; removeMember: (member: Session) => void; markRead: () => void; back: () => void; openWorkspace: (member: Session) => void; notify: (text: string) => void;
 }) {
   const [draft] = useState(() => readGroupDraft(detail.group.id));
   const [text, setText] = useState(() => draft.recipients.reduce((value, id) => {
@@ -443,6 +443,7 @@ export default function GroupChat({ active = true, onShare, group, detail, membe
         <button className="icon-button" aria-label="群设置" title="名称、目标与群 prompt" onClick={editGroup}><Settings2 size={16} /></button>
       </div>
       {membersOpen && <div className="group-members-panel" role="dialog" aria-label="群成员">
+        {editWorkspacePermissions && <button className="text-button" onClick={() => { setMembersOpen(false); editWorkspacePermissions(); }}><FolderPlus size={14} />群工作区权限</button>}
         {group.workspace && <div className="group-workspace-line" title={group.workspace}><FolderOpen size={13} />群工作区：{tail(group.workspace)}</div>}
         {activeMembers.map(member => <div className="group-members-row" key={member.id}><button className="member-avatar-link" aria-label={`打开 ${member.title} 的私聊`} onClick={() => { setMembersOpen(false); open(member.id, true); }}><BackendAvatar backend={member.backend} small /></button><div className="group-members-info"><div><strong>{member.title}</strong><StatusBadge session={member} /></div><MemberPlacement member={member} workspace={group.workspace} busy={!!busy} onChanged={notify} onError={setLocalError} /></div><button className="icon-button" aria-label={`打开 ${member.title} 的工作区`} title="在资源管理器中查看文件与改动" onClick={() => openWorkspace(member)}><FolderOpen size={14} /></button><button className="text-button" onClick={() => { setMembersOpen(false); open(member.id, true); }}>私聊</button><button className="icon-button" aria-label={`将 ${member.title} 移出群聊`} title="移出群聊（保留联系人）" onClick={() => removeMember(member)}><UserMinus size={14} /></button></div>)}
         <button className="text-button" onClick={() => { setMembersOpen(false); addMember(); }}><Plus size={14} />添加成员</button>

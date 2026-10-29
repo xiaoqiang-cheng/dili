@@ -1,3 +1,7 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { test, mutationHeaders } from './fixtures';
 import { expect } from '@playwright/test';
 import type { AppState, Group, Session } from '../shared/types';
@@ -378,4 +382,60 @@ test('group questions can be answered inline and private questions stay private'
   await page.reload();
   await expect(page.getByLabel('群组消息')).toBeVisible();
   await expect(question).toHaveCount(0);
+});
+
+
+for (const mobile of [false, true]) test(`group workspace bulk grants support partial failure and targeted retry on ${mobile ? 'mobile' : 'desktop'}`, async ({ page }) => {
+  if (mobile) await page.setViewportSize({ width: 390, height: 844 });
+  const extra = await mkdtemp(join(tmpdir(), 'dili-group-workspace-'));
+  try {
+    const { group, members } = await createGroup(page.request, `批量授权${mobile ? '手机' : '桌面'}`);
+    const [claude, codex, dsh] = members;
+    await page.goto(`/#/groups/${group.id}`);
+    await page.getByRole('button', { name: '群成员', exact: true }).click();
+    await page.getByRole('button', { name: '群工作区权限', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: '群工作区权限', exact: true });
+    await expect(dialog.getByRole('checkbox', { name: `授权 ${claude.title}`, exact: true })).toBeChecked();
+    await expect(dialog.getByRole('checkbox', { name: `授权 ${codex.title}`, exact: true })).toBeChecked();
+    await expect(dialog.getByRole('checkbox', { name: `授权 ${dsh.title}`, exact: true })).toBeDisabled();
+    await expect(dialog).toContainText('DeepSeek 原生沙箱暂不支持追加目录');
+    await dialog.getByRole('button', { name: '取消全选', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: /^授权所选成员/ })).toBeDisabled();
+    await dialog.getByRole('button', { name: '全选可授权成员', exact: true }).click();
+    await dialog.getByLabel('授权目录', { exact: true }).fill(pathToFileURL(extra).href);
+    await dialog.getByRole('button', { name: '浏览授权目录', exact: true }).click();
+    const picker = page.getByRole('dialog', { name: '选择工作目录', exact: true });
+    await expect(picker).toBeVisible();
+    await picker.getByRole('button', { name: '选择此目录', exact: true }).click();
+    await expect(dialog.getByLabel('授权目录', { exact: true })).toHaveValue(extra);
+    const calls: string[][] = [];
+    await page.route(`**/api/groups/${group.id}/directories`, async route => {
+      const body = route.request().postDataJSON() as { path: string; sessionIds: string[] };
+      calls.push(body.sessionIds);
+      if (calls.length !== 1) { await route.continue(); return; }
+      // Apply Claude's grant on the isolated server; simulate a busy Codex.
+      const response = await route.fetch({ postData: JSON.stringify({ ...body, sessionIds: [claude.id] }) });
+      const result = await response.json();
+      await route.fulfill({ response, json: { ...result, results: [...result.results, { sessionId: codex.id, status: 'failed', error: 'Codex 正在执行，请稍后重试' }] } });
+    });
+    await dialog.getByRole('button', { name: /^授权所选成员/ }).click();
+    await expect(dialog).toContainText('1 位已处理，1 位失败');
+    await expect(dialog).toContainText('Codex 正在执行，请稍后重试');
+    await expect(dialog).toContainText('已保存，待恢复会话生效');
+    await page.screenshot({ path: `artifacts/group-workspace-${mobile ? 'mobile' : 'desktop'}.png` });
+    expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await dialog.getByRole('button', { name: '仅重试失败成员', exact: true }).click();
+    await expect(dialog).toContainText('2 位已处理，0 位失败');
+    await expect(dialog.getByRole('button', { name: '仅重试失败成员', exact: true })).toHaveCount(0);
+    expect(calls).toEqual([[claude.id, codex.id], [codex.id]]);
+    const state = await (await page.request.get('/api/state')).json() as AppState;
+    for (const member of [claude, codex]) {
+      const current = state.sessions.find(item => item.id === member.id)!;
+      expect(current.additionalDirectories).toEqual([extra]);
+      expect(current.cwd).toBe(member.cwd);
+    }
+    expect(state.sessions.find(item => item.id === dsh.id)!.additionalDirectories).toBeUndefined();
+    await dialog.getByRole('button', { name: '完成', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+  } finally { await rm(extra, { recursive: true, force: true }); }
 });

@@ -50,7 +50,7 @@ import { ChatSubmissions } from './chat-submissions.ts';
 import { registerAgentChat } from './chat-api.ts';
 import { createAgentChatAdapters } from './agents/chat.ts';
 import { MAX_TERMINAL_IMAGE_BYTES, TERMINAL_IMAGE_TYPES, type TerminalImageType } from '../shared/terminal-images.ts';
-import type { Backend, BackendInfo, MemberWorktree, NativeSettings, Session, AppState, SessionStatus, ConversationTranscript, DiscoveredSession } from '../shared/types.ts';
+import type { Backend, BackendInfo, GroupDirectoryResult, MemberWorktree, NativeSettings, Session, AppState, SessionStatus, ConversationTranscript, DiscoveredSession } from '../shared/types.ts';
 import { normalizeClaudePermission } from '../shared/permissions.ts';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -899,17 +899,16 @@ app.post('/api/sessions/:id/read', (req, res) => { const item = store.updateSess
 
 // Append only: revoking a native permission cannot be promised by simply
 // removing it from our metadata (the native session may already retain it).
-app.post('/api/sessions/:id/directories', async (req, res) => {
-  const item = session(String(req.params.id));
+async function appendSessionDirectory(id: string, path: string): Promise<{ session: Session; status: GroupDirectoryResult['status'] }> {
+  const item = session(id);
   if (item.backend === 'dsh') fail('当前 DeepSeek Harness 原生沙箱只支持单工作区，暂不支持追加目录权限', 409);
   if (!info(item.backend).capabilities.additionalDirectories) fail('当前 CLI 不支持附加目录，请更新后刷新后端检测', 409);
   if (item.archived) fail('请先恢复归档联系人', 409);
   if (starting.has(item.id) || stopping.has(item.id) || terminals.isStopping(item.id)) fail('会话正在连接或停止，请稍后重试', 409);
-  const path = realpathSync(directory(req.body?.path));
   const directories = item.additionalDirectories ?? [];
   if ([item.cwd, ...directories].some(value => {
     try { return realpathSync(value) === path; } catch { return value === path; }
-  })) return res.json(item);
+  })) return { session: item, status: 'unchanged' };
   if (directories.length >= 20) fail('每个联系人最多添加 20 个附加工作区');
   starting.add(item.id);
   try {
@@ -917,8 +916,12 @@ app.post('/api/sessions/:id/directories', async (req, res) => {
     const live = !demo && item.backend === 'codex' && item.running && !!item.nativeSessionId && codexRuns.has(item.id);
     if (live) await codexBridge.addDirectories(item.nativeSessionId!, additionalDirectories);
     const updated = store.updateSession(item.id, { additionalDirectories, directoriesPending: !live });
-    broadcast(); res.json(updated);
+    broadcast(); return { session: updated, status: live ? 'applied' : 'pending' };
   } finally { starting.delete(item.id); }
+}
+app.post('/api/sessions/:id/directories', async (req, res) => {
+  const result = await appendSessionDirectory(String(req.params.id), realpathSync(directory(req.body?.path)));
+  res.json(result.session);
 });
 
 app.post('/api/native-event/:id', (req, res) => {
@@ -1211,6 +1214,34 @@ app.patch('/api/groups/:id', (req, res) => {
   if ('pinned' in req.body) { if (typeof req.body.pinned !== 'boolean') fail('无效的布尔值'); patch.pinned = req.body.pinned; }
   if ('archived' in req.body) { if (typeof req.body.archived !== 'boolean') fail('无效的布尔值'); patch.archived = req.body.archived; }
   const group = store.updateGroup(String(req.params.id), patch); broadcast(); res.json(group);
+});
+app.post('/api/groups/:id/directories', async (req, res) => {
+  const groupId = String(req.params.id);
+  const group = store.group(groupId);
+  if (!group) fail('群组不存在', 404);
+  if (group!.archived) fail('请先恢复归档群组', 409);
+  const path = realpathSync(directory(req.body?.path));
+  const ids: unknown = req.body?.sessionIds;
+  if (!Array.isArray(ids) || !ids.length || ids.length > 100 || ids.some(id => typeof id !== 'string' || !id)) fail('请选择 1–100 个群成员');
+  const selected = [...new Set(ids as string[])];
+  // Reject an invalid selection before granting any member access.
+  for (const id of selected) if (session(id).groupId !== groupId) fail('只能授权当前群组内的成员', 409);
+  const results: GroupDirectoryResult[] = new Array(selected.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < selected.length) {
+      const index = next++, sessionId = selected[index];
+      try {
+        if (store.group(groupId)?.archived || session(sessionId).groupId !== groupId) fail('群组或成员归属已变化，请刷新后重试', 409);
+        const { status } = await appendSessionDirectory(sessionId, path);
+        results[index] = { sessionId, status };
+      } catch (error) {
+        results[index] = { sessionId, status: 'failed', error: error instanceof Error ? error.message : '授权失败' };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, selected.length) }, worker));
+  res.json({ path, results });
 });
 app.post('/api/groups/:id/read', (req, res) => {
   const group = store.markGroupRead(String(req.params.id));

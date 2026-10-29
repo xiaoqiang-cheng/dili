@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
-import type { AppState, Delivery, Group, GroupDetail, GroupMessage, Session } from '../shared/types.ts';
+import type { AppState, Delivery, Group, GroupDirectoryResponse, GroupDetail, GroupMessage, Session } from '../shared/types.ts';
 import type { CodexChatSnapshot, CodexChatSubmission, AgentChatSettings } from '../shared/chat.ts';
 
 async function freePort() {
@@ -873,4 +873,67 @@ for (const backend of ['codex', 'claude'] as const) test(`${backend} appends nat
   await request(`/api/sessions/${contact.id}/stop`, 'POST', {});
   await request(`/api/sessions/${contact.id}`, 'PATCH', { archived: true });
   await request(route, 'POST', { path: f.directory }, 409);
+});
+
+
+test('group directory grants validate the whole selection and return per-member idempotent results', { timeout: 30_000 }, async t => {
+  const f = await launch(t), { request } = f;
+  const extra = join(f.directory, 'group extra'), alias = join(f.directory, 'group alias');
+  await mkdir(extra); await symlink(extra, alias);
+  const group = await request<Group>('/api/groups', 'POST', { title: 'Batch workspace', workspace: f.directory }, 201);
+  const members: Session[] = [];
+  for (const backend of ['codex', 'claude', 'dsh']) members.push(await request<Session>('/api/sessions', 'POST', { backend, title: backend, groupId: group.id, briefing: false }, 201));
+  const outsider = await f.create('Outside group');
+  const route = `/api/groups/${group.id}/directories`, ids = members.map(member => member.id);
+  for (const sessionIds of [undefined, [], 'all', [ids[0], null], new Array(101).fill(ids[0])]) await request(route, 'POST', { path: extra, sessionIds }, 400);
+  await request(route, 'POST', { path: extra, sessionIds: [ids[0], outsider.id] }, 409);
+  await request(route, 'POST', { path: join(f.directory, 'missing'), sessionIds: ids }, 400);
+  assert.equal((await f.current(ids[0])).additionalDirectories, undefined, 'invalid batches must not partially grant');
+  const response = await request<GroupDirectoryResponse>(route, 'POST', { path: extra, sessionIds: [...ids, ids[0]] });
+  assert.equal(response.path, extra);
+  assert.deepEqual(response.results.map(result => result.status), ['pending', 'pending', 'failed']);
+  assert.match(response.results[2].error!, /单工作区/);
+  for (const member of members.slice(0, 2)) {
+    const current = await f.current(member.id);
+    assert.deepEqual(current.additionalDirectories, [extra]); assert.equal(current.cwd, member.cwd); assert.equal(current.running, false);
+  }
+  assert.equal((await f.current(outsider.id)).additionalDirectories, undefined);
+  assert.equal((await request<GroupDetail>(`/api/groups/${group.id}`)).group.workspace, f.directory);
+  const repeated = await request<GroupDirectoryResponse>(route, 'POST', { path: alias, sessionIds: ids.slice(0, 2) });
+  assert.deepEqual(repeated.results.map(result => result.status), ['unchanged', 'unchanged']);
+  assert.deepEqual((await f.current(ids[0])).additionalDirectories, [extra]);
+  await request(`/api/sessions/${ids[1]}`, 'PATCH', { archived: true });
+  const archived = await request<GroupDirectoryResponse>(route, 'POST', { path: f.directory, sessionIds: ids.slice(0, 2) });
+  assert.deepEqual(archived.results.map(result => result.status), ['unchanged', 'failed']);
+  assert.match(archived.results[1].error!, /归档/);
+  await request(`/api/groups/${group.id}`, 'PATCH', { archived: true });
+  await request(route, 'POST', { path: extra, sessionIds: [ids[0]] }, 409);
+  await request('/api/groups/missing/directories', 'POST', { path: extra, sessionIds: [ids[0]] }, 404);
+});
+
+test('group directory grants keep successful members when native members are busy or reject access', { timeout: 30_000 }, async t => {
+  const f = await launch(t), { request } = f;
+  const extra = join(f.directory, 'extra'), denied = join(f.directory, 'denied'); await mkdir(extra); await mkdir(denied);
+  const group = await request<Group>('/api/groups', 'POST', { title: 'Live batch', workspace: f.directory }, 201);
+  const members: Session[] = [];
+  for (const backend of ['codex', 'claude']) members.push(await request<Session>('/api/sessions', 'POST', { backend, title: backend, groupId: group.id, briefing: false }, 201));
+  const [codex, claude] = members, route = `/api/groups/${group.id}/directories`;
+  for (const member of members) await request(`/api/sessions/${member.id}/start`, 'POST', { mode: 'chat' });
+  await request(`/api/sessions/${codex.id}/chat/messages`, 'POST', { text: 'HOLD', requestId: randomUUID() });
+  const partial = await request<GroupDirectoryResponse>(route, 'POST', { path: extra, sessionIds: members.map(member => member.id) });
+  assert.deepEqual(partial.results.map(result => result.status), ['failed', 'pending']);
+  assert.equal((await f.current(codex.id)).additionalDirectories, undefined);
+  assert.deepEqual((await f.current(claude.id)).additionalDirectories, [extra]);
+  assert.ok((await f.snapshot(codex.id)).activeTurnId, 'failed grant must not interrupt running work');
+  await request(`/api/sessions/${codex.id}/chat/interrupt`, 'POST', {});
+  await until(async () => !(await f.snapshot(codex.id)).activeTurnId, 'Interrupt did not release group grant guard');
+  const retry = await request<GroupDirectoryResponse>(route, 'POST', { path: extra, sessionIds: [codex.id] });
+  assert.deepEqual(retry.results, [{ sessionId: codex.id, status: 'applied' }]);
+  assert.equal((await f.current(codex.id)).directoriesPending, false);
+  await writeFile(join(f.directory, 'deny-workspace-update'), '1');
+  const rejected = await request<GroupDirectoryResponse>(route, 'POST', { path: denied, sessionIds: members.map(member => member.id) });
+  assert.deepEqual(rejected.results.map(result => result.status), ['failed', 'pending']);
+  assert.deepEqual((await f.current(codex.id)).additionalDirectories, [extra]);
+  assert.deepEqual((await f.current(claude.id)).additionalDirectories, [extra, denied]);
+  for (const member of members) assert.equal((await f.current(member.id)).running, true);
 });

@@ -99,6 +99,7 @@ export const ROUTES: Route[] = [
   { method: 'POST', path: '/api/groups', access: 'owner' },
   { method: 'PATCH', path: '/api/groups/:id', access: 'owner' },
   { method: 'POST', path: '/api/groups/:id/read', access: 'owner' },
+  { method: 'POST', path: '/api/groups/:id/directories', access: 'owner' },
   { method: 'GET', path: '/api/groups/:id', access: 'read' },
   { method: 'POST', path: '/api/groups/:id/attachments', access: 'write' },
   { method: 'GET', path: '/api/groups/:id/attachments/:attachmentId', access: 'read' },

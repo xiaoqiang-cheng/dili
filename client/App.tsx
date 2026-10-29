@@ -25,6 +25,7 @@ import TerminalPane from './TerminalPane';
 import ConversationPane from './ConversationPane';
 import DirectoryField from './DirectoryField';
 import WorkspacePermissions from './WorkspacePermissions';
+import GroupWorkspacePermissions from './GroupWorkspacePermissions';
 import { copyToClipboard } from './clipboard';
 import { useWorkspaceRoute, workspaceHash, type View } from './navigation';
 import ActivityView from './ActivityView';
@@ -60,7 +61,7 @@ export const STATUS: Record<SessionStatus, { label: string; className: string }>
   error: { label: '异常', className: 'error' }, stopped: { label: '已停止', className: 'idle' }, unknown: { label: '状态未知', className: 'unknown' },
 };
 type Modal = { type: 'create'; groupId?: string; backend?: Backend } | { type: 'import' } | { type: 'rename'; session: Session }
-  | { type: 'directories'; session: Session }
+  | { type: 'directories'; session: Session } | { type: 'groupDirectories'; group: Group }
   | { type: 'fork'; session: Session; groupId?: string } | { type: 'handoff'; session: Session } | { type: 'group'; group?: Group }
   | { type: 'replaceDraft'; draft: string; sourceName: string; proceed: () => void } | { type: 'help' } | { type: 'appearance' } | { type: 'shareLink'; session?: Session; group?: Group } | { type: 'addMember'; groupId: string } | { type: 'share'; session: Session; text: string } | null;
 /** The agent is blocked on a person: waiting for input or approval, or failed. */
@@ -692,6 +693,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
             open={(id, interactive) => { const session = sessions.find((item) => item.id === id); if (session) (interactive ? openSessionForInput : openSession)(session); }}
             addMember={() => setModal({ type: 'addMember', groupId: currentGroup.id })}
             editGroup={() => setModal({ type: 'group', group: currentGroup })}
+            editWorkspacePermissions={() => setModal({ type: 'groupDirectories', group: currentGroup })}
             removeMember={(member) => { if (window.confirm(`将「${member.title}」移出群聊？联系人和它的私聊会话会保留，回到联系人列表。`)) void run(`leave:${member.id}`, () => api(`/sessions/${member.id}`, { groupId: null }, 'PATCH'), '已移出群聊'); }}
             markRead={markGroupRead} back={() => navigate('contacts')} openWorkspace={(member) => preview.openExplorer(member)} notify={notify} />}
       </> : <div className="conversation-welcome"><BrandMark size={42} /><h2>选择一个联系人，继续会话</h2><p>你的 Agent、上下文和工作目录，都在左侧。</p></div>}
@@ -759,8 +761,9 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     {modal?.type === 'appearance' && <AppearanceDialog close={closeModal} />}
     {modal?.type === 'replaceDraft' && <ModalShell title="替换当前群组草稿？" subtitle={`将 ${modal.sourceName} 的消息转交为任务，当前草稿需要先处理。`} close={closeModal}><div className="modal-fields"><p className="draft-replace-preview">{modal.draft || '当前草稿已选择接收成员。'}</p><p className="form-note">保留草稿会取消这次转交。替换后，可编辑任务内容并选择接收成员；创建任务仍需你提交。</p></div><div className="modal-footer"><button className="button secondary" onClick={closeModal}>保留当前草稿</button><button className="button primary" onClick={() => { modal.proceed(); closeModal(); }}>替换为转交任务</button></div></ModalShell>}
     {modal?.type === 'shareLink' && <ShareDialog group={modal.group} session={modal.session} close={closeModal} notify={notify} />}
+    {modal?.type === 'groupDirectories' && state && <GroupWorkspacePermissions group={state.groups.find(item => item.id === modal.group.id) ?? modal.group} members={state.sessions.filter(item => item.groupId === modal.group.id)} backends={state.backends} close={closeModal} refresh={refresh} />}
     {modal?.type === 'directories' && state && <WorkspacePermissions session={state.sessions.find(item => item.id === modal.session.id) ?? modal.session} backend={state.backends.find(item => item.id === modal.session.backend)!} close={closeModal} refresh={refresh} />}
-    {modal && modal.type !== 'help' && modal.type !== 'appearance' && modal.type !== 'replaceDraft' && modal.type !== 'shareLink' && modal.type !== 'directories' && state && <AppModal modal={modal} state={state} close={closeModal} done={async (session?: Session, group?: Group) => { await refresh().catch(() => {}); closeModal(); if (group) navigate(`group:${group.id}`); if (session) { if (session.groupId) navigate(`group:${session.groupId}`); openSession(session); } }} notify={notify} />}
+    {modal && modal.type !== 'help' && modal.type !== 'appearance' && modal.type !== 'replaceDraft' && modal.type !== 'shareLink' && modal.type !== 'directories' && modal.type !== 'groupDirectories' && state && <AppModal modal={modal} state={state} close={closeModal} done={async (session?: Session, group?: Group) => { await refresh().catch(() => {}); closeModal(); if (group) navigate(`group:${group.id}`); if (session) { if (session.groupId) navigate(`group:${session.groupId}`); openSession(session); } }} notify={notify} />}
     {toast && <div className="toast" role="status"><CheckCheck size={16} />{toast}<button aria-label="关闭提示" onClick={() => setToast('')}><X size={14} /></button></div>}
   </div>;
 }
@@ -861,7 +864,7 @@ function BackendSettings({ state, refresh, onCreate, local, onTerminal }: { stat
   return <div className="backend-settings">{state.backends.map((backend) => <section className="backend-setting-card" key={backend.id}><div className="backend-setting-title"><BackendAvatar backend={backend.id} /><div><h2>{backend.label}</h2><p>{backend.version || (backend.installed ? '已检测到本机安装' : '未检测到本机安装')}</p></div><span className={`status-badge ${backend.installed ? 'running' : 'unknown'}`}><i />{backend.installed ? '已安装' : '未安装'}</span></div><p className="backend-note">{backend.note || (backend.id === 'dsh' ? '通过 Harness 原生 Web 界面继续交互。' : '在浏览器内运行原生 CLI，保留熟悉的操作方式。')}</p><div className="capability-list">{[['terminal', '原生终端'], ['resume', '恢复会话'], ['fork', '原生 Fork'], ['discovery', '发现已有会话']].map(([capability, label]) => <span key={capability} className={backend.capabilities[capability as keyof typeof backend.capabilities] ? 'supported' : ''}>{backend.capabilities[capability as keyof typeof backend.capabilities] ? <Check size={13} /> : <span className="capability-dash">—</span>}{label}</span>)}</div><button className="button secondary" disabled={!backend.installed} onClick={() => onCreate(backend.id)}><Plus size={15} /> 创建 {BACKEND[backend.id].short} 联系人</button><AgentSetupControls info={setup.find(item => item.id === backend.id)} local={local} onTerminal={onTerminal} refresh={refreshSetup} /></section>)}<div className="backend-info-note"><span>{setupError || '能力以本机实际安装的后端为准；安装或升级后重新检测。'}</span><button className="button secondary small-button" onClick={() => { refresh(); void refreshSetup(); }}><Radio size={14} /> 刷新状态</button></div></div>;
 }
 
-function AppModal({ modal, state, close, done, notify }: { modal: Exclude<NonNullable<Modal>, { type: 'help' | 'appearance' | 'replaceDraft' | 'shareLink' | 'directories' }>; state: AppState; close: () => void; done: (session?: Session, group?: Group) => Promise<void>; notify: (message: string) => void }) {
+function AppModal({ modal, state, close, done, notify }: { modal: Exclude<NonNullable<Modal>, { type: 'help' | 'appearance' | 'replaceDraft' | 'shareLink' | 'directories' | 'groupDirectories' }>; state: AppState; close: () => void; done: (session?: Session, group?: Group) => Promise<void>; notify: (message: string) => void }) {
   const [title, setTitle] = useState(modal.type === 'rename' ? modal.session.title : modal.type === 'fork' ? `${modal.session.title} · Fork` : modal.type === 'handoff' ? `${modal.session.title} · 交接` : modal.type === 'group' ? modal.group?.title ?? '' : '');
   const [backend, setBackend] = useState<Backend>((modal.type === 'create' ? modal.backend : undefined) ?? state.backends.find((item) => item.installed && (modal.type !== 'handoff' || item.id !== modal.session.backend))?.id ?? 'claude');
   const recentSessions = useMemo(() => [...state.sessions].sort((first, second) => second.lastActivity.localeCompare(first.lastActivity)), [state.sessions]);

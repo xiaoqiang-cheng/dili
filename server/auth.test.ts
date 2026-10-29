@@ -49,6 +49,10 @@ test('shares are scoped to one session and owner-only routes stay closed', () =>
   assert.equal(authorize(read, true, 'GET', '/api/sessions/other/chat/settings').allowed, false);
   assert.equal(authorize(read, true, 'POST', '/api/sessions/mine/chat/settings').allowed, false);
   assert.equal(authorize(write, true, 'POST', '/api/sessions/mine/chat/settings').allowed, false);
+  for (const principal of [read, write, { ...read, groupId: 'g', sessionId: '' }, { ...write, groupId: 'g', sessionId: '' }]) {
+    assert.equal(authorize(principal, true, 'POST', '/api/groups/g/directories').allowed, false);
+  }
+  assert.equal(authorize({ kind: 'owner', local: false, deviceId: 'o' }, true, 'POST', '/api/groups/g/directories').allowed, true);
   assert.equal(authorize(read, true, 'POST', '/api/sessions/mine/directories').allowed, false);
   assert.equal(authorize(write, true, 'POST', '/api/sessions/mine/directories').allowed, false);
   assert.equal(authorize({ kind: 'owner', local: false, deviceId: 'o' }, true, 'POST', '/api/sessions/mine/directories').allowed, true);

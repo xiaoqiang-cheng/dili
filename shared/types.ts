@@ -107,6 +107,17 @@ export interface ConversationTranscript {
   notice?: string;
 }
 
+/** Results describe only the explicitly selected, current group members. */
+export interface GroupDirectoryResult {
+  sessionId: string;
+  status: 'applied' | 'pending' | 'unchanged' | 'failed';
+  error?: string;
+}
+export interface GroupDirectoryResponse {
+  path: string;
+  results: GroupDirectoryResult[];
+}
+
 export interface Group {
   id: string;
   title: string;
