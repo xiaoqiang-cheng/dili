@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { copyFile, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -820,4 +820,57 @@ test('group image-only tasks persist server metadata and deliver native images t
   assert.equal(detail.messages.find(item => item.id === message.id)?.attachments?.[0].id, image.id);
   await f.request(`/api/groups/${group.id}/messages`, 'POST', { text: '', attachments: [] }, 400);
   await f.request(`/api/groups/${group.id}/messages`, 'POST', { attachments: [image.id, image.id] }, 400);
+});
+
+for (const backend of ['codex', 'claude'] as const) test(`${backend} appends native workspace permissions without changing cwd or interrupting tasks`, { timeout: 30_000 }, async t => {
+  const f = await launch(t), { request } = f;
+  const extra = join(f.directory, '额外 项目'), other = join(f.directory, 'other'), alias = join(f.directory, 'alias');
+  await mkdir(extra); await mkdir(other); await symlink(extra, alias);
+  const contact = await request<Session>('/api/sessions', 'POST', { backend, title: 'Additional workspace', cwd: f.directory, ...(backend === 'codex' ? { executionMode: 'auto' } : {}) }, 201);
+  const route = `/api/sessions/${contact.id}/directories`;
+  await request(route, 'POST', { path: join(f.directory, 'missing') }, 400);
+  const staged = await request<Session>(route, 'POST', { path: extra });
+  assert.deepEqual(staged.additionalDirectories, [extra]);
+  assert.equal(staged.cwd, contact.cwd); assert.equal(staged.running, false); assert.equal(staged.directoriesPending, true);
+  assert.deepEqual((await request<Session>(route, 'POST', { path: alias })).additionalDirectories, [extra]);
+  const started = await request<Session>(`/api/sessions/${contact.id}/start`, 'POST', { mode: 'chat' });
+  assert.equal(started.directoriesPending, false);
+  if (backend === 'codex') {
+    const updates = (await f.calls()).filter(call => call.method === 'thread/settings/update') as { params: Record<string, unknown> }[];
+    assert.deepEqual(updates[0].params, { threadId: started.nativeSessionId, sandboxPolicy: { type: 'workspaceWrite', writableRoots: [f.directory, extra], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: false } });
+    await writeFile(join(f.directory, 'deny-workspace-update'), '1');
+    await request(route, 'POST', { path: other }, 400);
+    assert.deepEqual((await f.current(contact.id)).additionalDirectories, [extra], 'native rejection must not record granted access');
+    await rm(join(f.directory, 'deny-workspace-update'));
+    await request(`/api/sessions/${contact.id}/chat/messages`, 'POST', { text: 'HOLD', requestId: randomUUID() });
+    await request(route, 'POST', { path: other }, 409);
+    assert.deepEqual((await f.current(contact.id)).additionalDirectories, [extra]);
+    await request(`/api/sessions/${contact.id}/chat/interrupt`, 'POST', {});
+    await until(async () => !(await f.snapshot(contact.id)).activeTurnId, 'Interrupt did not release workspace guard');
+    const updated = await request<Session>(route, 'POST', { path: other });
+    assert.deepEqual(updated.additionalDirectories, [extra, other]); assert.equal(updated.directoriesPending, false);
+    assert.equal(updated.nativeSessionId, started.nativeSessionId); assert.equal(updated.running, true);
+    const resumeCount = (await f.calls()).filter(call => call.method === 'thread/resume').length;
+    await writeFile(join(f.directory, 'drop-workspace-observer'), '1');
+    await until(async () => (await f.calls()).filter(call => call.method === 'thread/resume').length > resumeCount && (await f.snapshot(contact.id)).connected, 'Workspace observer did not reconnect');
+    const reconnects = (await f.calls()).filter(call => call.method === 'thread/resume').slice(resumeCount) as { params: Record<string, unknown> }[];
+    assert.ok(reconnects.every(call => call.params.sandbox === undefined), 'Auto observer reconnect must preserve appended native sandbox roots');
+    const child = await request<Session>(`/api/sessions/${contact.id}/fork`, 'POST', {}, 201);
+    assert.deepEqual(child.additionalDirectories, updated.additionalDirectories);
+  } else {
+    await request(`/api/sessions/${contact.id}/chat/messages`, 'POST', { text: 'HOLD', requestId: randomUUID() });
+    const updated = await request<Session>(route, 'POST', { path: other });
+    assert.equal(updated.directoriesPending, true); assert.equal(updated.running, true);
+    assert.equal(updated.nativeSessionId, started.nativeSessionId);
+    assert.ok((await f.snapshot(contact.id)).activeTurnId, 'saving a pending directory must not stop Claude');
+    await request(`/api/sessions/${contact.id}/chat/interrupt`, 'POST', {});
+    await request(`/api/sessions/${contact.id}/stop`, 'POST', {});
+    const resumed = await request<Session>(`/api/sessions/${contact.id}/start`, 'POST', { mode: 'chat' });
+    assert.equal(resumed.directoriesPending, false); assert.equal(resumed.nativeSessionId, started.nativeSessionId);
+    const launches = (await readFile(join(f.directory, 'claude-print-launches.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(launches.at(-1).args.filter((_: string, index: number, args: string[]) => args[index - 1] === '--add-dir'), [extra, other]);
+  }
+  await request(`/api/sessions/${contact.id}/stop`, 'POST', {});
+  await request(`/api/sessions/${contact.id}`, 'PATCH', { archived: true });
+  await request(route, 'POST', { path: f.directory }, 409);
 });

@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { resolve, join } from 'node:path';
-import { statSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { statSync, realpathSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { chmod, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -205,7 +205,7 @@ function viewState(principal: Principal): AppState {
   if (principal.kind !== 'share') return full;
   return {
     ...full, defaultCwd: '', groups: principal.groupId ? full.groups.filter(group => group.id === principal.groupId).map(group => ({ ...group, workspace: '', prompt: '' })) : [],
-    sessions: full.sessions.filter(item => (principal.groupId ? item.groupId === principal.groupId : item.id === principal.sessionId) && !item.archived).map(item => principal.groupId ? { ...item, cwd: '', nativeSessionId: null, nativeUrl: undefined, worktree: undefined, parentId: null, statusDetail: '', lastUserInput: null, lastAttentionKey: null, claudeUnwritten: undefined, nativeSettings: undefined, groupBriefing: undefined } : item),
+    sessions: full.sessions.filter(item => (principal.groupId ? item.groupId === principal.groupId : item.id === principal.sessionId) && !item.archived).map(item => principal.groupId ? { ...item, cwd: '', nativeSessionId: null, nativeUrl: undefined, worktree: undefined, parentId: null, statusDetail: '', lastUserInput: null, lastAttentionKey: null, claudeUnwritten: undefined, nativeSettings: undefined, additionalDirectories: undefined, directoriesPending: undefined, groupBriefing: undefined } : item),
     activities: full.activities.filter(activity => !principal.groupId && activity.sessionId === principal.sessionId),
   };
 }
@@ -897,6 +897,30 @@ app.patch('/api/sessions/:id', (req, res) => {
 });
 app.post('/api/sessions/:id/read', (req, res) => { const item = store.updateSession(session(String(req.params.id)).id, { unread: 0 }); broadcast(); res.json(item); });
 
+// Append only: revoking a native permission cannot be promised by simply
+// removing it from our metadata (the native session may already retain it).
+app.post('/api/sessions/:id/directories', async (req, res) => {
+  const item = session(String(req.params.id));
+  if (item.backend === 'dsh') fail('当前 DeepSeek Harness 原生沙箱只支持单工作区，暂不支持追加目录权限', 409);
+  if (!info(item.backend).capabilities.additionalDirectories) fail('当前 CLI 不支持附加目录，请更新后刷新后端检测', 409);
+  if (item.archived) fail('请先恢复归档联系人', 409);
+  if (starting.has(item.id) || stopping.has(item.id) || terminals.isStopping(item.id)) fail('会话正在连接或停止，请稍后重试', 409);
+  const path = realpathSync(directory(req.body?.path));
+  const directories = item.additionalDirectories ?? [];
+  if ([item.cwd, ...directories].some(value => {
+    try { return realpathSync(value) === path; } catch { return value === path; }
+  })) return res.json(item);
+  if (directories.length >= 20) fail('每个联系人最多添加 20 个附加工作区');
+  starting.add(item.id);
+  try {
+    const additionalDirectories = [...directories, path];
+    const live = !demo && item.backend === 'codex' && item.running && !!item.nativeSessionId && codexRuns.has(item.id);
+    if (live) await codexBridge.addDirectories(item.nativeSessionId!, additionalDirectories);
+    const updated = store.updateSession(item.id, { additionalDirectories, directoriesPending: !live });
+    broadcast(); res.json(updated);
+  } finally { starting.delete(item.id); }
+});
+
 app.post('/api/native-event/:id', (req, res) => {
   const item = session(String(req.params.id));
   if (demo || !item.running || stopping.has(item.id) || req.body?.source !== item.backend || typeof req.query.launch !== 'string' || launchIds.get(item.id) !== req.query.launch) return res.json({ ok: true });
@@ -931,17 +955,17 @@ app.post('/api/sessions/:id/fork', async (req, res) => {
   try {
   if (dshWeb(parent)) {
     const native = await dsh.forkSession(parent.nativeSessionId, cwd);
-    child = store.addSession({ backend: parent.backend, title, cwd, groupId: targetGroupId, parentId: parent.id, executionMode: parent.executionMode ?? 'default', ...(parent.nativeSettings ? { nativeSettings: parent.nativeSettings } : {}), origin: 'forked', ...native, running: true, status: 'idle', statusSource: 'native', statusDetail: '已通过原生能力 Fork，点击进入' });
+    child = store.addSession({ backend: parent.backend, title, cwd, groupId: targetGroupId, parentId: parent.id, additionalDirectories: parent.additionalDirectories, directoriesPending: !!parent.additionalDirectories?.length, executionMode: parent.executionMode ?? 'default', ...(parent.nativeSettings ? { nativeSettings: parent.nativeSettings } : {}), origin: 'forked', ...native, running: true, status: 'idle', statusSource: 'native', statusDetail: '已通过原生能力 Fork，点击进入' });
   } else if (parent.backend === 'codex' && !demo && info('codex').capabilities.nativeControl) {
     if (!parent.nativeSessionId || parent.forkPending) fail('Codex 原生会话 ID 尚未确定，请先启动来源会话');
     const bridge = await ensureCodexBridge();
     // Codex's native fork returns a new exact thread immediately. Persist that
     // identity before exposing the card; a failed fork never becomes a fake child.
     const native = await bridge.forkSession(parent.nativeSessionId, cwd, parent.executionMode);
-    child = store.addSession({ backend: parent.backend, title, cwd, groupId: targetGroupId, parentId: parent.id, executionMode: parent.executionMode ?? 'default', ...(parent.nativeSettings ? { nativeSettings: parent.nativeSettings } : {}), origin: 'forked', nativeSessionId: native.nativeSessionId, running: false, status: 'idle', statusSource: 'native', statusDetail: '已通过 Codex 原生能力 Fork，点击进入' });
+    child = store.addSession({ backend: parent.backend, title, cwd, groupId: targetGroupId, parentId: parent.id, additionalDirectories: parent.additionalDirectories, directoriesPending: !!parent.additionalDirectories?.length, executionMode: parent.executionMode ?? 'default', ...(parent.nativeSettings ? { nativeSettings: parent.nativeSettings } : {}), origin: 'forked', nativeSessionId: native.nativeSessionId, running: false, status: 'idle', statusSource: 'native', statusDetail: '已通过 Codex 原生能力 Fork，点击进入' });
     await releaseCodexNative(native.nativeSessionId);
   } else {
-    child = store.addSession({ backend: parent.backend, title, cwd, groupId: targetGroupId, parentId: parent.id, executionMode: parent.executionMode ?? 'default', ...(parent.nativeSettings ? { nativeSettings: parent.nativeSettings } : {}), origin: 'forked', nativeSessionId: demo ? `demo-${randomUUID()}` : parent.nativeSessionId, forkPending: !demo, statusDetail: demo ? '演示分支已创建' : '待启动：将调用原生 Fork，原会话保持独立' });
+    child = store.addSession({ backend: parent.backend, title, cwd, groupId: targetGroupId, parentId: parent.id, additionalDirectories: parent.additionalDirectories, directoriesPending: !!parent.additionalDirectories?.length, executionMode: parent.executionMode ?? 'default', ...(parent.nativeSettings ? { nativeSettings: parent.nativeSettings } : {}), origin: 'forked', nativeSessionId: demo ? `demo-${randomUUID()}` : parent.nativeSessionId, forkPending: !demo, statusDetail: demo ? '演示分支已创建' : '待启动：将调用原生 Fork，原会话保持独立' });
   }
   } catch (error) { if (placed.worktree) await removeWorktree(placed.worktree).catch(() => {}); throw error; }
   if (placed.worktree) child = store.updateSession(child.id, { worktree: placed.worktree });
@@ -1017,6 +1041,7 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
   if (item.executionMode === 'auto' && !info(item.backend).capabilities.autoMode) fail('当前后端版本不支持原生 Auto，请更新后端并刷新检测');
   if (!info(item.backend).installed) fail(`${info(item.backend).label} 尚未安装或不可用`);
   directory(item.cwd);
+  for (const path of item.additionalDirectories ?? []) directory(path);
   starting.add(item.id);
   const launchId = randomUUID();
   launchIds.set(item.id, launchId);
@@ -1044,6 +1069,9 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
         // Persist native identity even if the subsequent PTY fails. Retrying
         // this card must resume the created thread instead of making another.
         status(item.id, { nativeSessionId: native.nativeSessionId, forkPending: false });
+        try { await bridge.addDirectories(native.nativeSessionId, item.additionalDirectories ?? []); }
+        catch (error) { await releaseCodexNative(native.nativeSessionId); throw error; }
+        store.updateSession(item.id, { directoriesPending: false });
         codexRuns.set(item.id, { nativeId: native.nativeSessionId, launchId });
         status(item.id, { running: true, interactionMode: mode, executionTransport: 'structured', status: 'unknown', statusSource: 'process', statusDetail: mode === 'chat' ? '正在连接 Codex 图形化会话' : '正在连接 Codex 原生终端', lastActivity: new Date().toISOString() });
         if (mode === 'terminal') terminals.start(session(item.id), bridge.remoteLaunch(native.nativeSessionId, executable, item.cwd));
@@ -1067,6 +1095,7 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
           claudeRuns.set(item.id, { nativeId: command.nativeSessionId!, launchId });
           status(item.id, { running: true, interactionMode: 'chat', executionTransport: 'structured', status: 'unknown', statusSource: 'process', statusDetail: '正在连接 Claude 流式图形会话', lastActivity: new Date().toISOString() });
           await claudeBridge.start(command.nativeSessionId!, item.cwd, command);
+          store.updateSession(item.id, { directoriesPending: false });
           store.activity(item.id, 'start', `打开了 ${item.title}`); broadcast(); return session(item.id);
         }
         claudeTerminalSettings.set(item.id, effectiveClaudeSettings(item));
@@ -1081,6 +1110,7 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
       if (command.nativeSessionId) expectedNativeIds.set(item.id, command.nativeSessionId);
       status(item.id, { running: true, interactionMode: 'terminal', executionTransport: 'pty', status: 'unknown', statusSource: 'process', statusDetail: '正在连接原生终端' });
       terminals.start(item, command);
+      store.updateSession(item.id, { directoriesPending: false });
       status(item.id, { lastActivity: new Date().toISOString() });
       observeNative(session(item.id));
       if (!demo) void resolveIdentity(item.id, new Date().toISOString(), launchId);

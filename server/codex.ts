@@ -125,7 +125,7 @@ export class CodexBridge {
   private captureSettings(id: string, value: unknown) {
     if (!value || typeof value !== 'object') return;
     const row = value as Record<string, unknown>;
-    this.nativeSettings.set(id, { model: row.model, approvalPolicy: row.approvalPolicy, approvalsReviewer: row.approvalsReviewer });
+    this.nativeSettings.set(id, { ...this.nativeSettings.get(id), ...Object.fromEntries(['model', 'approvalPolicy', 'approvalsReviewer'].filter(key => row[key] !== undefined).map(key => [key, row[key]])), ...(row.sandboxPolicy || row.sandbox ? { sandbox: row.sandboxPolicy ?? row.sandbox } : {}) });
   }
   async readChatSettings(id: string): Promise<AgentChatSettings> {
     const connection = this.observers.get(id);
@@ -185,6 +185,33 @@ export class CodexBridge {
     const confirmed = await this.readChatSettings(id);
     if (confirmed[update.field] !== update.value) return settingsError('原生设置未确认目标值，请刷新检查实际设置');
     return confirmed;
+  }
+  /** Append writable roots using the native settings protocol, preserving the
+   * sandbox mode, existing roots, network policy and approval reviewer. */
+  async addDirectories(id: string, directories: string[]): Promise<void> {
+    if (!directories.length) return;
+    const settings = await this.readChatSettings(id);
+    if (settings.disabledReason) return settingsError(settings.disabledReason);
+    if (this.changingSettings.has(id) || this.sendingPrompts.has(id) || this.chat.get(id)?.activeTurnId || this.chat.get(id)?.requests.length) return settingsError('请等当前任务或审批结束后增加工作区');
+    const connection = this.observers.get(id)!;
+    const sandbox = this.nativeSettings.get(id)?.sandbox as { type?: string; writableRoots?: string[] } | undefined;
+    if (!sandbox?.type) return settingsError('Codex 未报告沙箱权限，无法安全追加目录，请更新 CLI');
+    if (sandbox.type === 'dangerFullAccess' || sandbox.type === 'externalSandbox') return; // No local writable-root boundary to extend.
+    if (sandbox.type !== 'workspaceWrite') return settingsError('当前 Codex 沙箱是只读模式，请先在原生设置中启用 workspace-write 后再增加工作区');
+    const writableRoots = [...new Set([...(sandbox.writableRoots ?? []), ...directories])];
+    if (writableRoots.length === (sandbox.writableRoots ?? []).length) return;
+    this.changingSettings.add(id);
+    try {
+      const response = await this.call(connection, 'thread/settings/update', { threadId: id, sandboxPolicy: { ...sandbox, writableRoots } });
+      if (response.error) throw this.rpcError(response, 'Codex 拒绝了附加工作区设置');
+      if (connection.closed || this.observers.get(id) !== connection) return settingsError('原生连接已变化，请刷新工作区设置');
+      const readback = await this.call(connection, 'thread/resume', { threadId: id, excludeTurns: true });
+      if (readback.error) throw this.rpcError(readback, '无法确认 Codex 工作区权限');
+      const result = readback.result as { thread?: Thread; sandbox?: { type?: string; writableRoots?: string[] } };
+      if (connection.closed || this.observers.get(id) !== connection || result.thread?.id !== id) return settingsError('原生连接已变化，请刷新工作区设置');
+      this.captureSettings(id, result);
+      if (result.sandbox?.type !== 'workspaceWrite' || !directories.every(path => result.sandbox!.writableRoots?.includes(path))) return settingsError('Codex 未确认附加目录权限，请重新连接后重试');
+    } finally { this.changingSettings.delete(id); }
   }
   private readonly executionModes = new Map<string, ExecutionMode>();
   private autoPermissions(mode?: ExecutionMode): Record<string, string> {
@@ -778,7 +805,7 @@ export class CodexBridge {
     }
   }
 
-  private async observe(threadId: string, cwd?: string): Promise<void> {
+  private async observe(threadId: string, cwd?: string, executionMode?: ExecutionMode): Promise<void> {
     const version = this.observationVersions.get(threadId) ?? 0;
     const pending = this.observing.get(threadId);
     if (pending?.version === version) return pending.promise;
@@ -800,7 +827,9 @@ export class CodexBridge {
         // imported thread can be much larger than the WebSocket payload limit;
         // history is loaded separately when needed and live notifications keep
         // the retained observer current.
-        const response = await this.call(connection, 'thread/resume', { threadId, excludeTurns: true, ...this.autoPermissions(this.executionModes.get(threadId)), ...(cwd ? { cwd: resolve(cwd) } : {}) });
+        // Apply requested execution mode only on an explicit open. Recovering
+        // an observer must preserve appended roots and effective native policy.
+        const response = await this.call(connection, 'thread/resume', { threadId, excludeTurns: true, ...this.autoPermissions(executionMode), ...(cwd ? { cwd: resolve(cwd) } : {}) });
         assertActive();
         if (response.error) throw this.rpcError(response, 'Codex 会话恢复失败');
         const thread = (response.result as { thread?: Thread } | undefined)?.thread;
@@ -868,7 +897,7 @@ export class CodexBridge {
     if (changedCwd && !options.allowCwdChange) throw new Error('Codex 会话工作目录与联系人不一致');
     if (changedCwd && (this.observers.has(id) || this.observing.has(id))) throw new Error('Codex 会话已连接，请先停止再更换工作目录');
     if (options.executionMode) this.executionModes.set(id, options.executionMode);
-    await this.observe(id, changedCwd ? cwd : undefined);
+    await this.observe(id, changedCwd ? cwd : undefined, options.executionMode);
     return { nativeSessionId: id, remoteUrl: this.endpoint };
   }
 

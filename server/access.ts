@@ -60,6 +60,7 @@ export const ROUTES: Route[] = [
   { method: 'POST', path: '/api/sessions/:id/start', access: 'write' },
   { method: 'POST', path: '/api/sessions/:id/stop', access: 'write' },
   { method: 'POST', path: '/api/sessions/:id/read', access: 'write' },
+  { method: 'POST', path: '/api/sessions/:id/directories', access: 'owner' },
   { method: 'POST', path: '/api/sessions/:id/terminal/image', access: 'write' },
   { method: 'POST', path: '/api/sessions/:id/attachments', access: 'write' },
   { method: 'POST', path: '/api/sessions/:id/input', access: 'write' },

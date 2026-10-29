@@ -16,6 +16,7 @@ export interface BackendInfo {
     permissionModes?: string[];
     /** The CLI can offer bypassPermissions as a switchable mode without enabling it. */
     bypassOption?: boolean;
+    additionalDirectories?: boolean;
   };
   note?: string;
 }
@@ -37,6 +38,10 @@ export interface Session {
   backend: Backend;
   title: string;
   cwd: string;
+  /** Extra native workspace permissions; primary cwd stays unchanged. */
+  additionalDirectories?: string[];
+  /** Saved while the executor was running; applied on its next launch. */
+  directoriesPending?: boolean;
   nativeSessionId: string | null;
   nativeUrl?: string | null;
   groupId: string | null;
