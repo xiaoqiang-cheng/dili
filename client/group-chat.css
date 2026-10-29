@@ -7,6 +7,8 @@
 .group-avatar-mark { position: absolute; right: -4px; bottom: -4px; padding: 0 3px; border: 2px solid var(--bg); border-radius: 6px; background: var(--accent); color: var(--on-accent); font-size: 9px; font-weight: 600; line-height: 13px; }
 .group-avatar.small { width: 24px; height: 24px; }
 .group-badge { flex-shrink: 0; padding: 0 6px; border-radius: 8px; background: var(--accent-soft); color: var(--accent-dark); font-size: 10.5px; line-height: 17px; }
+.group-card .card-state { right: 68px; }
+.group-card .card-state .status-badge { display: block; overflow: hidden; text-overflow: ellipsis; }
 
 .create-menu { position: relative; display: inline-flex; }
 .create-menu .dropdown-menu { top: 38px; right: 0; }

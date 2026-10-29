@@ -15,6 +15,16 @@ export function applyGroupRead(previous: AppState | null, receipt: GroupReadRece
   };
 }
 
+/** A partial read does not advance the global patch cursor. Retain it across
+ * overlapping old snapshots until a newer server revision supersedes it. */
+export function applyPendingGroupReads(next: AppState, receipts: Map<string, GroupReadReceipt>): AppState {
+  for (const [id, receipt] of receipts) {
+    if (next.instanceId !== receipt.instanceId || (next.revision ?? 0) > receipt.revision) receipts.delete(id);
+    else next = applyGroupRead(next, receipt)!;
+  }
+  return next;
+}
+
 function upsert<T extends { id: string }>(previous: T[], updates?: T[]): T[] {
   if (!updates?.length) return previous;
   const result = new Map(previous.map(item => [item.id, item]));

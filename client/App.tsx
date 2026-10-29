@@ -18,7 +18,7 @@ import {
   FilePenLine, Palette, Maximize2, Minimize2, PanelRightOpen,
 } from 'lucide-react';
 import type { AppState, StatePatch, Backend, DiscoveredSession, Group, GroupReadReceipt, GroupMessage, Session, SessionStatus } from '../shared/types';
-import { applyGroupRead, applyStatePatch } from './state';
+import { applyGroupRead, applyPendingGroupReads, applyStatePatch } from './state';
 import { api, ApiError, getToken } from './api';
 import { useGroupHistory } from './group-history';
 import TerminalPane from './TerminalPane';
@@ -184,6 +184,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   /** Notification clicks outlive the render that created them; always open with the latest router. */
   const openGroupRef = useRef<(id: string) => void>(() => {});
   const serverSnapshotRef = useRef<{ instanceId: string; revision: number } | null>(null);
+  const groupReadReceiptsRef = useRef(new Map<string, GroupReadReceipt>());
   const seenServerInstancesRef = useRef(new Set<string>());
   const operationRef = useRef(false);
   const drawerRef = useRef<HTMLElement>(null);
@@ -282,6 +283,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
       if (seen.size > 8) seen.delete(seen.values().next().value!);
       serverSnapshotRef.current = { instanceId: next.instanceId, revision: next.revision };
     }
+    next = applyPendingGroupReads(next, groupReadReceiptsRef.current);
     stateRevisionRef.current += 1;
     setConnectionError('');
     if (sessionsRef.current) {
@@ -477,6 +479,11 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   const markGroupRead = useCallback(() => {
     if (!groupId) return;
     void api<GroupReadReceipt>(`/groups/${groupId}/read`, {}).then(receipt => {
+      const current = stateRef.current;
+      if (!current || current.instanceId !== receipt.instanceId || (current.revision ?? 0) > receipt.revision) return;
+      const previous = groupReadReceiptsRef.current.get(groupId);
+      if (previous && previous.instanceId === receipt.instanceId && previous.revision > receipt.revision) return;
+      groupReadReceiptsRef.current.set(groupId, receipt);
       stateRef.current = applyGroupRead(stateRef.current, receipt);
       sessionsRef.current = stateRef.current?.sessions ?? null;
       setState(current => applyGroupRead(current, receipt));

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Store } from './store.ts';
 import { StatePublisher } from './state.ts';
-import { applyGroupRead, applyStatePatch } from '../client/state.ts';
+import { applyGroupRead, applyPendingGroupReads, applyStatePatch } from '../client/state.ts';
 
 test('group read receipts clear member badges without dropping other pending changes or newer reminders', t => {
   const store = new Store(':memory:');
@@ -24,11 +24,23 @@ test('group read receipts clear member badges without dropping other pending cha
   assert.equal(applied.sessions.find(item => item.id === approval.id)!.unread, 1);
   assert.equal(applied.sessions.find(item => item.id === outsider.id)!.unread, 3);
   assert.equal(applied.revision, before.revision, 'partial receipt cannot advance the global patch cursor');
+  const receipts = new Map([[group.id, receipt]]);
+  const oldResponse = applyPendingGroupReads(before, receipts);
+  assert.equal(oldResponse.groups[0].unread, 0, 'overlapping old snapshot cannot restore a read badge');
+  assert.equal(oldResponse.sessions.find(item => item.id === done.id)!.unread, 0);
+  assert.equal(oldResponse.revision, before.revision, 'overlay also preserves the patch cursor');
+  assert.equal(receipts.size, 1);
   assert.deepEqual(applyStatePatch(applied, publisher.takePatch()!), snapshot);
   store.updateGroup(group.id, { unread: 1 });
   store.updateSession(done.id, { unread: 1 });
   const newer = publisher.snapshot();
   assert.equal(applyGroupRead(newer, receipt), newer, 'late read cannot hide a later reply');
+  assert.equal(applyPendingGroupReads(newer, receipts), newer, 'new replies supersede the read overlay');
+  assert.equal(receipts.size, 0);
+  receipts.set(group.id, receipt);
+  const restarted = { ...before, instanceId: 'restarted' };
+  assert.equal(applyPendingGroupReads(restarted, receipts), restarted);
+  assert.equal(receipts.size, 0, 'restarted instances discard previous read receipts');
   assert.equal(applyGroupRead(before, { ...receipt, instanceId: 'restarted' }), before);
   assert.equal(applyGroupRead(null, receipt), null);
 });

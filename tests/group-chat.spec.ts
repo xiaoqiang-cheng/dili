@@ -174,7 +174,13 @@ test('reading a group clears reply and member badges through HTTP even while the
     Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => true });
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility.value });
   });
-  await page.route('**/api/state', route => route.fulfill({ json: state }));
+  let holdRefresh = false;
+  let releaseRefresh!: () => void;
+  const refreshGate = new Promise<void>(resolve => { releaseRefresh = resolve; });
+  await page.route('**/api/state', async route => {
+    if (holdRefresh) await refreshGate;
+    return route.fulfill({ json: state });
+  });
   await page.route('**/api/events', route => route.fulfill({ contentType: 'text/event-stream', body: `retry: 60000\nevent: state\ndata: ${JSON.stringify(state)}\n\n` }));
   let reads = 0;
   await page.route(`**/api/groups/${group.id}/read`, route => {
@@ -189,13 +195,67 @@ test('reading a group clears reply and member badges through HTTP even while the
   await expect(page.getByLabel('群组消息')).toBeVisible();
   await expect(card.locator('.unread-badge')).toHaveText('2');
   expect(reads).toBe(0);
+  holdRefresh = true;
+  const staleRefresh = page.waitForResponse(response => response.url().endsWith('/api/state'));
   await page.evaluate(() => {
     (window as unknown as { testGroupVisibility: { value: string } }).testGroupVisibility.value = 'visible';
     document.dispatchEvent(new Event('visibilitychange'));
   });
-  await expect.poll(() => reads).toBeGreaterThan(0);
+  try {
+    await expect.poll(() => reads).toBeGreaterThan(0);
+    await expect(card.locator('.unread-badge')).toHaveCount(0);
+  } finally { releaseRefresh(); }
+  await staleRefresh;
+  // Let the stale snapshot finish applying; it must not resurrect the badge.
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   await expect(card.locator('.unread-badge')).toHaveCount(0);
 });
+
+for (const phone of [false, true]) {
+  for (const unread of [0, 2]) {
+    test(`group message badge excludes member errors and approvals (${phone ? 'phone' : 'desktop'}, ${unread} unread)`, async ({ page }) => {
+      if (phone) await page.setViewportSize({ width: 390, height: 844 });
+      const { group, members } = await createGroup(page.request, `消息和状态分离-${phone ? '手机' : '桌面'}-${unread}`);
+      const state = await (await page.request.get('/api/state')).json() as AppState;
+      const current = state.groups.find(item => item.id === group.id)!;
+      current.unread = unread;
+      for (const member of state.sessions.filter(item => item.groupId === group.id)) {
+        member.status = 'idle'; member.unread = 0;
+      }
+      const error = state.sessions.find(item => item.id === members[0].id)!;
+      error.status = 'error'; error.unread = 1;
+      const approval = state.sessions.find(item => item.id === members[1].id)!;
+      approval.status = 'waiting_approval'; approval.unread = 1;
+      await page.addInitScript(() => {
+        Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => true });
+        Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+      });
+      // Freeze SSE to verify the read receipt updates the card on its own.
+      await page.route('**/api/state', route => route.fulfill({ json: state }));
+      await page.route('**/api/events', route => route.fulfill({ contentType: 'text/event-stream', body: `retry: 60000\nevent: state\ndata: ${JSON.stringify(state)}\n\n` }));
+      let reads = 0;
+      await page.route(`**/api/groups/${group.id}/read`, route => {
+        reads++;
+        return route.fulfill({ json: { ...current, unread: 0, instanceId: state.instanceId, revision: state.revision,
+          members: state.sessions.filter(item => item.groupId === group.id).map(item => ({ id: item.id, unread: item.unread, updatedAt: item.updatedAt })) } });
+      });
+      await page.goto('/#/contacts');
+      const card = page.locator('.group-card').filter({ hasText: group.title });
+      const status = card.locator('.card-state');
+      await expect(status).toHaveText('异常 1 · 待审批 1');
+      if (unread) await expect(card.locator('.unread-badge')).toHaveText(String(unread));
+      else await expect(card.locator('.unread-badge')).toHaveCount(0);
+      await page.screenshot({ path: `artifacts/group-read-status-${phone ? 'phone' : 'desktop'}.png` });
+      await card.getByRole('button', { name: `进入群聊 ${group.title}` }).click();
+      await expect(page.getByLabel('群组消息')).toBeVisible();
+      if (unread) await expect.poll(() => reads).toBeGreaterThan(0);
+      if (phone) await page.getByRole('button', { name: '返回联系人列表', exact: true }).click();
+      await expect(card.locator('.unread-badge')).toHaveCount(0);
+      // Unresolved native actions remain visible as status, never as unread messages.
+      await expect(status).toHaveText('异常 1 · 待审批 1');
+    });
+  }
+}
 
 test.describe('phone group chat', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
