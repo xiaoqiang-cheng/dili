@@ -1,8 +1,17 @@
 import { mutationHeaders, test } from './fixtures';
 import { expectUnifiedConversation } from './conversation-layout';
+import { copyPrompt, expectMessageCopy } from './chat-copy';
 import { expect, type Page } from '@playwright/test';
 import type { AppState, Session } from '../shared/types';
 import type { CodexChatAnswer, CodexChatItem, CodexChatPatch, CodexChatSnapshot, CodexChatSubmission } from '../shared/chat';
+
+for (const backend of ['codex', 'claude'] as const) test(`${backend} user messages support selection and copy in standalone and mobile views`, async ({ page }) => {
+  const app = await fixture(page, backend); await app.open();
+  await app.patch({ items: [{ id: 'copy-user', type: 'user', status: 'completed', text: copyPrompt }] });
+  await expectMessageCopy(page, page.locator('[data-chat-item="copy-user"]'));
+  await page.screenshot({ path: `artifacts/${backend}-message-copy-mobile.png` });
+  expect(app.requests.filter(item => item.path === 'messages')).toHaveLength(0);
+});
 
 test('Codex shows activity before the first token and follows tools, replies, approvals and completion', async ({ page }) => {
   const app = await fixture(page); await app.open();
@@ -1141,4 +1150,30 @@ test('desktop composer hides the phone tray toggle and keeps every tool on one r
     return box.y + box.height / 2;
   }));
   for (const y of rows) expect(Math.abs(y - rows[0])).toBeLessThan(6);
+});
+
+for (const agent of ['codex', 'claude'] as const) test(`${agent} reopens recent messages before a slow refresh without enabling stale controls`, async ({ page }) => {
+  const app = await fixture(page, agent);
+  const name = agent === 'claude' ? 'Claude' : 'Codex';
+  Object.assign(app.contact, { running: true, nativeSessionId: 'cached-native', interactionMode: 'chat', executionTransport: 'structured' });
+  app.current.snapshot = { ...app.current.snapshot, nativeSessionId: 'cached-native', connected: true, items: [{ id: 'old-answer', type: 'assistant', text: '上次已经读过的回答', status: 'completed' }] };
+  await app.open();
+  await expect(page.getByText('上次已经读过的回答', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '关闭会话', exact: true }).click();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route(`**/api/sessions/${app.contact.id}/chat`, async route => {
+    await gate;
+    await route.fulfill({ json: { ...app.current.snapshot, revision: 2, items: [{ id: 'new-answer', type: 'assistant', text: '刚刚同步的最新回答', status: 'completed' }] } });
+  });
+  try {
+    await page.getByRole('button', { name: `进入 ${app.contact.title} 的会话`, exact: true }).click();
+    await expect(page.getByText('上次已经读过的回答', { exact: true })).toBeVisible();
+    await expect(page.getByText('正在同步最新对话…', { exact: true })).toBeVisible();
+    await page.getByLabel(`给 ${name} 发送消息`).fill('保留草稿，等待确认');
+    await expect(page.getByRole('button', { name: '发送', exact: true })).toBeDisabled();
+  } finally { release(); }
+  await expect(page.getByText('刚刚同步的最新回答', { exact: true })).toBeVisible();
+  await expect(page.getByText('上次已经读过的回答', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '发送', exact: true })).toBeEnabled();
 });

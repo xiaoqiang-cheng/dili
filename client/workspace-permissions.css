@@ -1,0 +1,12 @@
+.workspace-member-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; }
+.workspace-members { display: grid; gap: 6px; max-height: min(34dvh, 320px); overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; padding: 6px; }
+.workspace-member { display: flex; align-items: center; gap: 10px; padding: 9px 6px; border-radius: 6px; cursor: pointer; min-width: 0; }
+.workspace-member:hover { background: var(--bg); }
+.workspace-member input { flex-shrink: 0; accent-color: var(--accent); }
+.workspace-member.unavailable { cursor: default; color: var(--faint); }
+.workspace-member-info { display: grid; gap: 3px; min-width: 0; font-size: 13px; }
+.workspace-member-info strong, .workspace-member-info small { overflow-wrap: anywhere; }
+.workspace-member-info small { color: var(--muted); font-size: 11px; }
+.workspace-member-info .workspace-member-result { color: var(--accent); }
+.workspace-member-info .form-error { color: var(--red); margin: 0; }
+.workspace-permissions-footer { flex-wrap: wrap; }

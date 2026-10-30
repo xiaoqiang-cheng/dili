@@ -160,23 +160,18 @@ test('terminal transport reconnects after a simulated service outage and replays
   } finally { await mutate(page.request, `/sessions/${session.id}/stop`); }
 });
 
-test('running contacts require stopping before archive, and restoring does not restart the process', async ({ page }) => {
-  const session = await createSession(page.request, '停止与归档回归');
+for (const backend of ['codex', 'claude', 'dsh'] as const) test(`${backend} running contacts automatically stop on archive, and restore does not restart`, async ({ page }) => {
+  const state = await readState(page.request);
+  const session = await mutate<Session>(page.request, '/sessions', { backend, title: `${backend} 自动停止归档回归`, cwd: state.defaultCwd });
   await mutate(page.request, `/sessions/${session.id}/start`);
   try {
     await page.goto('/');
     await page.getByRole('button', { name: `${session.title} 的更多操作`, exact: true }).click();
     await page.getByRole('button', { name: '归档联系人', exact: true }).click();
-    await expect(page.getByRole('alert')).toContainText('请先停止会话，再归档');
-    let current = (await readState(page.request)).sessions.find(item => item.id === session.id)!;
-    expect(current.running).toBe(true); expect(current.archived).toBe(false);
-    await page.getByRole('button', { name: `进入 ${session.title} 的会话`, exact: true }).click();
-    await page.getByRole('button', { name: '停止进程', exact: true }).click();
-    await expect(page.getByRole('button', { name: '启动原生会话', exact: true })).toBeEnabled();
-    await page.getByRole('button', { name: '关闭会话', exact: true }).click();
-    await page.getByRole('button', { name: `${session.title} 的更多操作`, exact: true }).click();
-    await page.getByRole('button', { name: '归档联系人', exact: true }).click();
     await expect(page.getByRole('button', { name: `进入 ${session.title} 的会话`, exact: true })).not.toBeVisible();
+    let current = (await readState(page.request)).sessions.find(item => item.id === session.id)!;
+    expect(current.archived).toBe(true); expect(current.running).toBe(false); expect(current.status).toBe('stopped');
+    const nativeSessionId = current.nativeSessionId;
     await page.goto(`/#/archive?session=${session.id}`);
     await expect(page.getByRole('button', { name: '已归档 · 恢复联系人', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '启动原生会话', exact: true })).toBeDisabled();
@@ -184,6 +179,7 @@ test('running contacts require stopping before archive, and restoring does not r
     await expect(page.getByRole('button', { name: '启动原生会话', exact: true })).toBeEnabled();
     current = (await readState(page.request)).sessions.find(item => item.id === session.id)!;
     expect(current.archived).toBe(false); expect(current.running).toBe(false);
+    expect(current.nativeSessionId).toBe(nativeSessionId);
   } finally { await mutate(page.request, `/sessions/${session.id}/stop`); }
 });
 

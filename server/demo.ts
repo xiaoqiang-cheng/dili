@@ -2,8 +2,8 @@ import type { BackendInfo } from '../shared/types.ts';
 import type { Store } from './store.ts';
 
 export const demoBackends: BackendInfo[] = [
-  { id: 'claude', label: 'Claude Code', installed: true, version: '演示', capabilities: { terminal: true, resume: true, fork: true, discovery: true, autoMode: true, permissionModes: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'dontAsk', 'plan'], bypassOption: true } },
-  { id: 'codex', label: 'Codex', installed: true, version: '演示', capabilities: { terminal: true, resume: true, fork: true, discovery: true, autoMode: true } },
+  { id: 'claude', label: 'Claude Code', installed: true, version: '演示', capabilities: { additionalDirectories: true, terminal: true, resume: true, fork: true, discovery: true, autoMode: true, permissionModes: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'dontAsk', 'plan'], bypassOption: true } },
+  { id: 'codex', label: 'Codex', installed: true, version: '演示', capabilities: { additionalDirectories: true, terminal: true, resume: true, fork: true, discovery: true, autoMode: true } },
   { id: 'dsh', label: 'DeepSeek Harness', installed: true, version: '演示', capabilities: { terminal: true, resume: true, fork: true, discovery: true, autoMode: true } },
 ];
 

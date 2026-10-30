@@ -75,7 +75,19 @@ export function registerAgentChat(app: express.Express, options: Dependencies) {
   function nativeView(item: Session, snapshot: AgentChatSnapshot) {
     return remember(item.id, { ...snapshot, connected: item.running && options.ready(item) && snapshot.connected });
   }
-  async function read(id: string) {
+  const reads = new Map<string, Promise<AgentChatSnapshot>>();
+  function read(id: string): Promise<AgentChatSnapshot> {
+    const item = session(id);
+    const key = JSON.stringify([id, item.backend, item.nativeSessionId, item.forkPending, item.cwd, item.running, item.executionTransport]);
+    const pending = reads.get(key);
+    if (pending) return pending;
+    const job = readUnshared(id);
+    reads.set(key, job);
+    const cleanup = () => { if (reads.get(key) === job) reads.delete(key); };
+    void job.then(cleanup, cleanup);
+    return job;
+  }
+  async function readUnshared(id: string) {
     const item = session(id), bridge = bridgeFor(item);
     const identity = item.nativeSessionId;
     if (!options.demo && identity && !item.forkPending) {

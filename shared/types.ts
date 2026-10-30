@@ -16,6 +16,7 @@ export interface BackendInfo {
     permissionModes?: string[];
     /** The CLI can offer bypassPermissions as a switchable mode without enabling it. */
     bypassOption?: boolean;
+    additionalDirectories?: boolean;
   };
   note?: string;
 }
@@ -37,6 +38,10 @@ export interface Session {
   backend: Backend;
   title: string;
   cwd: string;
+  /** Extra native workspace permissions; primary cwd stays unchanged. */
+  additionalDirectories?: string[];
+  /** Saved while the executor was running; applied on its next launch. */
+  directoriesPending?: boolean;
   nativeSessionId: string | null;
   nativeUrl?: string | null;
   groupId: string | null;
@@ -102,6 +107,17 @@ export interface ConversationTranscript {
   notice?: string;
 }
 
+/** Results describe only the explicitly selected, current group members. */
+export interface GroupDirectoryResult {
+  sessionId: string;
+  status: 'applied' | 'pending' | 'unchanged' | 'failed';
+  error?: string;
+}
+export interface GroupDirectoryResponse {
+  path: string;
+  results: GroupDirectoryResult[];
+}
+
 export interface Group {
   id: string;
   title: string;
@@ -118,6 +134,13 @@ export interface Group {
   lastMessage?: { text: string; senderName: string; at: string } | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Authoritative read receipt, including member reminders cleared by reading. */
+export interface GroupReadReceipt extends Group {
+  members: Pick<Session, 'id' | 'unread' | 'updatedAt'>[];
+  instanceId: string;
+  revision: number;
 }
 
 export interface GroupMessage {

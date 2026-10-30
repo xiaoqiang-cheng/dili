@@ -7,7 +7,7 @@ const { WebSocket, WebSocketServer } = require(process.env.SESSIONDECK_FIXTURE_W
 const args = process.argv.slice(2), dir = process.env.SESSIONDECK_FIXTURE_DIR;
 const log = value => fs.appendFileSync(dir + '/calls.jsonl', JSON.stringify(value) + '\n');
 if (args.includes('--version')) { console.log('codex-fixture 0.158.0'); process.exit(0); }
-if (args.includes('--help')) { console.log(args[0] === 'app-server' ? '--ws-auth --ws-token-file --listen' : 'resume fork --remote-auth-token-env'); process.exit(0); }
+if (args.includes('--help')) { console.log(args[0] === 'app-server' ? '--ws-auth --ws-token-file --listen' : 'resume fork --add-dir --approve-for-me --remote-auth-token-env'); process.exit(0); }
 if (args[0] !== 'app-server') {
   if (!args.includes('--remote')) throw new Error('Unexpected fixture command');
   const id = args[args.indexOf('resume') + 1];
@@ -48,7 +48,7 @@ if (args[0] !== 'app-server') {
   wss.on('connection', socket => {
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
-    socket.on('message', raw => {
+    socket.on('message', async raw => {
       const message = JSON.parse(String(raw)), params = message.params || {};
       if (!message.method) {
         log({ event: 'answer', id: message.id, result: message.result, error: message.error, client: socket.clientName });
@@ -62,19 +62,24 @@ if (args[0] !== 'app-server') {
       if (message.method === 'initialize') socket.clientName = params.clientInfo?.name;
       else if (message.method === 'thread/start') {
         thread = { id: crypto.randomUUID(), cwd: params.cwd, status: { type: 'idle' }, turns: [], forkedFromId: null, canAcceptDirectInput: true };
-        thread.settings = { model: 'fixture-model', approvalPolicy: params.approvalPolicy || 'on-request', approvalsReviewer: params.approvalsReviewer || 'user' };
+        thread.settings = { model: 'fixture-model', approvalPolicy: params.approvalPolicy || 'on-request', approvalsReviewer: params.approvalsReviewer || 'user', sandbox: { type: 'workspaceWrite', writableRoots: [params.cwd], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: false } };
         threads.set(thread.id, thread); socket.threadId = thread.id; result = { thread, ...thread.settings };
       } else if (message.method === 'thread/resume' || message.method === 'thread/read') {
         thread = threads.get(params.threadId);
         if (!thread) { send(socket, { id: message.id, error: { code: -1, message: 'Unknown fixture thread' } }); return; }
+        if (message.method === 'thread/read' && socket.clientName === 'sessiondeck' && fs.existsSync(dir + '/drop-workspace-observer')) {
+          fs.unlinkSync(dir + '/drop-workspace-observer'); socket.close(); return;
+        }
         if (message.method === 'thread/resume') socket.threadId = thread.id;
         result = { thread, ...thread.settings };
       } else if (message.method === 'model/list') {
         result = { data: [{ model: 'fixture-model', displayName: 'Fixture Model' }, { model: 'fixture-alternative', displayName: 'Fixture Alternative' }, { model: 'fixture-denied', displayName: 'Native denied' }], nextCursor: null };
       } else if (message.method === 'thread/settings/update') {
         thread = threads.get(params.threadId);
+        if (params.sandboxPolicy && fs.existsSync(dir + '/deny-workspace-update')) { send(socket, { id: message.id, error: { code: -1, message: 'Native workspace denied' } }); return; }
         if (params.model === 'fixture-denied') { send(socket, { id: message.id, error: { code: -1, message: 'Native policy denied model' } }); return; }
         for (const field of ['model', 'approvalPolicy', 'approvalsReviewer']) if (params[field] !== undefined) thread.settings[field] = params[field];
+        if (params.sandboxPolicy) thread.settings.sandbox = params.sandboxPolicy;
         emit(thread.id, 'thread/settings/updated', { threadSettings: thread.settings });
       } else if (message.method === 'thread/name/set') {
         thread = threads.get(params.threadId); if (thread) thread.name = params.name;
@@ -112,6 +117,13 @@ if (args[0] !== 'app-server') {
         turn.items.push(item); emit(thread.id, 'item/completed', { turnId: turn.id, item });
         result = { turnId: turn.id };
       } else if (message.method === 'turn/interrupt') {
+        if (fs.existsSync(dir + '/fail-interrupt')) { send(socket, { id: message.id, error: { code: -1, message: 'Fixture interrupt rejected' } }); return; }
+        if (fs.existsSync(dir + '/hold-interrupt')) {
+          log({ event: 'interrupt-held', nativeId: params.threadId });
+          await new Promise(resolve => {
+            const timer = setInterval(() => { if (!fs.existsSync(dir + '/hold-interrupt')) { clearInterval(timer); resolve(); } }, 10);
+          });
+        }
         thread = threads.get(params.threadId); const turn = thread?.turns.at(-1);
         if (!turn || turn.id !== params.turnId) { send(socket, { id: message.id, error: { code: -1, message: 'Wrong turn' } }); return; }
         turn.status = 'interrupted'; thread.status = { type: 'idle' };

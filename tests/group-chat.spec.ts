@@ -1,3 +1,7 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { test, mutationHeaders } from './fixtures';
 import { expect } from '@playwright/test';
 import type { AppState, Group, Session } from '../shared/types';
@@ -142,6 +146,7 @@ test('only-one-member filter, @ mention, quote chips and split columns', async (
   await composer.press('Enter');
   await expect(page.getByText('一条记录', { exact: true })).toBeVisible();
   await expect(composer).toHaveValue('');
+  await expect(page.locator('.toast')).toHaveCount(0);
 
   await page.getByRole('button', { name: '全屏群聊' }).click();
   await expect(page.locator('.group-chat.group-fullscreen')).toBeVisible();
@@ -155,6 +160,102 @@ test('only-one-member filter, @ mention, quote chips and split columns', async (
   await page.getByRole('button', { name: '退出分栏' }).click();
   await expect(page.locator('.group-timeline')).toBeVisible();
 });
+
+test('reading a group clears reply and member badges through HTTP even while the live stream is stalled', async ({ page }) => {
+  const { group, members } = await createGroup(page.request, '已读响应回归');
+  const state = await (await page.request.get('/api/state')).json() as AppState;
+  const current = state.groups.find(item => item.id === group.id)!;
+  current.unread = 2;
+  const member = state.sessions.find(item => item.id === members[0].id)!;
+  member.status = 'waiting_input'; member.unread = 2;
+  await page.addInitScript(() => {
+    const visibility = { value: 'hidden' };
+    Object.assign(window, { testGroupVisibility: visibility });
+    Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => true });
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility.value });
+  });
+  let holdRefresh = false;
+  let releaseRefresh!: () => void;
+  const refreshGate = new Promise<void>(resolve => { releaseRefresh = resolve; });
+  await page.route('**/api/state', async route => {
+    if (holdRefresh) await refreshGate;
+    return route.fulfill({ json: state });
+  });
+  await page.route('**/api/events', route => route.fulfill({ contentType: 'text/event-stream', body: `retry: 60000\nevent: state\ndata: ${JSON.stringify(state)}\n\n` }));
+  let reads = 0;
+  await page.route(`**/api/groups/${group.id}/read`, route => {
+    reads++;
+    return route.fulfill({ json: { ...current, unread: 0, instanceId: state.instanceId, revision: state.revision,
+      members: state.sessions.filter(item => item.groupId === group.id).map(item => ({ id: item.id, unread: 0, updatedAt: item.updatedAt })) } });
+  });
+  await page.goto('/#/contacts');
+  const card = page.locator('.group-card').filter({ hasText: group.title });
+  await expect(card.locator('.unread-badge')).toHaveText('2');
+  await card.getByRole('button', { name: `进入群聊 ${group.title}` }).click();
+  await expect(page.getByLabel('群组消息')).toBeVisible();
+  await expect(card.locator('.unread-badge')).toHaveText('2');
+  expect(reads).toBe(0);
+  holdRefresh = true;
+  const staleRefresh = page.waitForResponse(response => response.url().endsWith('/api/state'));
+  await page.evaluate(() => {
+    (window as unknown as { testGroupVisibility: { value: string } }).testGroupVisibility.value = 'visible';
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  try {
+    await expect.poll(() => reads).toBeGreaterThan(0);
+    await expect(card.locator('.unread-badge')).toHaveCount(0);
+  } finally { releaseRefresh(); }
+  await staleRefresh;
+  // Let the stale snapshot finish applying; it must not resurrect the badge.
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  await expect(card.locator('.unread-badge')).toHaveCount(0);
+});
+
+for (const phone of [false, true]) {
+  for (const unread of [0, 2]) {
+    test(`group message badge excludes member errors and approvals (${phone ? 'phone' : 'desktop'}, ${unread} unread)`, async ({ page }) => {
+      if (phone) await page.setViewportSize({ width: 390, height: 844 });
+      const { group, members } = await createGroup(page.request, `消息和状态分离-${phone ? '手机' : '桌面'}-${unread}`);
+      const state = await (await page.request.get('/api/state')).json() as AppState;
+      const current = state.groups.find(item => item.id === group.id)!;
+      current.unread = unread;
+      for (const member of state.sessions.filter(item => item.groupId === group.id)) {
+        member.status = 'idle'; member.unread = 0;
+      }
+      const error = state.sessions.find(item => item.id === members[0].id)!;
+      error.status = 'error'; error.unread = 1;
+      const approval = state.sessions.find(item => item.id === members[1].id)!;
+      approval.status = 'waiting_approval'; approval.unread = 1;
+      await page.addInitScript(() => {
+        Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => true });
+        Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+      });
+      // Freeze SSE to verify the read receipt updates the card on its own.
+      await page.route('**/api/state', route => route.fulfill({ json: state }));
+      await page.route('**/api/events', route => route.fulfill({ contentType: 'text/event-stream', body: `retry: 60000\nevent: state\ndata: ${JSON.stringify(state)}\n\n` }));
+      let reads = 0;
+      await page.route(`**/api/groups/${group.id}/read`, route => {
+        reads++;
+        return route.fulfill({ json: { ...current, unread: 0, instanceId: state.instanceId, revision: state.revision,
+          members: state.sessions.filter(item => item.groupId === group.id).map(item => ({ id: item.id, unread: item.unread, updatedAt: item.updatedAt })) } });
+      });
+      await page.goto('/#/contacts');
+      const card = page.locator('.group-card').filter({ hasText: group.title });
+      const status = card.locator('.card-state');
+      await expect(status).toHaveText('异常 1 · 待审批 1');
+      if (unread) await expect(card.locator('.unread-badge')).toHaveText(String(unread));
+      else await expect(card.locator('.unread-badge')).toHaveCount(0);
+      await page.screenshot({ path: `artifacts/group-read-status-${phone ? 'phone' : 'desktop'}.png` });
+      await card.getByRole('button', { name: `进入群聊 ${group.title}` }).click();
+      await expect(page.getByLabel('群组消息')).toBeVisible();
+      if (unread) await expect.poll(() => reads).toBeGreaterThan(0);
+      if (phone) await page.getByRole('button', { name: '返回联系人列表', exact: true }).click();
+      await expect(card.locator('.unread-badge')).toHaveCount(0);
+      // Unresolved native actions remain visible as status, never as unread messages.
+      await expect(status).toHaveText('异常 1 · 待审批 1');
+    });
+  }
+}
 
 test.describe('phone group chat', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
@@ -341,4 +442,60 @@ test('group questions can be answered inline and private questions stay private'
   await page.reload();
   await expect(page.getByLabel('群组消息')).toBeVisible();
   await expect(question).toHaveCount(0);
+});
+
+
+for (const mobile of [false, true]) test(`group workspace bulk grants support partial failure and targeted retry on ${mobile ? 'mobile' : 'desktop'}`, async ({ page }) => {
+  if (mobile) await page.setViewportSize({ width: 390, height: 844 });
+  const extra = await mkdtemp(join(tmpdir(), 'dili-group-workspace-'));
+  try {
+    const { group, members } = await createGroup(page.request, `批量授权${mobile ? '手机' : '桌面'}`);
+    const [claude, codex, dsh] = members;
+    await page.goto(`/#/groups/${group.id}`);
+    await page.getByRole('button', { name: '群成员', exact: true }).click();
+    await page.getByRole('button', { name: '群工作区权限', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: '群工作区权限', exact: true });
+    await expect(dialog.getByRole('checkbox', { name: `授权 ${claude.title}`, exact: true })).toBeChecked();
+    await expect(dialog.getByRole('checkbox', { name: `授权 ${codex.title}`, exact: true })).toBeChecked();
+    await expect(dialog.getByRole('checkbox', { name: `授权 ${dsh.title}`, exact: true })).toBeDisabled();
+    await expect(dialog).toContainText('DeepSeek 原生沙箱暂不支持追加目录');
+    await dialog.getByRole('button', { name: '取消全选', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: /^授权所选成员/ })).toBeDisabled();
+    await dialog.getByRole('button', { name: '全选可授权成员', exact: true }).click();
+    await dialog.getByLabel('授权目录', { exact: true }).fill(pathToFileURL(extra).href);
+    await dialog.getByRole('button', { name: '浏览授权目录', exact: true }).click();
+    const picker = page.getByRole('dialog', { name: '选择工作目录', exact: true });
+    await expect(picker).toBeVisible();
+    await picker.getByRole('button', { name: '选择此目录', exact: true }).click();
+    await expect(dialog.getByLabel('授权目录', { exact: true })).toHaveValue(extra);
+    const calls: string[][] = [];
+    await page.route(`**/api/groups/${group.id}/directories`, async route => {
+      const body = route.request().postDataJSON() as { path: string; sessionIds: string[] };
+      calls.push(body.sessionIds);
+      if (calls.length !== 1) { await route.continue(); return; }
+      // Apply Claude's grant on the isolated server; simulate a busy Codex.
+      const response = await route.fetch({ postData: JSON.stringify({ ...body, sessionIds: [claude.id] }) });
+      const result = await response.json();
+      await route.fulfill({ response, json: { ...result, results: [...result.results, { sessionId: codex.id, status: 'failed', error: 'Codex 正在执行，请稍后重试' }] } });
+    });
+    await dialog.getByRole('button', { name: /^授权所选成员/ }).click();
+    await expect(dialog).toContainText('1 位已处理，1 位失败');
+    await expect(dialog).toContainText('Codex 正在执行，请稍后重试');
+    await expect(dialog).toContainText('已保存，待恢复会话生效');
+    await page.screenshot({ path: `artifacts/group-workspace-${mobile ? 'mobile' : 'desktop'}.png` });
+    expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await dialog.getByRole('button', { name: '仅重试失败成员', exact: true }).click();
+    await expect(dialog).toContainText('2 位已处理，0 位失败');
+    await expect(dialog.getByRole('button', { name: '仅重试失败成员', exact: true })).toHaveCount(0);
+    expect(calls).toEqual([[claude.id, codex.id], [codex.id]]);
+    const state = await (await page.request.get('/api/state')).json() as AppState;
+    for (const member of [claude, codex]) {
+      const current = state.sessions.find(item => item.id === member.id)!;
+      expect(current.additionalDirectories).toEqual([extra]);
+      expect(current.cwd).toBe(member.cwd);
+    }
+    expect(state.sessions.find(item => item.id === dsh.id)!.additionalDirectories).toBeUndefined();
+    await dialog.getByRole('button', { name: '完成', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+  } finally { await rm(extra, { recursive: true, force: true }); }
 });

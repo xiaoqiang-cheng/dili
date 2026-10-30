@@ -30,9 +30,11 @@ export function getToken(force = false) {
 
 export async function api<T>(path: string, body?: unknown, method?: string): Promise<T> {
   const mutation = body !== undefined || (method && method !== 'GET');
-  // A cold native start/Fork includes process readiness and several bounded
+  // Native start/Fork/stop/archive includes process readiness or shutdown and bounded
   // native RPCs. Let the server finish those before offering a retry in the UI.
-  const timeoutMs = path === '/remote/pair' ? 150_000 : mutation && /^\/sessions\/[^/]+\/(?:start|fork|stop)$/.test(path) ? 90_000 : 30_000;
+  const archiving = method === 'PATCH' && (body as { archived?: unknown } | undefined)?.archived === true && /^\/sessions\/[^/]+$/.test(path);
+  const lifecycle = mutation && (/^\/sessions\/[^/]+\/(?:start|fork|stop)$/.test(path) || archiving);
+  const timeoutMs = path === '/remote/pair' ? 150_000 : mutation && /^\/groups\/[^/]+\/directories$/.test(path) ? 180_000 : lifecycle ? 90_000 : 30_000;
   // Signing in happens before a device (and its CSRF token) exists; the server
   // checks Origin for these instead.
   const preAuth = /^\/auth\/(?:login|redeem|logout)$/.test(path);

@@ -196,7 +196,9 @@ test('local HTTP and real demo PTYs complete the contact, fork and group flow', 
     const reconnected = await terminal(member.id);
     await until(() => reconnected.output.includes('private-first-contact'), 'Reconnected terminal should replay the same session');
     reconnected.socket.close();
-    await request(`/api/sessions/${member.id}`, 'PATCH', { archived: true }, 400);
+    await request(`/api/sessions/${member.id}`, 'PATCH', { archived: 'true' }, 400);
+    await request(`/api/sessions/${member.id}`, 'PATCH', { archived: true, title: '' }, 400);
+    assert.equal((await request<AppState>('/api/state')).sessions.find(s => s.id === member.id)?.running, true, 'Invalid archive requests must not stop the session');
   });
 
   await t.test('a selected group task stages once and reaches the demo only after user submission', async () => {
@@ -238,16 +240,26 @@ test('local HTTP and real demo PTYs complete the contact, fork and group flow', 
     assert.equal((await request<AppState>('/api/state')).demo, true);
   });
 
-  await t.test('stop and archive preserve the contact and leave no phantom live state', async () => {
-    await request(`/api/sessions/${member.id}/stop`, 'POST');
-    await request(`/api/sessions/${reviewer.id}/stop`, 'POST');
+  await t.test('archive automatically stops only the chosen contact and restore does not restart it', async () => {
+    const before = (await request<AppState>('/api/state')).sessions.find(s => s.id === member.id)!;
     const archived = await request<Session>(`/api/sessions/${member.id}`, 'PATCH', { archived: true });
     assert.equal(archived.archived, true);
     assert.equal(archived.running, false);
+    assert.equal(archived.status, 'stopped');
+    assert.equal(archived.nativeSessionId, before.nativeSessionId);
+    assert.equal(archived.groupId, before.groupId);
+    assert.equal(archived.cwd, before.cwd);
     await request(`/api/sessions/${member.id}/start`, 'POST', undefined, 400);
     const state = await request<AppState>('/api/state');
-    assert.equal(state.sessions.find(s => s.id === reviewer.id)?.running, false);
+    assert.equal(state.sessions.find(s => s.id === reviewer.id)?.running, true);
     assert.equal(state.sessions.find(s => s.id === member.id)?.archived, true);
     await request(`/api/groups/${group.id}/messages`, 'POST', { kind: 'task', text: '归档成员不可接收', recipientIds: [member.id] }, 400);
+    await request(`/api/sessions/${member.id}`, 'PATCH', { archived: true });
+    const restored = await request<Session>(`/api/sessions/${member.id}`, 'PATCH', { archived: false });
+    assert.equal(restored.archived, false);
+    assert.equal(restored.running, false);
+    assert.equal(restored.nativeSessionId, before.nativeSessionId);
+    const reviewerArchived = await request<Session>(`/api/sessions/${reviewer.id}`, 'PATCH', { archived: true });
+    assert.equal(reviewerArchived.running, false);
   });
 });

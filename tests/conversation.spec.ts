@@ -1,7 +1,16 @@
 import { mutationHeaders, test } from './fixtures';
 import { expectUnifiedConversation } from './conversation-layout';
+import { copyPrompt, expectMessageCopy } from './chat-copy';
 import { expect, type APIRequestContext, type Page } from '@playwright/test';
 import type { AppState, ConversationTranscript, Group, Session } from '../shared/types';
+
+for (const backend of ['claude', 'codex', 'dsh'] as const) test(`${backend} transcript user messages support selection and copy in standalone and mobile views`, async ({ page }) => {
+  const seed = await (await page.request.get('/api/state')).json() as AppState;
+  const contact = await mutate<Session>(page.request, '/sessions', { backend, title: backend + ' message copy', cwd: seed.defaultCwd });
+  await page.route(`**/api/sessions/${contact.id}/conversation`, route => route.fulfill({ json: { messages: [{ id: 'copy-user', role: 'user', text: copyPrompt }], truncated: false } }));
+  await openConversation(page, contact);
+  await expectMessageCopy(page, page.locator('[data-message-id="copy-user"]'));
+});
 
 for (const backend of ['claude', 'codex', 'dsh'] as const) {
   test(`${backend} outline filters user inputs, jumps to exact duplicates and supports fullscreen`, async ({ page }) => {

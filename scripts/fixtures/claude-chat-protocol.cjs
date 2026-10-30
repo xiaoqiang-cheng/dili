@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const fs = require('node:fs'), path = require('node:path'), readline = require('node:readline'), { randomUUID } = require('node:crypto');
 if (process.argv.includes('--version')) { console.log('fixture-stream'); process.exit(0); }
-if (process.argv.includes('--help')) { console.log('--resume --fork-session --input-format --include-partial-messages\n  --allow-dangerously-skip-permissions  Enable bypassing all permission checks\n  --permission-mode <mode>              Permission mode to use for the session\n                                        (choices: "acceptEdits", "auto",\n                                        "bypassPermissions", "manual",\n                                        "dontAsk", "plan")\n  --print'); process.exit(0); }
+if (process.argv.includes('--help')) { console.log('--add-dir --resume --fork-session --input-format --include-partial-messages\n  --allow-dangerously-skip-permissions  Enable bypassing all permission checks\n  --permission-mode <mode>              Permission mode to use for the session\n                                        (choices: "acceptEdits", "auto",\n                                        "bypassPermissions", "manual",\n                                        "dontAsk", "plan")\n  --print'); process.exit(0); }
 const root = process.env.SESSIONDECK_FIXTURE_DIR;
 if (!process.argv.includes('--print')) {
   fs.appendFileSync(path.join(root, 'claude-launches.jsonl'), JSON.stringify({ pid: process.pid, args: process.argv.slice(2) }) + '\n');

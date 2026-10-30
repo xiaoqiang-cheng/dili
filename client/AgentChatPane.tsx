@@ -1,3 +1,4 @@
+import { cachedChatView, chatViews } from './chat-view-cache';
 import NativeRequest from './NativeRequest';
 import { PaneToolOverflow, SessionToolbar, useSessionChrome } from './SessionToolbar';
 import './chat-presentation.css';
@@ -9,6 +10,7 @@ import type { Session } from '../shared/types';
 import type { AgentChatHistoryPage, AgentChatItem, AgentChatPatch, AgentChatSnapshot, AgentChatSubmission } from '../shared/chat';
 import { api, ApiError } from './api';
 import Markdown from './Markdown';
+import MessageCopy from './MessageCopy';
 import { interfaceScale } from './zoom';
 import ImageAttachments from './ImageAttachments';
 import type { ChatAttachment } from '../shared/attachments';
@@ -58,7 +60,7 @@ function requestId() {
 
 const MessageItem = memo(function MessageItem({ item, highlighted = false, agentName = 'Codex' }: { item: AgentChatItem; highlighted?: boolean; agentName?: string }) {
   if (item.type === 'assistant' || item.type === 'user') return <article className={`chat-message chat-${item.type} codex-message codex-${item.type}${highlighted ? ' codex-message-highlighted' : ''}`} data-chat-item={item.id} tabIndex={item.type === 'user' ? -1 : undefined}>
-    <div className="chat-message-heading codex-message-heading"><strong>{item.type === 'user' ? '你' : agentName}</strong>{item.status === 'inProgress' && <span><LoaderCircle size={11} className="spin" />正在回复</span>}{item.status === 'failed' && <span>未完成</span>}</div>
+    <div className="chat-message-heading codex-message-heading"><strong>{item.type === 'user' ? '你' : agentName}</strong>{item.status === 'inProgress' && <span><LoaderCircle size={11} className="spin" />正在回复</span>}{item.status === 'failed' && <span>未完成</span>}<MessageCopy text={item.text} /></div>
     <div className="chat-message-body codex-message-body">{item.type === 'assistant' ? <Markdown text={item.text || '…'} /> : <><p>{item.text}</p>{!!item.imageCount && <p className="codex-image-count">附带 {item.imageCount} 张图片</p>}</>}</div>
   </article>;
   if (item.type === 'notice') return <p className="codex-inline-notice" data-chat-item={item.id}>{item.text}</p>;
@@ -78,12 +80,13 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
   const chrome = useSessionChrome();
   const agentName = session.backend === 'claude' ? 'Claude' : 'Codex';
   const [draft, setDraft] = useState(() => readDraft(session.id, session.backend));
-  const [snapshot, setSnapshot] = useState<AgentChatSnapshot | null>(null);
+  const [snapshot, setSnapshot] = useState<AgentChatSnapshot | null>(() => cachedChatView(session));
   const [older, setOlder] = useState<OlderHistory | null>(null);
   const olderRef = useRef(older);
   olderRef.current = older;
   const [transport, setTransport] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [verified, setVerified] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -241,7 +244,8 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
         while (items.length > 1000 || total > 2_000_000) { const item = items.shift()!; total -= item.text.length + (item.output?.length ?? 0); removed = true; }
         return { ...history, items, ...(removed ? { notice: '已加载记录达到显示上限，最早的一部分已收起。完整历史可在原生终端查看。' } : {}) };
       });
-      snapshotRef.current = next; setSnapshot(next); setLoading(false); setError('');
+      if (next.nativeSessionId === sessionRef.current.nativeSessionId) chatViews.put(sessionRef.current, next);
+      snapshotRef.current = next; setSnapshot(next); setVerified(true); setLoading(false); setError('');
     }
     async function refresh(required = false): Promise<void> {
       if (disposed) return;
@@ -349,7 +353,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
     if (!queued && !source.attachments.length && /^\/(settings|model|permissions)$/.test(text.trim())) {
       openCommand(text.trim().slice(1) as ChatCommand); return;
     }
-    if ((!text.trim() && !source.attachments.length) || voiceActive || uploading || settingsController.saving || busyRef.current || draftRef.current.pending || !transport || session.archived || snapshotRef.current?.requests.length || (session.running && !snapshotRef.current?.connected)) return;
+    if (!verified || (!text.trim() && !source.attachments.length) || voiceActive || uploading || settingsController.saving || busyRef.current || draftRef.current.pending || !transport || session.archived || snapshotRef.current?.requests.length || (session.running && !snapshotRef.current?.connected)) return;
     if (!queued && session.backend === 'claude' && snapshotRef.current?.activeTurnId) { enqueue(); return; }
     const expectedTurnId = snapshotRef.current?.activeTurnId;
     busyRef.current = true; setBusy(true); setError(''); setCheckNotice('');
@@ -395,7 +399,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
   },[transport,snapshot?.activeTurnId,snapshot?.connected,snapshot?.instanceId,snapshot?.nativeSessionId,snapshot?.requests.length,session.running,session.archived,voiceActive]);
 
   const hasTurn = !!snapshot?.activeTurnId;
-  const settingsController = useAgentChatSettings(session.id, `${snapshot?.instanceId}:${snapshot?.nativeSessionId}:${snapshot?.connected}`, hasTurn || busy || !!snapshot?.requests.length || !!draft.pending || session.archived || !transport || (session.running && !snapshot?.connected));
+  const settingsController = useAgentChatSettings(session.id, `${snapshot?.instanceId}:${snapshot?.nativeSessionId}:${snapshot?.connected}`, !verified || hasTurn || busy || !!snapshot?.requests.length || !!draft.pending || session.archived || !transport || (session.running && !snapshot?.connected));
   function openCommand(command: ChatCommand) {
     updateDraft({ ...draftRef.current, text: '' });
     setSettingsField(command === 'model' ? 'model' : command === 'permissions' ? 'permission' : undefined);
@@ -412,7 +416,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
     : awaitingTurnId && !snapshot.items.some(item => item.turnId === awaitingTurnId) ? 'waiting' : null;
   const nativeAvailable = !session.running || !!snapshot?.connected;
   useAutoGrow(textarea, draft.text, compact);
-  const canSend = (!!draft.text.trim() || !!draft.attachments.length) && !voiceActive && !uploading && !busy && !settingsController.saving && !draft.pending && transport && nativeAvailable && !snapshot?.requests.length && !session.archived;
+  const canSend = verified && (!!draft.text.trim() || !!draft.attachments.length) && !voiceActive && !uploading && !busy && !settingsController.saving && !draft.pending && transport && nativeAvailable && !snapshot?.requests.length && !session.archived;
   const olderCurrent = older?.identity === snapshot?.nativeSessionId && older?.instanceId === snapshot?.instanceId ? older : null;
   const existingIds = new Set(snapshot?.items.flatMap(item => [item.id, ...(item.replaces ?? [])]));
   const supersededIds = new Set([...(olderCurrent?.items ?? []), ...(snapshot?.items ?? [])].flatMap(item => item.replaces ?? []));
@@ -424,9 +428,10 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
   }}>
     <SessionToolbar className="codex-chat-toolbar"><span className="pane-connection" title="图形会话连接状态"><i className={transport && nativeAvailable ? 'online' : ''} /><span className="pane-connection-label">{!transport ? '连接中' : snapshot?.requests.length ? '需要你回复' : hasTurn ? '正在处理' : session.running ? nativeAvailable ? '已连接' : '原生未连接' : '尚未启动'}</span></span><div><button ref={outlineButton} className="icon-button" type="button" aria-label="对话目录" title="对话目录" aria-expanded={outlineOpen} aria-controls={outlineOpen ? outlineId : undefined} onClick={() => outlineOpen ? closeOutline() : setOutlineOpen(true)}><List size={15} /></button><PaneToolOverflow><button type="button" className="icon-button" aria-label="会话设置" title="会话设置" onClick={() => { setSettingsField(undefined); setSettingsOpen(true); }}><Settings2 size={14} /><span>会话设置</span></button><button className="icon-button" type="button" aria-label="刷新对话" title="刷新对话" onClick={() => void readSnapshot.current()}><RefreshCw size={14} /><span>刷新对话</span></button>{!chrome && <button type="button" className="icon-button" aria-label="原生终端" title="原生终端" onClick={onTerminal}><TerminalSquare size={14} /><span>原生终端</span></button>}</PaneToolOverflow></div></SessionToolbar>
     {!!snapshot?.requests.length && <div className="codex-request-alert" role="alert"><CircleAlert size={15} /><span>{snapshot.requests.length === 1 ? snapshot.requests[0].title : `${snapshot.requests.length} 项请求需要处理`}</span><button type="button" className="text-button" onClick={() => jumpToRequest(snapshot.requests[0].id)}>定位到请求</button></div>}
+    {loading && snapshot && <div className="codex-chat-banner" role="status"><LoaderCircle size={13} className="spin" />正在同步最新对话…</div>}
     {!transport && !loading && <div className="codex-chat-banner" role="status">与本地服务的连接已中断，正在重连。草稿已保留。</div>}
     {error && <div className="codex-chat-error" role="alert"><span>{error}</span><button type="button" className="text-button" onClick={() => { setError(''); void readSnapshot.current(); }}>重新读取</button></div>}
-    {session.running && snapshot && !snapshot.connected && <div className="codex-chat-banner codex-native-retry" role="status"><span>{session.backend === 'claude' && session.executionTransport !== 'structured' ? '当前由原生终端运行；本轮结束后可切换到流式图形对话。' : '历史记录可查看，原生输入连接尚未就绪。'}</span><button type="button" className="text-button" disabled={reconnecting || !transport} onClick={() => void reconnectNative()}>{reconnecting ? '正在重新连接…' : session.backend === 'claude' && session.executionTransport !== 'structured' ? '切换到流式对话' : '重新连接原生会话'}</button></div>}
+    {!loading && session.running && snapshot && !snapshot.connected && <div className="codex-chat-banner codex-native-retry" role="status"><span>{session.backend === 'claude' && session.executionTransport !== 'structured' ? '当前由原生终端运行；本轮结束后可切换到流式图形对话。' : '历史记录可查看，原生输入连接尚未就绪。'}</span><button type="button" className="text-button" disabled={reconnecting || !transport} onClick={() => void reconnectNative()}>{reconnecting ? '正在重新连接…' : session.backend === 'claude' && session.executionTransport !== 'structured' ? '切换到流式对话' : '重新连接原生会话'}</button></div>}
     <NoticeToasts scope={'codex.' + session.id + '.' + (snapshot?.nativeSessionId ?? session.nativeSessionId ?? '')} notices={[
       ...(snapshot?.notice ? [{ id: 'native:' + snapshot.notice, text: snapshot.notice }] : []),
       ...(snapshot?.truncated && !snapshot.notice ? [{ id: 'history-window', text: olderCursor ? '先展示最近的消息，可加载更早消息继续查看。' : '超长历史或工具输出可能已省略，完整记录保留在原生会话中。' }] : []),

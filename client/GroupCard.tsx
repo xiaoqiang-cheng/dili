@@ -16,8 +16,8 @@ export function GroupAvatar({ members, small = false }: { members: Session[]; sm
   </span>;
 }
 
-/** Member replies plus members blocked on the user (approval or error). A finished
- * turn is already counted as its reply, so it does not add a second reminder. */
+/** Actionable member reminders affect attention sorting, not the group's message
+ * unread count. Reading group replies does not resolve an approval or error. */
 export const memberNeedsAction = (member: Session) => !member.archived && member.unread > 0 && (member.status === 'waiting_approval' || member.status === 'error');
 export const groupNeedsAttention = (group: Group, members: Session[]) => (group.unread ?? 0) > 0 || members.some(memberNeedsAction);
 
@@ -33,8 +33,11 @@ export default function GroupCard({ group, members, active, onOpen, onPin, onEdi
     return () => document.removeEventListener('mousedown', close);
   }, [menu]);
   const live = members.filter(member => !member.archived);
-  const unread = (group.unread ?? 0) + live.filter(memberNeedsAction).length;
+  const unread = group.unread ?? 0;
+  const errors = live.filter(member => member.status === 'error').length;
+  const approvals = live.filter(member => member.status === 'waiting_approval').length;
   const running = live.filter(member => member.status === 'running').length;
+  const status = [errors && `异常 ${errors}`, approvals && `待审批 ${approvals}`, running && `执行中 ${running}`].filter(Boolean).join(' · ');
   const preview = group.lastMessage ? `${group.lastMessage.senderName}：${group.lastMessage.text}` : group.goal || `${live.length} 位成员`;
   return <article className={`session-card group-card${active ? ' active' : ''}${group.archived ? ' archived-card' : ''}`} onClick={event => { if (!(event.target as Element).closest('button, .dropdown-menu')) onOpen(); }}>
     {group.pinned && <button className="icon-button card-pin pinned" aria-label={`取消置顶 ${group.title}`} title="取消置顶" onClick={onPin}><PinOff size={13} /></button>}
@@ -44,7 +47,7 @@ export default function GroupCard({ group, members, active, onOpen, onPin, onEdi
         <div className="card-title-row"><button className="card-main" aria-current={active ? 'true' : undefined} aria-label={`进入群聊 ${group.title}`} onClick={onOpen}><h3 title={group.title}>{group.title}</h3></button><span className="group-badge">{group.archived ? '已归档' : '群聊'} · {live.length}</span></div>
         <div className="card-prompt"><p title={preview}>{preview}</p></div>
       </div>
-      {running > 0 && <span className="card-state"><span className="status-badge running">{running} 位执行中</span></span>}
+      {status && <span className="card-state"><span className={`status-badge ${errors ? 'error' : approvals ? 'waiting' : 'running'}`} title={status}>{status}</span></span>}
     </div>
     <div className="card-activity"><time dateTime={group.lastMessage?.at ?? group.updatedAt}>{relativeTime(group.lastMessage?.at ?? group.updatedAt)}</time>
       <span className="card-menu-anchor" ref={menuRef}><button className="icon-button" aria-label={`${group.title} 的更多操作`} aria-expanded={menu} onClick={() => setMenu(!menu)}><Ellipsis size={15} /></button>

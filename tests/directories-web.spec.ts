@@ -197,3 +197,38 @@ test('a delayed directory response preserves a newer pasted path until the user 
     await expect(create.getByLabel('工作目录', { exact: true })).toHaveValue(project);
   } finally { release(); await rm(root, { recursive: true, force: true }); }
 });
+
+for (const mobile of [false, true]) test(`workspace permission dialog persists added paths and explains native limits (${mobile ? 'mobile' : 'desktop'})`, async ({ page, request }) => {
+  if (mobile) await page.setViewportSize({ width: 390, height: 844 });
+  const root = await mkdtemp(join(tmpdir(), 'dili-workspace-permissions-'));
+  const extra = join(root, '附加 工作区');
+  await mkdir(extra);
+  try {
+    const config = await (await request.get('/api/config')).json();
+    const headers = { 'X-SessionDeck-Token': config.csrfToken };
+    for (const backend of ['codex', 'claude', 'dsh']) {
+      const contact = await (await request.post('/api/sessions', { headers, data: { backend, title: `Workspace ${backend} ${mobile}`, cwd: root } })).json();
+      await page.goto(`/#/contacts?session=${contact.id}`);
+      await page.locator('.session-info > summary').click();
+      await page.getByRole('button', { name: '工作区权限', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: '工作区权限', exact: true });
+      if (backend === 'dsh') {
+        await expect(dialog).toContainText('尚无追加目录权限接口');
+        await expect(dialog.getByRole('button', { name: '添加工作区', exact: true })).toHaveCount(0);
+        const denied = await request.post(`/api/sessions/${contact.id}/directories`, { headers, data: { path: extra } });
+        expect(denied.status()).toBe(409);
+      } else {
+        await dialog.getByLabel('新增可操作目录', { exact: true }).fill(pathToFileURL(extra).href);
+        await dialog.getByRole('button', { name: '添加工作区', exact: true }).click();
+        await expect(dialog).toContainText('已保存，待下次恢复原生会话后生效');
+        await expect(dialog.locator('code').filter({ hasText: extra })).toHaveCount(1);
+        const state = await (await request.get('/api/state')).json() as AppState;
+        expect(state.sessions.find(item => item.id === contact.id)?.additionalDirectories).toEqual([extra]);
+        expect(state.sessions.find(item => item.id === contact.id)?.cwd).toBe(root);
+        expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+        await page.screenshot({ path: `artifacts/workspace-permissions-${backend}-${mobile ? 'mobile' : 'desktop'}.png`, animations: 'disabled' });
+      }
+      await dialog.getByRole('button', { name: '完成', exact: true }).click();
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

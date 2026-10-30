@@ -210,3 +210,24 @@ for(const backend of ['claude','dsh'] as const) {
     expect(app.result.posts).toHaveLength(1);
   });
 }
+
+test('DeepSeek reopens recent history while its native log refresh is pending', async ({ page }) => {
+  const app = await fixture(page, 'dsh');
+  app.transcript.messages.push({ id: 'cached-answer', role: 'assistant', text: 'DeepSeek 上次读取的内容' });
+  app.contact.groupId = null;
+  app.contact.lastActivity = new Date().toISOString();
+  await app.publish();
+  await expect(page.getByText('DeepSeek 上次读取的内容', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '关闭会话', exact: true }).click();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/sessions/' + app.contact.id + '/conversation', async route => {
+    await gate;
+    await route.fulfill({ json: { messages: [{ id: 'new-answer', role: 'assistant', text: 'DeepSeek 最新内容' }], truncated: false } });
+  });
+  try {
+    await page.getByRole('button', { name: `进入 ${app.contact.title} 的会话`, exact: true }).click();
+    await expect(page.getByText('DeepSeek 上次读取的内容', { exact: true })).toBeVisible();
+  } finally { release(); }
+  await expect(page.getByText('DeepSeek 最新内容', { exact: true })).toBeVisible();
+});

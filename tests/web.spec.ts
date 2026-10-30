@@ -747,3 +747,29 @@ test('opening a blocked session clears its red badge from the read response alon
   await expect(card.locator('.unread-badge')).toHaveCount(0);
   await expect(card).not.toHaveClass(/has-unread/);
 });
+
+test('unread favicon works without system badging and restores after reading', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'setAppBadge', { configurable: true, value: () => { throw new Error('Not supported'); } });
+    Object.defineProperty(navigator, 'clearAppBadge', { configurable: true, value: undefined });
+  });
+  let unread = true;
+  await mockWorkspace(page, state => {
+    const seed = state.sessions[0];
+    state.sessions = [{ ...seed, id: 'favicon-unread', title: '图标通知', groupId: null, archived: false, status: 'waiting_input', unread: 100 }];
+  });
+  await page.goto('/');
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', /^data:image\/png;base64,/);
+  await expect(page).toHaveTitle(/^\(100\)/);
+  // An ordinary state refresh also clears the fallback; native API failure did
+  // not stop rendering or corrupt the favicon's original relay-aware URL.
+  await page.route('**/api/state', async route => {
+    const state = await (await page.request.get('/api/state')).json();
+    state.sessions = []; state.groups = []; state.revision = 999999;
+    unread = false;
+    await route.fulfill({ json: state });
+  });
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect.poll(() => unread).toBe(false);
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', /\/favicon\.svg\?v=/);
+});
