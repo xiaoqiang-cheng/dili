@@ -845,7 +845,7 @@ select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--line-stro
   .session-info-content>.compact-extra-action { display: inline-flex; }
 }
 .session-drawer .session-conversation { padding: 0; }
-.session-drawer .terminal-pane { margin: 0; border-radius: 0; }
+.session-drawer .terminal-pane, .session-drawer .native-web { margin: 0; border: 0; border-radius: 0; }
 .session-drawer .codex-chat-pane, .session-drawer .conversation-pane { border: 0; border-radius: 0; min-height:0; }
 @media (pointer: coarse) { .terminal-container { touch-action: none; overscroll-behavior: contain; } }
 
