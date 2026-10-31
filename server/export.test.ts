@@ -29,6 +29,21 @@ test('export renders messages, metadata and usage', () => {
   assert.ok(!/<script/i.test(html));
 });
 
+test('tool cards are escaped and exported with their native state', () => {
+  const transcript: ConversationTranscript = {
+    truncated: false,
+    messages: [{ id: 'tool', role: 'assistant', text: '工具调用：bash', tool: {
+      callId: 'call-1', name: 'bash <script>', args: '{"command":"echo <x>"}', result: 'a & b', status: 'error',
+    } }],
+  };
+  const html = renderConversationHtml({ session, transcript });
+  assert.match(html, /bash &lt;script&gt; · 失败/);
+  assert.match(html, /echo &lt;x&gt;/);
+  assert.match(html, /a &amp; b/);
+  assert.ok(!html.includes('<script>'));
+  assert.match(html, /details class="tool failed"/);
+});
+
 test('an empty transcript keeps the notice instead of a blank page', () => {
   const html = renderConversationHtml({ session: { ...session, nativeSessionId: null }, transcript: { messages: [], truncated: false, notice: '原生历史尚未落盘' } });
   assert.match(html, /原生历史尚未落盘/);

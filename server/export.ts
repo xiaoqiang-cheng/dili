@@ -18,6 +18,10 @@ h1{font-size:22px;margin:0 0 8px;overflow-wrap:anywhere}dl{display:grid;grid-tem
 article{display:grid;grid-template-columns:64px 1fr;gap:14px;padding:16px 0;border-bottom:1px solid var(--line)}
 article:last-of-type{border-bottom:0}.role{font-size:13px;font-weight:600;color:var(--muted)}.user .role{color:var(--accent)}
 .text{white-space:pre-wrap;overflow-wrap:anywhere}.user .text{background:var(--user);border-radius:8px;padding:10px 12px}
+details.tool{margin-top:8px;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+details.tool summary{padding:9px 12px;background:var(--user);cursor:pointer;font-size:12px;color:var(--muted)}
+details.tool pre{margin:0;padding:10px 12px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6;border-top:1px solid var(--line);max-height:320px;overflow:auto}
+details.tool.failed{border-color:#cf222e}
 time{display:block;color:var(--muted);font-size:12px;margin-top:10px}
 footer{margin-top:28px;color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding-top:14px}`;
 
@@ -34,7 +38,11 @@ export function renderConversationHtml({ session, transcript, exportedAt = new D
   const usageLine = usage
     ? `用量：${usage.turns} 轮 · 输入 ${formatTokens(usage.inputTokens)} · 输出 ${formatTokens(usage.outputTokens)}${usage.partial ? ' · 最近窗口' : ''}`
     : '';
-  const messages = transcript.messages.map(message => `<article class="${message.role}"><div class="role">${ROLE_LABEL[message.role]}</div><div><div class="text">${escapeHtml(message.text)}</div>${message.createdAt ? `<time datetime="${escapeHtml(message.createdAt)}">${escapeHtml(new Date(message.createdAt).toLocaleString('zh-CN'))}</time>` : ''}</div></article>`).join('\n');
+  const messages = transcript.messages.map(message => {
+    const tool = message.tool ? `<details class="tool ${message.tool.status === 'error' ? 'failed' : ''}"><summary>${escapeHtml(message.tool.name)} · ${message.tool.status === 'running' ? '执行中' : message.tool.status === 'error' ? '失败' : '已完成'}</summary>${message.tool.args ? `<pre>${escapeHtml(message.tool.args)}</pre>` : ''}${message.tool.result ? `<pre>${escapeHtml(message.tool.result)}</pre>` : ''}</details>` : '';
+    const text = message.tool ? '' : `<div class="text">${escapeHtml(message.text)}</div>`;
+    return `<article class="${message.role}"><div class="role">${ROLE_LABEL[message.role]}</div><div>${text}${tool}${message.createdAt ? `<time datetime="${escapeHtml(message.createdAt)}">${escapeHtml(new Date(message.createdAt).toLocaleString('zh-CN'))}</time>` : ''}</div></article>`;
+  }).join('\n');
   const body = transcript.messages.length
     ? messages
     : `<p class="empty">${escapeHtml(transcript.notice || '没有可导出的对话记录。')}</p>`;
