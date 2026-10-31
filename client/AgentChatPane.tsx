@@ -197,6 +197,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
     } finally { if (olderLoading.current === job) olderLoading.current = null; }
   }
   async function takeOverDshTerminal() {
+    if (dshTuiBusy) { setError('当前 dsh-tui 任务还在执行；结束后才能接管图形对话。'); return; }
     if (!window.confirm('接管图形对话会退出当前 dsh-tui 进程，并从同一份已保存的 DeepSeek Harness 会话恢复。当前任务需要先结束。继续？')) return;
     setTakingOver(true); setError('');
     try { await api(`/sessions/${session.id}/start`, { mode: 'chat', handoff: true }); await readSnapshot.current(); }
@@ -413,6 +414,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
 
   const hasTurn = !!snapshot?.activeTurnId;
   const dshTuiOwner = session.backend === 'dsh' && session.running && session.executionTransport !== 'web';
+  const dshTuiBusy = dshTuiOwner && (hasTurn || session.status === 'running' || session.status === 'waiting_approval');
   const settingsController = useAgentChatSettings(session.id, `${snapshot?.instanceId}:${snapshot?.nativeSessionId}:${snapshot?.connected}`, !verified || hasTurn || busy || dshTuiOwner || !!snapshot?.requests.length || !!draft.pending || session.archived || !transport || (session.running && !snapshot?.connected));
   function openCommand(command: ChatCommand) {
     updateDraft({ ...draftRef.current, text: '' });
@@ -446,7 +448,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
     {!transport && !loading && <div className="codex-chat-banner" role="status">与本地服务的连接已中断，正在重连。草稿已保留。</div>}
     {error && <div className="codex-chat-error" role="alert"><span>{error}</span><button type="button" className="text-button" onClick={() => { setError(''); void readSnapshot.current(); }}>重新读取</button></div>}
     {!loading && session.running && snapshot && !snapshot.connected && <div className="codex-chat-banner codex-native-retry" role="status"><span>{session.backend === 'claude' && session.executionTransport !== 'structured' ? '当前由原生终端运行；本轮结束后可切换到流式图形对话。' : '历史记录可查看，原生输入连接尚未就绪。'}</span><button type="button" className="text-button" disabled={reconnecting || !transport} onClick={() => void reconnectNative()}>{reconnecting ? '正在重新连接…' : session.backend === 'claude' && session.executionTransport !== 'structured' ? '切换到流式对话' : '重新连接原生会话'}</button></div>}
-    {dshTuiOwner && <div className="codex-chat-banner codex-native-retry" role="status"><span>当前输入由 dsh-tui 持有，图形对话只能阅读。接管会退出终端进程，并从同一份原生会话恢复。</span><button type="button" className="text-button" disabled={takingOver || hasTurn || !transport} onClick={() => void takeOverDshTerminal()}>{takingOver ? '正在接管…' : hasTurn ? '本轮结束后可接管' : '接管图形对话'}</button></div>}
+    {dshTuiOwner && <div className="codex-chat-banner codex-native-retry" role="status"><span>当前输入由 dsh-tui 持有，图形对话只能阅读。接管会退出终端进程，并从同一份原生会话恢复。</span><button type="button" className="text-button" disabled={takingOver || dshTuiBusy || !transport} onClick={() => void takeOverDshTerminal()}>{takingOver ? '正在接管…' : dshTuiBusy ? '任务结束后可接管' : '接管图形对话'}</button></div>}
     <NoticeToasts scope={'codex.' + session.id + '.' + (snapshot?.nativeSessionId ?? session.nativeSessionId ?? '')} notices={[
       ...(snapshot?.notice ? [{ id: 'native:' + snapshot.notice, text: snapshot.notice }] : []),
       ...(snapshot?.truncated && !snapshot.notice ? [{ id: 'history-window', text: olderCursor ? '先展示最近的消息，可加载更早消息继续查看。' : '超长历史或工具输出可能已省略，完整记录保留在原生会话中。' }] : []),
@@ -480,7 +482,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
         if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) { event.preventDefault(); if (canSend) void send(); }
       }} />
       </ImageAttachments>
-      <AgentChatQuickSettings key={settingsOpen ? 'modal' : 'inline'} controller={settingsController} blockedReason={session.archived ? '恢复联系人后可修改设置。' : dshTuiOwner ? '先接管图形对话，再修改原生设置。' : !transport || !nativeAvailable ? '连接原生会话后可修改设置。' : undefined} />
+      <AgentChatQuickSettings key={settingsOpen ? 'modal' : 'inline'} controller={settingsController} blockedReason={session.archived ? '恢复联系人后可修改设置。' : dshTuiOwner ? dshTuiBusy ? '当前任务结束后接管图形对话，再修改原生设置。' : '先接管图形对话，再修改原生设置。' : !transport || !nativeAvailable ? '连接原生会话后可修改设置。' : undefined} />
       <div className="chat-composer-footer codex-composer-footer"><span className="composer-hint" data-actionable={busy || !!draft.pending || !transport || !nativeAvailable || undefined}>{busy ? '正在发送…' : draft.pending ? '请先核对上一条消息的发送结果' : dshTuiOwner ? '当前输入由 dsh-tui 持有 · 先接管图形对话' : !transport ? '正在连接本地服务，草稿已保留' : !nativeAvailable ? '请使用上方的重新连接按钮恢复输入' : hasTurn ? session.backend === 'claude' ? '生成中发送会加入队列 · 本轮结束后继续' : session.backend === 'dsh' ? '生成中发送会排到本轮之后 · 不停止生成' : '生成中发送会补充当前任务 · 不停止生成' : 'Enter 发送 · Shift + Enter 换行'}</span><div><VoiceInput sessionId={session.id} disabled={session.archived || busy || !!draft.pending} onActive={setVoiceActive} insert={text => { const next = { ...draftRef.current, text: appendVoiceText(draftRef.current.text, text) }; if (!saveDraft(session.id, next)) throw new Error("草稿保存失败，识别文字保留在下方"); updateDraft(next); }} /><button type="button" className="text-button composer-preview-toggle" aria-pressed={preview} onClick={() => setPreview(value => !value)}>Markdown 预览</button>{hasTurn && <button type="button" className="button secondary small-button composer-stop" disabled={!transport || interrupting} onClick={async () => {
         updateDraft({...draftRef.current,queue:draftRef.current.queue?.map(item=>({...item,paused:true}))});
         setInterrupting(true); setError('');

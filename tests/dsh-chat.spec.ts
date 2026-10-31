@@ -113,3 +113,10 @@ test('dsh native model and permission choices are selectable', async ({ page }) 
   await expect.poll(() => app.settingUpdates.length).toBe(2);
   expect(app.settingUpdates[1]).toMatchObject({ field: 'permission', value: 'read-only' });
 });
+
+test('dsh takeover stays disabled while the TUI task is running', async ({ page }) => {
+  await fixture(page, undefined, { status: 'running', executionTransport: 'pty' });
+  const button = page.getByRole('button', { name: '任务结束后可接管' });
+  await expect(button).toBeDisabled();
+  await expect(page.getByRole('button', { name: '接管图形对话' })).toHaveCount(0);
+});
