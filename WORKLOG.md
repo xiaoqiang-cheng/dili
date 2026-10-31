@@ -626,3 +626,9 @@
 - 只接受原生事件里明确存在的 `callId`（`data.callId`、`message.toolCallId` 或旧格式 `message.source.callId`）；匹配不到时宁可不显示结果，也不猜配对。`ask_user_question` 继续保留可读问题文本，不额外重复成工具卡。
 - 三问自查：公共 `ConversationMessage` 只增加可选通用字段，不引入 dsh 专有事件名；工具状态与结果全部来自原生，原生没有结果就保持「执行中」；UI 的失败样式不改变原生错误语义。导出／分享仍只显示 `工具调用：<name>` 摘要，尚未把参数和结果写进导出 HTML，已在 TODO 26 保留统一输出项。
 - 验证：`npm run check` 通过；`server/conversation.test.ts` 28 项通过（新增工具调用／结果、错误状态与 4,000 字符上限断言）；隔离 4337 演示实例的 `tests/native-chat.spec.ts` 21 项通过（新增桌面工具卡展开与结果断言）。`npm test` 全量 407 项、399 通过、4 跳过、4 个既有 Codex fixture 失败；另一次全量运行中 dsh 超时测试受并发影响失败，单项重跑 21 项全通过，未计为本轮回归。未调用真实模型。正式服务未停止或重启；仅本地提交，不 push、不 tag。
+
+## 2026-10-31：三平台输入输出体验：dsh 结构化可行性评估
+
+- 只做可行性核对，不新增半套图形界面。已确认 dsh 原生 `session.prompt`、`session.cancel`、`session.history`、`session.page` 与事件流可支撑文本／工具记录和发送；未确认审批／提问的网页应答 RPC、统一设置与按轮中断契约。
+- 结论：暂不注册 dsh chat adapter；dsh 保持 TUI 注入或原生 Web iframe，审批继续在原生界面处理，记录页使用本轮工具卡。重新评估以原生应答协议和可重复契约测试为前提，不用“看起来能读历史”替代可操作的图形对话。
+- 更新 `docs/agents/dsh.md` 与 TODO 26 的评估结论；未改代码、未重启正式服务，不 push、不 tag。

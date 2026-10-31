@@ -2,7 +2,7 @@
 
 ## 两条路径
 
-1. **dsh-tui 存在**：`server/terminal.ts` 托管原生 PTY，输入、图片、审批都在原生 TUI 里完成；Dili 提供联系人、状态和对话记录。
+1. **dsh-tui 存在**：`server/terminal.ts` 托管原生 PTY，输入、图片、审批都在原生 TUI 里完成；Dili 提供联系人、状态、工具卡和对话记录。
 2. **没有 dsh-tui**：`server/dsh.ts` 启动 Harness 自己的 Web 服务，页面用 iframe 打开原生界面；对话记录走原生 session 历史 API 或压缩日志。
 
 用 `SESSIONDECK_DSH_PREFER_WEB=1` 可强制走 Web 桥（TUI 挂起但收不到输入时的退路）。
@@ -30,3 +30,12 @@
 3. 事件 `seq` 用于消息 ID；没有 `seq` 的旧版本要显式降级，不能生成会碰撞的 ID。
 4. 停止空闲且尚未附着页面的会话是幂等操作；不要报错。
 5. 不要把“支持 DeepSeek 模型”当成“支持 DeepSeek Harness”。
+
+## 结构化图形对话可行性（2026-10-31 评估）
+
+结论：**暂不新增 dsh chat adapter**，保留原生 TUI/Web 输入与记录页工具卡。
+
+- 已确认可用：`session.prompt`、`session.cancel`、`session.history`、`session.page`，以及 `events.mux` / 现代事件流中的 `session/event`。文本、工具调用和工具结果足以填充只读记录页。
+- 未确认／未实现：结构化审批与提问的回复 RPC 只在本项目里看到状态跟踪（`approval/requested`、`question/requested`），没有验证可用的应答方法；设置、权限和按轮中断也没有统一的网页契约。直接套 `AgentChatPane` 会让用户看到审批却无法在网页处理。
+- 因此当前输入仍走原生路径：dsh-tui 用 PTY 注入，dsh Web 用 iframe。`/chat/interrupt` 和结构化审批只在 Codex／Claude 适配器注册；dsh 不伪造这些能力。
+- 重新评估的条件：原生协议提供稳定的审批／提问应答与设置接口，并有可重复的原生契约测试；届时再补 dsh chat adapter，而不是先做只有文本的半套图形界面。
