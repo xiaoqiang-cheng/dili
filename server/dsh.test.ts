@@ -61,9 +61,12 @@ const server = http.createServer(async (request, response) => {
   const input = JSON.parse(body);
   if (modern && request.url.startsWith('/api/')) {
     const method = input.method;
-    if (!request.url.endsWith(method) || method.includes('.') || !input.payload.args || (method === 'session/list' ? !input.payload.args._request : method === 'commands/execute' ? input.payload.args.agentId !== id : !input.payload.args.request)) { response.writeHead(400); response.end(); return; }
+    const direct = method === 'userQuestions/answer', remoteResult = method === '$events/result';
+    if (!request.url.endsWith(method) || method.includes('.') || !input.payload.args || (method === 'session/list' ? !input.payload.args._request : method === 'commands/execute' ? input.payload.args.agentId !== id : direct ? input.payload.args.agentId !== id || !input.payload.args.callId : remoteResult ? !input.payload.args.eventId : !input.payload.args.request)) { response.writeHead(400); response.end(); return; }
     if (method === 'session/prompt' && !input.payload.args.request.requestId) { response.writeHead(400); response.end(); return; }
-    input.method = method.replace('/','.');
+    if (direct) fs.appendFileSync(${JSON.stringify(join(dir, 'native-answers'))}, JSON.stringify(input.payload.args) + '\\n');
+    if (remoteResult) fs.appendFileSync(${JSON.stringify(join(dir, 'native-remote-answers'))}, JSON.stringify(input.payload.args) + '\\n');
+    if (!remoteResult) input.method = method.replace('/','.');
     if (input.method === 'session.projections') input.method = 'fixture.projections';
     if (input.method === 'session.page') input.method = 'session.history';
   }
@@ -88,6 +91,9 @@ const server = http.createServer(async (request, response) => {
       const streamId = input.modernFrame.control ? 'control' : socket.followId;
       if (streamId) socket.send(JSON.stringify({type:'item',streamId,value:input.modernFrame.value}));
     }
+    if (input.remoteEvent) for (const socket of streams.clients) {
+      if (socket.eventStreamId) socket.send(JSON.stringify({type:'item',streamId:socket.eventStreamId,value:input.remoteEvent}));
+    }
     if (input.disconnect) for (const socket of streams.clients) socket.terminate();
     if (input.releaseReplay) {
       holdReplay = false;
@@ -103,6 +109,8 @@ const server = http.createServer(async (request, response) => {
   if (modern && input.method === 'commands.execute') value = {result:{kind:'success'}};
   if (modern && input.method === 'fixture.projections') value = {asOfSeq: history.at(-1)?.seq ?? -1, values:{}};
   if (modern && input.method === 'session.history') value = {records: history.map(event => ({type:'event',event})),hasMore:false};
+  if (modern && input.method === 'userQuestions.answer') value = true;
+  if (modern && input.method === '$events/result') value = true;
   response.setHeader('content-type', 'application/json');
   response.end(JSON.stringify({ type: 'server-response', rpcId: input.rpcId, result: { ok: true, value } }));
 });
@@ -119,6 +127,9 @@ streams.on('connection', (socket, request) => {
       else if (message.endpoint === 'session/follow') {
         socket.followId=message.streamId;
         socket.send(JSON.stringify({type:'item',streamId:message.streamId,value:{type:'snapshot',records:history.map(event=>({type:'event',event})),projections:{values:{questions:{active:[]}}}}}));
+      } else if (message.endpoint === '$events') {
+        socket.eventStreamId=message.streamId;
+        socket.send(JSON.stringify({type:'item',streamId:message.streamId,value:{type:'ready',clientId:'fixture-client',host:{home:'/tmp'}}}));
       } else socket.send(JSON.stringify({type:'error',streamId:message.streamId}));
     });return;
   }
@@ -442,7 +453,7 @@ test('live DSH boundaries received during a batched listing win over that older 
 
 
 test('dsh 0.2 authenticates RPC and read-only mux, tracks approvals/questions and reconnects', {timeout: 15_000}, async t => {
-  const {bridge,id,configure,waitStatus}=await fixture(t,{modern:true});
+  const {bridge,id,directory,configure,waitStatus}=await fixture(t,{modern:true});
   await bridge.start();
   await configure({running:true,history:[{type:'turn/start',seq:0,data:{}}]});
   await waitStatus('running');
@@ -453,8 +464,10 @@ test('dsh 0.2 authenticates RPC and read-only mux, tracks approvals/questions an
   await waitStatus('waiting_approval');
   await event({type:'approval/decided',seq:2,data:{id:'permission'}});
   await waitStatus('running');
-  await configure({modernFrame:{control:true,value:{type:'projection',sessionId:id,key:'questions',value:{active:[{callId:'question'}]}}}});
+  await configure({modernFrame:{control:true,value:{type:'projection',sessionId:id,key:'questions',value:{active:[{callId:'question',questions:[{id:'q1',question:'continue?'}]}]}}}});
   await waitStatus('waiting_input');
+  assert.deepEqual(bridge.pendingRequests(id).questions.map(item => [item.callId, item.questions.length]), [['question', 1]]);
+  await bridge.answerQuestion(id, 'question', [{ id: 'q1', selected: [], custom: 'yes' }]);
   await configure({modernFrame:{control:true,value:{type:'projection',sessionId:id,key:'questions',value:{active:[]}}}});
   await waitStatus('running');
   await configure({disconnect:true});
@@ -464,8 +477,27 @@ test('dsh 0.2 authenticates RPC and read-only mux, tracks approvals/questions an
   const status=await waitStatus('waiting_input');
   assert.match(status.attentionKey!,/turn:.*:3:completed/);
   assert.equal((await bridge.readHistory(id,10))?.events?.length,1);
+  assert.match(await readFile(join(directory, 'native-answers'), 'utf8'), /"callId":"question"/);
 });
 
+
+test('dsh answers live blocking questions through forwarded Remote Events, not the timed projection', { timeout: 10_000 }, async t => {
+  const { bridge, id, configure, directory, waitStatus } = await fixture(t, { modern: true });
+  await bridge.start();
+  await configure({ running: true, history: [{ type: 'turn/start', seq: 0, data: {} }] });
+  await waitStatus('running');
+  await configure({ remoteEvent: { type: 'waterfall', event: 'user-questions/request', eventId: 'event-1', agentId: id, request: { questions: [{ id: 'q1', header: '确认', question: '继续吗？', options: [{ label: '继续' }, { label: '暂停' }] }] } } });
+  await waitStatus('waiting_input');
+  const pending = bridge.pendingRequests(id);
+  assert.deepEqual(pending.questions.map(item => [item.callId, item.questions.length]), [['event-1', 1]]);
+  assert.match((await waitStatus('waiting_input')).attentionKey!, /live:event-1/);
+  await bridge.answerQuestion(id, 'event-1', [{ id: 'q1', selected: ['继续'] }]);
+  assert.deepEqual(bridge.pendingRequests(id).questions, []);
+  const body = JSON.parse((await readFile(join(directory, 'native-remote-answers'), 'utf8')).trim()) as { clientId: string; eventId: string; outcome: { kind: string; value: { answers: unknown[] } } };
+  assert.equal(body.clientId, 'fixture-client');
+  assert.equal(body.eventId, 'event-1');
+  assert.deepEqual(body.outcome, { kind: 'result', value: { answers: [{ id: 'q1', selected: ['继续'] }] } });
+});
 
 test('dsh rejects an authentication URL outside its owned origin before connecting', async t => {
   const {bridge}=await fixture(t,{modern:true,invalidAuth:true});

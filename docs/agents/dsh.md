@@ -1,9 +1,10 @@
 # DeepSeek Harness（dsh）
 
-## 两条路径
+## 三条路径
 
-1. **dsh-tui 存在**：`server/terminal.ts` 托管原生 PTY，输入、图片、审批都在原生 TUI 里完成；Dili 提供联系人、状态、工具卡和对话记录。
-2. **没有 dsh-tui**：`server/dsh.ts` 启动 Harness 自己的 Web 服务，页面用 iframe 打开原生界面；对话记录走原生 session 历史 API 或压缩日志。
+1. **dsh 0.2+ 结构化图形对话**：`server/agents/dsh-chat.ts` 通过 `DshBridge` 复用 `AgentChatPane`；文本、工具、问题和停止都走原生 RPC，审批仍有独立的状态与原生入口。即使装有 dsh-tui，也可以在图形对话中直接发送。
+2. **dsh-tui 存在**：`server/terminal.ts` 托管原生 PTY，输入、图片、审批都在原生 TUI 里完成；Dili 提供联系人、状态、工具卡和对话记录。
+3. **没有 dsh-tui 或显式使用原生界面**：`server/dsh.ts` 启动 Harness 自己的 Web 服务，页面用 iframe 打开原生界面；对话记录走原生 session 历史 API 或压缩日志。
 
 用 `SESSIONDECK_DSH_PREFER_WEB=1` 可强制走 Web 桥（TUI 挂起但收不到输入时的退路）。
 
@@ -18,7 +19,8 @@
 
 - 多工作区／`--add-dir`：**不支持**，界面必须解释原因，不能假装成功。
 - 统一模型与权限面板：**未接入**，沿用原生设置。
-- 审批与提问：仍在原生 TUI/Web 处理；Dili 只显示“等待审批/等待输入”。
+- 问题：dsh 0.2 的阻塞式 `ask_user_question` 通过转发 Remote Event 的 `$events` / `$events/result` 回答；timed 问题在 `userQuestions` 投影转为 `continued` 后走 `userQuestions/answer`。没有投影、也没有 `wait.callId` 的阻塞问题仍以实时 waterfall 为准。
+- 审批：原生只提供 `approval/asked` / `approval/decided` 状态，没有可验证的远程 allow/deny 方法；Dili 只显示“等待审批”，并要求去原生 TUI/Web 处理。
 - 停止：通过原生接口取消任务，不要关闭共享 Web 服务或影响其他成员。
 - Fork：保留原目录；不支持改目录。
 - 使用量（token/费用）：原生历史未提供稳定字段时显示“原生未提供”，不要估算。
@@ -31,13 +33,15 @@
 4. 停止空闲且尚未附着页面的会话是幂等操作；不要报错。
 5. 不要把“支持 DeepSeek 模型”当成“支持 DeepSeek Harness”。
 
-## 结构化图形对话可行性（2026-10-31 复核）
+## 结构化图形对话（2026-10-31 实现）
 
-结论：**可以做 dsh chat adapter，但不能把审批伪装成网页操作**。分两步推进：先统一可视壳，再接文本／工具／问题；审批保留原生处理。
+结论：**可以做 dsh chat adapter，但不能把审批伪装成网页操作**。文本、工具、问题、停止已经接入；审批保留原生处理。
 
-- 已确认可用：`session.prompt`、`session.cancel`、`session.history`、`session.page`，以及 `events.mux` / 现代事件流中的 `session/event`。文本、工具调用和工具结果足以填充只读记录页。
-- 问题回答有原生 RPC：dsh 0.2 的 `userQuestions/answer`（参数为 `agentId`、`callId`、`answers`），提问卡可以在网页中真正提交；`ask_user_question` 的投影会给出 `callId` 和问题列表。
-- 审批没有等价的远程应答：原生只暴露 `approval/requested` / `approval/decided` 状态，网页端没有可验证的 approve/reject RPC。审批卡只能在 Dili 显示“去原生界面处理”，不能伪造允许／拒绝。
-- 模型、权限和设置仍由原生界面管理；不要为了对齐 Codex 而生成一个空设置面板或假按钮。
-- 当前输入仍走原生路径：dsh-tui 用 PTY 注入，dsh Web 用 iframe。结构化 adapter 是下一步，必须先有可重复的 native 契约测试，再切默认入口。
+- 已确认可用：`session.prompt`、`session.cancel`、`session.history`、`session.page`，以及 `events.mux` / 现代 `session/follow` 中的 `session/event`。这些足以填充 `AgentChatPane` 的文本和工具卡。
+- **阻塞式问题**：`ask_user_question` 在 dsh 0.2 中通过转发 Remote Event 的 `user-questions/request` waterfall 到达客户端；必须在 `/api/remote.mux` 上打开 `$events` 逻辑流，回答时向 `/api/$events/result` 提交 `{ clientId, eventId, outcome: { kind: 'result', value: { answers } } }`。这个请求通常没有 `wait.callId`，`eventId` 才是稳定句柄。
+- **timed 问题**：`userQuestions` 投影只记录 timed 调用；调用变成 `continued` 后通过 `userQuestions/answer` 提交 `agentId`、`callId`、`answers`。不要把它当成所有 `ask_user_question` 的通用入口。
+- 审批没有等价的远程应答：原生只暴露 `approval/asked` / `approval/decided` 状态，网页端没有可验证的 approve/reject RPC。审批卡只能在 Dili 显示“去原生界面处理”，不能伪造允许／拒绝。
+- 模型、权限和设置仍由原生界面管理；dsh 设置面板只读，不生成假按钮。
+- `DshChatAdapter` 的 `sendPrompt` 先走原生 `session.prompt`，成功后返回合成 `turnId`，下一个原生 `turn/start` 会接管它；历史只读取最近窗口，不启动已停止会话。
+- 当前 dsh 构建未稳定发送 `assistant/live-chunk`，所以实时气泡通常不会出现；收到时 adapter 会显示，最终 `assistant/message` 会替换它。没有收到时不能伪造流式文本。
 - 重新评估的条件：原生协议提供稳定的审批应答接口，并有版本门槛；届时再把审批也收进网页，否则保持“问题可答、审批跳原生”。

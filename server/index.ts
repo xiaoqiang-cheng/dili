@@ -36,6 +36,7 @@ import type { AuthStatus, RemoteSettings, RemoteStatus, ShareMode } from '../sha
 import { demoBackends, seedDemo, demoCommand } from './demo.ts';
 import { getBackendInfo, buildLaunch, discoverSessions, resolveNativeSessionId, validateNativeId, findExecutable, effectiveClaudeSettings } from './adapters.ts';
 import { DshBridge } from './dsh.ts';
+import { DshChatAdapter } from './agents/dsh-chat.ts';
 import { submitDshInject } from './dsh-inject.ts';
 import { NativeStatusWatcher } from './native-status.ts';
 import { nativeHookPatch } from './native-events.ts';
@@ -132,6 +133,7 @@ const terminals = new Terminals();
 const shells = new ShellTerminals();
 const nativeStatus = new NativeStatusWatcher();
 const dsh = new DshBridge({ dataDir });
+const dshChat = new DshChatAdapter(dsh, { shouldStart: nativeId => store.sessions().some(item => item.backend === 'dsh' && item.nativeSessionId === nativeId && item.running) });
 const conversations = new ConversationReader({ dshHistory: id => dsh.readHistory(id) });
 // Codex's app-server is lazy-started on the first Codex contact. This keeps a
 // Claude/dsh-only installation usable when an older Codex CLI lacks the bridge
@@ -634,11 +636,11 @@ app.delete('/api/shells/:id', async (req, res) => {
   res.json({ removed: true });
 });
 const chatApi = registerAgentChat(app, {
-  store, adapters: createAgentChatAdapters([['codex', codexBridge], ['claude', claudeBridge]]), conversations, instanceId, demo, updatePreview, attachments, submissions,
+  store, adapters: createAgentChatAdapters([['codex', codexBridge], ['claude', claudeBridge], ['dsh', dshChat]]), conversations, instanceId, demo, updatePreview, attachments, submissions,
   closing: () => closing,
   supported: item => !!info(item.backend).capabilities.graphicalChat,
-  contactSettings: item => item.backend === 'claude',
-  ready: item => { const run = (item.backend === 'claude' ? claudeRuns : codexRuns).get(item.id); return run?.nativeId === item.nativeSessionId && run?.launchId === launchIds.get(item.id); },
+  contactSettings: item => item.backend === 'claude' || item.backend === 'dsh',
+  ready: item => item.backend === 'dsh' ? dsh.readyState : (() => { const run = (item.backend === 'claude' ? claudeRuns : codexRuns).get(item.id); return run?.nativeId === item.nativeSessionId && run?.launchId === launchIds.get(item.id); })(),
   busy: id => starting.has(id) || stopping.has(id),
   sessions: () => publisher.sessions(),
   broadcast: scheduleBroadcast,
@@ -1124,7 +1126,7 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
   const requested = body.mode ?? 'terminal';
   if (requested !== 'terminal' && requested !== 'chat') fail('未知会话交互方式');
   const mode = requested as 'terminal' | 'chat';
-  if (mode === 'chat' && (demo || !['codex', 'claude'].includes(item.backend) || !info(item.backend).capabilities.graphicalChat)) fail('这个后端目前不支持原生图形化聊天');
+  if (mode === 'chat' && (demo || !info(item.backend).capabilities.graphicalChat)) fail('这个后端目前不支持原生图形化聊天');
   if (item.archived) fail('请先恢复归档联系人');
   if (stopping.has(item.id) || terminals.isStopping(item.id)) fail('会话正在停止，请稍后再启动', 409);
   if (starting.has(item.id)) fail('会话正在连接，请稍后重试', 409);
@@ -1168,6 +1170,20 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
     if (item.interactionMode !== mode) { status(item.id, { interactionMode: mode }); broadcast(); }
     return session(item.id);
   }
+  if (item.running && !demo && item.backend === 'dsh') {
+    if (mode === 'chat') {
+      if (starting.has(item.id)) fail('会话正在连接，请稍后重试', 409);
+      if (!item.nativeSessionId) fail('DeepSeek Harness 会话标识尚未就绪', 409);
+      if (!dsh.readyState) await dsh.start();
+      await dsh.openSession(item.nativeSessionId);
+      status(item.id, { interactionMode: 'chat', statusDetail: item.statusDetail ?? 'DeepSeek Harness 图形对话已连接' });
+      broadcast(); return session(item.id);
+    }
+    // The terminal view is a client-side attachment to the same native session;
+    // switching does not create a second writer.
+    if (item.interactionMode !== mode) { status(item.id, { interactionMode: mode }); broadcast(); }
+    return session(item.id);
+  }
   if (item.running || starting.has(item.id)) return item;
   if (item.executionMode === 'auto' && !info(item.backend).capabilities.autoMode) fail('当前后端版本不支持原生 Auto，请更新后端并刷新检测');
   if (!info(item.backend).installed) fail(`${info(item.backend).label} 尚未安装或不可用`);
@@ -1178,12 +1194,12 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
   launchIds.set(item.id, launchId);
   expectedNativeIds.delete(item.id);
   try {
-    if (dshWeb(item)) {
+    if (dshWeb(item) || (item.backend === 'dsh' && mode === 'chat')) {
       const native = item.nativeSessionId ? await dsh.openSession(item.nativeSessionId) : await dsh.createSession(item.cwd, item.title);
       // Keep the identity even if the native permission command is unavailable.
       status(item.id, { ...native, forkPending: false });
       if (item.executionMode === 'auto') await dsh.setAutoMode(native.nativeSessionId);
-      status(item.id, { ...native, running: true, executionTransport: 'web', status: 'idle', statusSource: 'native', statusDetail: '原生 Web 会话已就绪', forkPending: false, lastActivity: new Date().toISOString() });
+      status(item.id, { ...native, running: true, interactionMode: mode, executionTransport: 'web', status: 'idle', statusSource: 'native', statusDetail: mode === 'chat' ? 'DeepSeek Harness 图形对话已就绪' : '原生 Web 会话已就绪', forkPending: false, lastActivity: new Date().toISOString() });
     } else if (item.backend === 'codex' && !demo && info('codex').capabilities.nativeControl) {
         const bridge = await ensureCodexBridge();
         const executable = await findExecutable('codex');
@@ -1282,7 +1298,7 @@ async function stopSession(id: string, afterStop?: () => Session): Promise<Sessi
     }
     status(item.id, { status: 'unknown', statusSource: 'process', statusDetail: '正在停止，等待原生任务和进程退出' });
     broadcast();
-    if (dshWeb(item)) {
+    if (dshWeb(item) || (item.backend === 'dsh' && item.executionTransport === 'web')) {
       if (item.nativeSessionId) await dsh.stopSession(item.nativeSessionId);
       launchIds.delete(item.id);
       status(item.id, { running: false, nativeUrl: null, status: 'stopped', statusSource: 'native', statusDetail: '已取消当前原生任务，可重新进入会话' });
@@ -1817,7 +1833,7 @@ function shutdown(exitCode = 0) {
   // let a replacement instance race it against the same native history.
   void (async () => {
     groupReplies.close();
-    const results = await Promise.allSettled([voiceClosed, httpClosed, tunnel.close(), frpTunnel.close(), relayNotices.close(), terminals.close(), shells.close(), dsh.close(), codexBridge.close(), claudeBridge.close()]);
+    const results = await Promise.allSettled([voiceClosed, httpClosed, tunnel.close(), frpTunnel.close(), relayNotices.close(), terminals.close(), shells.close(), dshChat.close(), dsh.close(), codexBridge.close(), claudeBridge.close()]);
     for (const result of results) if (result.status === 'rejected') { console.error('关闭原生资源失败：', result.reason instanceof Error ? result.reason.message : String(result.reason)); exitCode = 1; }
     try { publisher.close(); store.close(); }
     finally { await instanceLock.release(); }

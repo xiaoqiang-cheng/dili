@@ -28,6 +28,11 @@ interface LogFile { path: string; id?: string; modified: number; created: number
 
 /** dsh 0.1 ids are `session-<uuid>`; dsh 0.2 (and dsh-tui) use the bare uuid. */
 export const DSH_ID = new RegExp(`^(?:session-)?${UUID.source.slice(1, -1)}$`, 'i');
+/** Structured chat needs the 0.2 Direct RPCs (session.prompt plus userQuestions.answer). */
+export function dshChatCapable(version: string | null): boolean {
+  const match = version?.match(/^(\d+)\.(\d+)/);
+  return !!match && (Number(match[1]) > 0 || Number(match[2]) >= 2);
+}
 export function validateNativeId(backend: Backend, id: string): string {
   if (!(backend === 'dsh' ? DSH_ID.test(id) : UUID.test(id))) {
     throw new Error('无效的原生会话 ID');
@@ -75,8 +80,8 @@ export async function getBackendInfo(): Promise<BackendInfo[]> {
     const tui = id === 'dsh' ? await findDshTui() : null;
     return {
       id, label: LABELS[id], installed: true, version,
-      capabilities: { additionalDirectories: id !== 'dsh' && help.includes('--add-dir'), ...(id === 'claude' ? { permissionModes: parseClaudePermissionModes(help), bypassOption: help.includes('--allow-dangerously-skip-permissions') } : {}), terminal: id !== 'dsh' || !!tui, resume: id === 'dsh' || /\bresume\b/.test(help), fork: id === 'dsh' || (id === 'claude' ? help.includes('--fork-session') : /\bfork\b/.test(help)), discovery: true, nativeControl, graphicalChat: nativeControl, autoMode: id === 'claude' ? help.includes('--permission-mode') && /["']auto["']/.test(help) : id === 'codex' ? help.includes('--approve-for-me') : true },
-      note: id === 'dsh' ? (tui ? '原生终端界面（dsh-tui）与对话记录；原生 Web 界面仍可打开' : '复用原生 Web 界面与本地 session API；安装 @deepseek-harness-tui/dsh-tui 可获得原生终端') : id === 'codex' ? (nativeControl ? '原生 app-server 提供图形对话、流式回复、审批和精确会话；可切换原生终端' : '兼容终端模式：原生 ID 在完成一轮后确认；更新 Codex 可启用图形对话') : nativeControl ? '图形模式复用 Claude stream-json：流式正文、工具、审批与提问；与 TUI 通过已保存会话交接' : '兼容终端模式与对话记录；更新 Claude 可启用结构化图形对话',
+      capabilities: { additionalDirectories: id !== 'dsh' && help.includes('--add-dir'), ...(id === 'claude' ? { permissionModes: parseClaudePermissionModes(help), bypassOption: help.includes('--allow-dangerously-skip-permissions') } : {}), terminal: id !== 'dsh' || !!tui, resume: id === 'dsh' || /\bresume\b/.test(help), fork: id === 'dsh' || (id === 'claude' ? help.includes('--fork-session') : /\bfork\b/.test(help)), discovery: true, nativeControl, graphicalChat: id === 'dsh' ? dshChatCapable(version) : nativeControl, autoMode: id === 'claude' ? help.includes('--permission-mode') && /["']auto["']/.test(help) : id === 'codex' ? help.includes('--approve-for-me') : true },
+      note: id === 'dsh' ? (dshChatCapable(version) ? (tui ? '图形对话复用原生 session API；dsh-tui 仍可打开原生终端' : '图形对话复用原生 Web session API；安装 @deepseek-harness-tui/dsh-tui 可获得原生终端') : '原生 Web／终端界面；升级到 dsh 0.2 可启用图形对话') : id === 'codex' ? (nativeControl ? '原生 app-server 提供图形对话、流式回复、审批和精确会话；可切换原生终端' : '兼容终端模式：原生 ID 在完成一轮后确认；更新 Codex 可启用图形对话') : nativeControl ? '图形模式复用 Claude stream-json：流式正文、工具、审批与提问；与 TUI 通过已保存会话交接' : '兼容终端模式与对话记录；更新 Claude 可启用结构化图形对话',
     };
   }));
 }

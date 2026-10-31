@@ -27,6 +27,8 @@ export interface DshBridgeOptions {
 interface NativeSession { nativeSessionId: string; nativeUrl: string }
 interface DshSummary { sessionId: string; running?: boolean; agentAvailable?: boolean; cwd?: string; updatedAt?: number }
 export interface DshStatus { status: SessionStatus; detail?: string; attentionKey?: string }
+export interface DshPendingQuestion { callId: string; questions: unknown[]; state?: 'open' | 'continued' }
+export interface DshPendingApproval { id: string; toolName?: string; reason?: string }
 interface TurnBoundary { type: 'turn/start' | 'turn/end'; seq: number; reason?: string }
 class DshCompatibilityError extends Error {}
 
@@ -108,7 +110,18 @@ export class DshBridge {
   private completed = new Map<string, string>();
   private failed = new Map<string, string>();
   private statusListeners = new Set<() => void>();
+  private eventListeners = new Set<(id: string, event: unknown) => void>();
+  private questions = new Map<string, DshPendingQuestion[]>();
+  private approvals = new Map<string, Map<string, DshPendingApproval>>();
+  /** Live `user-questions/request` waterfalls are not in the session projection;
+   * they are answerable only through the forwarded Remote Event result RPC. */
+  private liveQuestions = new Map<string, Map<string, DshPendingQuestion & { eventId: string }>>();
+  private eventClientId = '';
   onStatusChange(listener: () => void) { this.statusListeners.add(listener); return () => { this.statusListeners.delete(listener); }; }
+  /** Live session events are for adapters only; they never replace read-only history. */
+  onSessionEvent(listener: (id: string, event: unknown) => void) { this.eventListeners.add(listener); return () => { this.eventListeners.delete(listener); }; }
+  private emitSessionEvent(id: string, event: unknown) { for (const listener of this.eventListeners) listener(id, event); }
+  get readyState(): boolean { return this.ready; }
   private options: DshBridgeOptions;
   constructor(options: DshBridgeOptions = {}) {
     const configured = options.port ?? (process.env.SESSIONDECK_DSH_PORT ? Number(process.env.SESSIONDECK_DSH_PORT) : undefined);
@@ -277,6 +290,7 @@ export class DshBridge {
   private clearStatus(): void {
     this.observedRunning.clear(); this.completed.clear(); this.failed.clear();
     this.boundaries.clear(); this.historyFresh.clear(); this.revisions.clear();
+    this.liveQuestions.clear(); this.questions.clear(); this.approvals.clear(); this.eventClientId = '';
   }
 
   private abortRequests(): void { for (const request of this.requests) request.abort(); }
@@ -293,6 +307,7 @@ export class DshBridge {
     this.streams.forEach(socket => socket.terminate());
     this.streams = [];
     this.pending.clear();
+    this.liveQuestions.clear(); this.eventClientId = '';
     this.streamReady = false;
     this.muxSynchronized = false;
     this.followed.clear(); this.synchronized.clear();
@@ -320,13 +335,19 @@ export class DshBridge {
           validateNativeId('dsh', frame.sessionId);
           const requests = this.pending.get(frame.sessionId) ?? new Map<string, 'waiting_approval' | 'waiting_input'>();
           if (frame.type === 'approval/requested' && typeof frame.approvalId === 'string') requests.set(`approval:${frame.approvalId}`, 'waiting_approval');
-          else if (frame.type === 'question/requested' && typeof envelope.rpcId === 'string') requests.set(`question:${envelope.rpcId}`, 'waiting_input');
+          else if (frame.type === 'question/requested' && typeof envelope.rpcId === 'string') {
+            requests.set(`question:${envelope.rpcId}`, 'waiting_input');
+            const callId = typeof frame.callId === 'string' ? frame.callId : envelope.rpcId;
+            const list = this.questions.get(frame.sessionId) ?? [];
+            this.questions.set(frame.sessionId, [...list.filter(item => item.callId !== callId), { callId, questions: Array.isArray(frame.questions) ? frame.questions : [] }]);
+          }
           else if (frame.type === 'approval/resolved' && typeof frame.approvalId === 'string') { requests.delete(`approval:${frame.approvalId}`); if (method === 'events.mux') this.muxSynchronized = true; }
           else if (frame.type === 'question/resolved' && typeof frame.questionRpcId === 'string') { requests.delete(`question:${frame.questionRpcId}`); if (method === 'events.mux') this.muxSynchronized = true; }
           else if (frame.type === 'session/event' && method === 'events.mux' && frame.event && Number.isSafeInteger(frame.event.seq) && frame.event.seq >= 0) {
             // Live events follow the entire pending-request replay in this FIFO.
             // Socket open (and WS pong) alone cannot certify that baseline.
             this.muxSynchronized = true;
+            this.emitSessionEvent(frame.sessionId, frame.event);
             this.observeBoundary(frame.sessionId, frame.event);
             if (frame.event.type === 'turn/end' && this.boundaries.get(frame.sessionId)?.seq === frame.event.seq) requests.clear();
           }
@@ -363,6 +384,7 @@ export class DshBridge {
   private connectModernEvents(): void {
     const generation = ++this.streamGeneration;
     this.followed.clear(); this.synchronized.clear(); this.pending.clear();
+    this.liveQuestions.clear(); this.eventClientId = '';
     this.historyFresh.clear(); this.streamReady = false; this.muxSynchronized = false;
     const socket = new WebSocket(`${this.baseUrl.replace('http:', 'ws:')}/api/remote.mux`, { origin: this.baseUrl, headers: { cookie: this.cookie }, handshakeTimeout: 5000, maxPayload: 16 * 1024 * 1024 });
     this.streams = [socket];
@@ -374,13 +396,17 @@ export class DshBridge {
       const timer = setTimeout(() => { if (this.ready && generation === this.streamGeneration) this.connectModernEvents(); }, 2000);
       timer.unref();
     };
-    socket.on('open', () => socket.send(JSON.stringify({ type: 'open', streamId: 'control', endpoint: 'session/control', payload: { args: {} } })));
+    socket.on('open', () => {
+      socket.send(JSON.stringify({ type: 'open', streamId: 'control', endpoint: 'session/control', payload: { args: {} } }));
+      socket.send(JSON.stringify({ type: 'open', streamId: 'events', endpoint: '$events', payload: { args: {} } }));
+    });
     socket.on('message', raw => {
       if (generation !== this.streamGeneration || reconnecting) return;
       try {
         const message = JSON.parse(raw.toString());
         if (message.type !== 'item') { if (['error', 'end'].includes(message.type)) reconnect(); return; }
         const frame = message.value;
+        if (message.streamId === 'events') { this.observeRemoteEvent(frame); for (const listener of this.statusListeners) listener(); return; }
         if (message.streamId === 'control') {
           if (frame?.type === 'baseline') {
             this.streamReady = true; this.muxSynchronized = true;
@@ -391,10 +417,10 @@ export class DshBridge {
           if (!id) return;
           if (frame?.type === 'snapshot') {
             this.pending.delete(id);
-            for (const record of frame.records ?? []) if (record.type === 'event') this.observeModernEvent(id, record.event);
+            for (const record of frame.records ?? []) if (record.type === 'event') { this.emitSessionEvent(id, record.event); this.observeModernEvent(id, record.event); }
             this.observeQuestions(id, frame.projections?.values?.questions);
             this.synchronized.add(id);
-          } else if (frame?.type === 'event') this.observeModernEvent(id, frame.event);
+          } else if (frame?.type === 'event') { this.emitSessionEvent(id, frame.event); this.observeModernEvent(id, frame.event); }
         }
         for (const listener of this.statusListeners) listener();
       } catch { /* Unsupported frames never manufacture status. */ }
@@ -402,20 +428,78 @@ export class DshBridge {
     socket.on('error', reconnect); socket.on('close', reconnect);
   }
 
+  /** Forwarded Remote Events carry live question waterfalls whose answer must
+   * travel back through `$events/result`; the session projection only knows
+   * timed questions that already became `continued`. */
+  private observeRemoteEvent(value: unknown): void {
+    if (!value || typeof value !== 'object') return;
+    const frame = value as { type?: unknown; clientId?: unknown; event?: unknown; eventId?: unknown; agentId?: unknown; request?: unknown };
+    if (frame.type === 'ready' && typeof frame.clientId === 'string' && frame.clientId) { this.eventClientId = frame.clientId; return; }
+    if (frame.type === 'cancel' && typeof frame.eventId === 'string') {
+      for (const [id, questions] of this.liveQuestions) {
+        for (const [callId, question] of questions) if (question.eventId === frame.eventId) {
+          questions.delete(callId);
+          this.pending.get(id)?.delete(`live:${callId}`);
+        }
+        if (!questions.size) this.liveQuestions.delete(id);
+      }
+      return;
+    }
+    if (frame.type !== 'waterfall' || frame.event !== 'user-questions/request') return;
+    const request = frame.request as { questions?: unknown; wait?: { callId?: unknown } } | undefined;
+    // A blocking `ask_user_question` has no `wait.callId`; its Remote Event id is
+    // the only stable handle until the tool call is recorded.
+    const callId = typeof request?.wait?.callId === 'string' && request.wait.callId ? request.wait.callId : frame.eventId;
+    if (typeof frame.eventId !== 'string' || typeof frame.agentId !== 'string' || typeof callId !== 'string' || !callId) return;
+    const questions = Array.isArray(request?.questions) ? request.questions : [];
+    const list = this.liveQuestions.get(frame.agentId) ?? new Map();
+    list.set(callId, { callId, questions, eventId: frame.eventId });
+    this.liveQuestions.set(frame.agentId, list);
+    const pending = this.pending.get(frame.agentId) ?? new Map<string, 'waiting_approval' | 'waiting_input'>();
+    pending.set(`live:${callId}`, 'waiting_input');
+    this.pending.set(frame.agentId, pending);
+    this.revisions.set(frame.agentId, (this.revisions.get(frame.agentId) ?? 0) + 1);
+  }
+
+  private async answerLiveQuestion(id: string, callId: string, answers: { id: string; selected: string[]; custom?: string }[]): Promise<boolean> {
+    const question = this.liveQuestions.get(id)?.get(callId);
+    if (!question) return false;
+    if (!this.eventClientId) throw new Error('DeepSeek Harness 问题通道尚未就绪，请稍后重试');
+    const result = { clientId: this.eventClientId, eventId: question.eventId, outcome: { kind: 'result', value: { answers } } };
+    await this.rpc<unknown>('$events/result', {}, result);
+    this.liveQuestions.get(id)?.delete(callId);
+    if (!this.liveQuestions.get(id)?.size) this.liveQuestions.delete(id);
+    this.pending.get(id)?.delete(`live:${callId}`);
+    this.revisions.set(id, (this.revisions.get(id) ?? 0) + 1);
+    for (const listener of this.statusListeners) listener();
+    return true;
+  }
+
   private observeQuestions(id: string, value: unknown): void {
     if (!value || typeof value !== 'object' || !Array.isArray((value as { active?: unknown }).active)) return;
     const requests = this.pending.get(id) ?? new Map<string, 'waiting_approval' | 'waiting_input'>();
     for (const key of requests.keys()) if (key.startsWith('question:')) requests.delete(key);
-    for (const question of (value as { active: { callId?: unknown }[] }).active) if (typeof question.callId === 'string') requests.set(`question:${question.callId}`, 'waiting_input');
+    const details: DshPendingQuestion[] = [];
+    for (const question of (value as { active: { callId?: unknown; questions?: unknown; state?: unknown }[] }).active) {
+      if (typeof question.callId !== 'string') continue;
+      requests.set(`question:${question.callId}`, 'waiting_input');
+      details.push({ callId: question.callId, questions: Array.isArray(question.questions) ? question.questions : [], ...(question.state === 'continued' ? { state: 'continued' as const } : {}) });
+    }
+    this.questions.set(id, details);
     this.pending.set(id, requests);
   }
 
-  private observeModernEvent(id: string, event: { type?: string; data?: { id?: string }; seq?: number }): void {
+  private observeModernEvent(id: string, event: { type?: string; data?: { id?: string; toolName?: string; reason?: string; displayReason?: string }; seq?: number }): void {
     this.observeBoundary(id, event);
     const requests = this.pending.get(id) ?? new Map<string, 'waiting_approval' | 'waiting_input'>();
-    if (event.type === 'approval/asked' && event.data?.id) requests.set(`approval:${event.data.id}`, 'waiting_approval');
-    if (event.type === 'approval/decided' && event.data?.id) requests.delete(`approval:${event.data.id}`);
-    if (event.type === 'turn/end') requests.clear();
+    if (event.type === 'approval/asked' && event.data?.id) {
+      requests.set(`approval:${event.data.id}`, 'waiting_approval');
+      const list = this.approvals.get(id) ?? new Map<string, DshPendingApproval>();
+      list.set(event.data.id, { id: event.data.id, ...(event.data.toolName ? { toolName: event.data.toolName } : {}), ...(event.data.displayReason || event.data.reason ? { reason: event.data.displayReason ?? event.data.reason } : {}) });
+      this.approvals.set(id, list);
+    }
+    if (event.type === 'approval/decided' && event.data?.id) { requests.delete(`approval:${event.data.id}`); this.approvals.get(id)?.delete(event.data.id); }
+    if (event.type === 'turn/end') { requests.clear(); this.liveQuestions.delete(id); }
     this.pending.set(id, requests);
   }
 
@@ -426,7 +510,7 @@ export class DshBridge {
     socket.send(JSON.stringify({ type: 'open', streamId, endpoint: 'session/follow', payload: { args: { request: { address: { kind: 'session', sessionId: id }, maxMessages: 1 } } } }));
   }
 
-  private async rpc<T>(method: string, payload: Record<string, unknown>): Promise<T> {
+  private async rpc<T>(method: string, payload: Record<string, unknown>, direct?: Record<string, unknown>): Promise<T> {
     if (!this.ready) throw new Error('DeepSeek Harness 原生服务尚未启动');
     if (this.modern && method === 'session.history') {
       const projection = await this.rpc<{ asOfSeq: number } | null>('session.projections', { sessionId: payload.sessionId });
@@ -440,8 +524,8 @@ export class DshBridge {
     const rpcId = randomUUID();
     try {
       const endpoint = this.modern ? method.replace('.', '/') : method;
-      const args = method === 'commands.execute' ? { agentId: payload.agentId, line: payload.line, submittedAttachments: payload.submittedAttachments } : { [method === 'session.list' ? '_request' : 'request']: payload };
-      const response = await fetch(`${this.baseUrl}/api/${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json', origin: this.baseUrl, ...(this.cookie ? { cookie: this.cookie } : {}) }, body: JSON.stringify({ type: 'client-request', rpcId, method: endpoint, payload: this.modern ? { args } : payload }), signal: AbortSignal.any([abort.signal, AbortSignal.timeout(15000)]), redirect: 'error' });
+      const args = direct ?? (method === 'commands.execute' ? { agentId: payload.agentId, line: payload.line, submittedAttachments: payload.submittedAttachments } : { [method === 'session.list' ? '_request' : 'request']: payload });
+      const response = await fetch(`${this.baseUrl}/api/${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json', origin: this.baseUrl, ...(this.cookie ? { cookie: this.cookie } : {}) }, body: JSON.stringify({ type: 'client-request', rpcId, method: endpoint, payload: this.modern ? { args } : direct ?? payload }), signal: AbortSignal.any([abort.signal, AbortSignal.timeout(15000)]), redirect: 'error' });
       if (!response.ok) throw new Error(`DeepSeek Harness API 请求失败（HTTP ${response.status}）`);
       const chunks: Uint8Array[] = []; let length = 0;
       if (!response.body) throw new Error('DeepSeek Harness 返回了空响应');
@@ -516,6 +600,32 @@ export class DshBridge {
     // when the contact is attached through dsh-tui rather than the Web UI.
     await this.start();
     await this.rpc('session.prompt', { sessionId: id, ...(this.modern ? { requestId: randomUUID() } : {}), mode: 'queue', content: [{ type: 'text', text }] });
+  }
+
+  /** Structured requests currently advertised by the native session. */
+  pendingRequests(id: string): { questions: DshPendingQuestion[]; approvals: DshPendingApproval[] } {
+    validateNativeId('dsh', id);
+    const pending = this.pending.get(id) ?? new Map<string, 'waiting_approval' | 'waiting_input'>();
+    const approvals = [...pending.keys()].filter(key => key.startsWith('approval:')).map(key => key.slice('approval:'.length));
+    const live = [...(this.liveQuestions.get(id)?.values() ?? [])].map(({ callId, questions }) => ({ callId, questions }));
+    const liveIds = new Set(live.map(item => item.callId));
+    return {
+      questions: [...live, ...(this.questions.get(id) ?? []).filter(item => !liveIds.has(item.callId) && pending.has(`question:${item.callId}`))],
+      approvals: approvals.map(value => this.approvals.get(id)?.get(value) ?? { id: value }),
+    };
+  }
+
+  /** Answer a timed/blocking user question through the native Direct RPC. */
+  async answerQuestion(id: string, callId: string, answers: { id: string; selected: string[]; custom?: string }[]): Promise<void> {
+    validateNativeId('dsh', id);
+    if (!this.ready) throw new Error('DeepSeek Harness 原生服务尚未启动');
+    if (await this.answerLiveQuestion(id, callId, answers)) return;
+    const accepted = await this.rpc<boolean>('userQuestions.answer', {}, { agentId: id, callId, answer: { answers } } as unknown as Record<string, unknown>);
+    if (accepted !== true) throw new Error('DeepSeek Harness 未接受这次回答，请到原生界面核对');
+    this.questions.get(id)?.splice(0, this.questions.get(id)!.length, ...(this.questions.get(id) ?? []).filter(item => item.callId !== callId));
+    this.pending.get(id)?.delete(`question:${callId}`);
+    this.revisions.set(id, (this.revisions.get(id) ?? 0) + 1);
+    for (const listener of this.statusListeners) listener();
   }
 
   /** Native history is explicitly read-only: it never attaches or resumes an
@@ -636,7 +746,7 @@ export class DshBridge {
     const running = this.observedRunning.get(id) ?? snapshotRunning;
     const pending = this.pending.get(id);
     const approval = pending && [...pending].find(([, status]) => status === 'waiting_approval');
-    const question = pending && [...pending].find(([, status]) => status === 'waiting_input');
+    const question = pending && [...pending].find(([key, status]) => status === 'waiting_input' && (key.startsWith('question:') || key.startsWith('live:')));
     if (approval) return { status: 'waiting_approval', detail: 'DeepSeek Harness 正在等待审批', attentionKey: `dsh:${id}:${approval[0]}` };
     if (question) return { status: 'waiting_input', detail: 'DeepSeek Harness 正在等待回答', attentionKey: `dsh:${id}:${question[0]}` };
     if (this.failed.has(id)) return { status: 'error', detail: 'DeepSeek Harness 报告执行错误，请进入原生会话查看', attentionKey: this.failed.get(id) };

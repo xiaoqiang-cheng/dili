@@ -3,7 +3,7 @@ import { CircleAlert } from 'lucide-react';
 import type { AgentChatRequest, AgentChatAnswer } from '../shared/chat';
 import './codex-chat.css';
 
-export default function NativeRequest({ request, disabled, answer, agentName = 'Codex' }: { agentName?: string; request: AgentChatRequest; disabled: boolean; answer: (id: string, answer: AgentChatAnswer) => Promise<void> }) {
+export default function NativeRequest({ request, disabled, answer, agentName = 'Codex', onTerminal }: { agentName?: string; request: AgentChatRequest; disabled: boolean; answer: (id: string, answer: AgentChatAnswer) => Promise<void>; onTerminal?: () => void }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [other, setOther] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -30,7 +30,7 @@ export default function NativeRequest({ request, disabled, answer, agentName = '
           {values[question.id] === '__other__' && <input aria-label={`${question.question}：其他答案`} type={question.isSecret ? 'password' : 'text'} value={other[question.id] ?? ''} onChange={event => setOther(current => ({ ...current, [question.id]: event.target.value }))} maxLength={8000} autoComplete="off" />}</>
           : <input aria-label={question.question} type={question.isSecret ? 'password' : 'text'} value={values[question.id] ?? ''} onChange={event => setValues(current => ({ ...current, [question.id]: event.target.value }))} maxLength={8000} autoComplete="off" />}
       </fieldset>)}<button type="submit" className="button primary small-button" disabled={disabled || busy || !complete}>{busy ? '提交中…' : '提交回答'}</button>
-    </form> : <div className="codex-approval-actions">{request.options?.map(option => <button type="button" key={option.id} className="button secondary small-button" disabled={disabled || busy} onClick={() => void submit({ decision: option.id })}>{option.label}</button>)}{request.kind === 'unsupported' && <p>当前界面还不能处理这个请求，请在原生终端中核对。</p>}</div>}
+    </form> : <div className="codex-approval-actions">{request.options?.map(option => <button type="button" key={option.id} className="button secondary small-button" disabled={disabled || busy} onClick={() => void submit({ decision: option.id })}>{option.label}</button>)}{request.kind === 'unsupported' && <><p>当前界面还不能处理这个请求，请在原生界面中核对。</p>{onTerminal && <button type="button" className="button secondary small-button" onClick={onTerminal}>打开原生界面</button>}</>}</div>}
     {error && <p className="codex-request-error" role="alert">{error}</p>}
   </section>;
 }

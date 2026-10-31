@@ -76,7 +76,7 @@ cd dili
 | 能力 | Codex | Claude Code | DeepSeek Harness |
 | --- | --- | --- | --- |
 | 联系人、历史导入、原生恢复 / Fork | 支持 | 支持 | 支持，受原生版本及会话条件限制 |
-| 网页输入与流式展示 | app-server 结构化图形对话 | stream-json 结构化图形对话 | dsh-tui 兼容路径；或原生 Web |
+| 网页输入与流式展示 | app-server 结构化图形对话 | stream-json 结构化图形对话 | dsh 0.2+ session RPC 图形对话；dsh-tui／原生 Web 回退 |
 | 网页内审批、Agent 提问 | 支持 | 支持 | 仍需原生界面 |
 | 统一模型 / 权限设置 | 支持原生已接入选项 | 支持原生已接入选项 | 尚未接入统一面板 |
 | 图片输入 | 支持 | 支持 | 取决于 TUI、附件服务与模型，仍需实机验收 |

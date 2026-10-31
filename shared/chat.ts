@@ -20,7 +20,7 @@ export interface AgentChatRequest {
   description?: string;
   details?: string;
   options?: { id: string; label: string }[];
-  questions?: { id: string; header: string; question: string; isOther?: boolean; isSecret?: boolean; options?: { label: string; description: string }[] }[];
+  questions?: { id: string; header: string; question: string; detail?: string; isOther?: boolean; isSecret?: boolean; multiSelect?: boolean; options?: { label: string; description?: string }[] }[];
 }
 
 export interface AgentChatSnapshot {

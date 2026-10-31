@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { runInNewContext } from 'node:vm';
 import { dshAutoPlugin } from './dsh-auto.ts';
-import { buildLaunch, discoverSessions, resolveNativeSessionId, validateNativeId } from './adapters.js';
+import { buildLaunch, discoverSessions, dshChatCapable, resolveNativeSessionId, validateNativeId } from './adapters.js';
 import { zstdCompressSync } from 'node:zlib';
 import { DshBridge, dshDeepLinkClient } from './dsh.js';
 import type { Session } from '../shared/types.js';
@@ -371,4 +371,13 @@ test('DSH accepts both id forms, launches dsh-tui in a PTY, and discovers 0.2 se
   // Identity: only the one new log in this contact's directory counts.
   assert.equal(await resolveNativeSessionId({ ...base, nativeSessionId: null, cwd }, new Date(started).toISOString(), [], { dshHome: home }), fresh);
   assert.equal(await resolveNativeSessionId({ ...base, nativeSessionId: null, cwd: other }, new Date(started).toISOString(), [elsewhere], { dshHome: home }), null);
+});
+
+test('dsh graphical chat is gated to the 0.2 Direct RPC protocol', () => {
+  assert.equal(dshChatCapable('0.2.0-rc.2'), true);
+  assert.equal(dshChatCapable('0.10.0'), true);
+  assert.equal(dshChatCapable('1.0.0'), true);
+  assert.equal(dshChatCapable('0.1.9'), false);
+  assert.equal(dshChatCapable('unknown'), false);
+  assert.equal(dshChatCapable(null), false);
 });
