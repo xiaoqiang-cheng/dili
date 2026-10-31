@@ -653,3 +653,4 @@
 - 原生输入 composer 复用 Codex 的 `codex-composer` / `codex-composer-footer` 结构与移动端折行规则；抽屉里的终端和原生 Web iframe 去掉独立边框，和对话窗口共用同一工作区边缘。
 - 这不是完整的功能对齐：dsh 仍未接 `AgentChatPane`，输入仍走原生 TUI/Web，审批仍只在原生界面处理。复核 dsh 0.2 时确认问题有 `userQuestions/answer`，但审批没有网页应答 RPC；下一阶段应做 dsh chat adapter（问题可答、审批显式跳原生），而不是继续只改 CSS。
 - 三问自查：没有改动公共协议或把 dsh 事件塞进共享类型；只复用 Codex 的视觉层，原生能力仍按后端报告；没有新增假的发送／审批按钮。验证：`npm run check`、`tests/native-chat.spec.ts` 23 项、`tests/mobile-boundaries.spec.ts` 3 项通过；未重启正式服务。
+- 已重新构建前端：运行服务入口切换为 `assets/index-D4unJd91.js`，旧哈希资源保留；未重启服务。刷新页面即可看到记录页/输入区的对齐。
