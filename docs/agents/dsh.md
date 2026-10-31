@@ -31,11 +31,13 @@
 4. 停止空闲且尚未附着页面的会话是幂等操作；不要报错。
 5. 不要把“支持 DeepSeek 模型”当成“支持 DeepSeek Harness”。
 
-## 结构化图形对话可行性（2026-10-31 评估）
+## 结构化图形对话可行性（2026-10-31 复核）
 
-结论：**暂不新增 dsh chat adapter**，保留原生 TUI/Web 输入与记录页工具卡。
+结论：**可以做 dsh chat adapter，但不能把审批伪装成网页操作**。分两步推进：先统一可视壳，再接文本／工具／问题；审批保留原生处理。
 
 - 已确认可用：`session.prompt`、`session.cancel`、`session.history`、`session.page`，以及 `events.mux` / 现代事件流中的 `session/event`。文本、工具调用和工具结果足以填充只读记录页。
-- 未确认／未实现：结构化审批与提问的回复 RPC 只在本项目里看到状态跟踪（`approval/requested`、`question/requested`），没有验证可用的应答方法；设置、权限和按轮中断也没有统一的网页契约。直接套 `AgentChatPane` 会让用户看到审批却无法在网页处理。
-- 因此当前输入仍走原生路径：dsh-tui 用 PTY 注入，dsh Web 用 iframe。`/chat/interrupt` 和结构化审批只在 Codex／Claude 适配器注册；dsh 不伪造这些能力。
-- 重新评估的条件：原生协议提供稳定的审批／提问应答与设置接口，并有可重复的原生契约测试；届时再补 dsh chat adapter，而不是先做只有文本的半套图形界面。
+- 问题回答有原生 RPC：dsh 0.2 的 `userQuestions/answer`（参数为 `agentId`、`callId`、`answers`），提问卡可以在网页中真正提交；`ask_user_question` 的投影会给出 `callId` 和问题列表。
+- 审批没有等价的远程应答：原生只暴露 `approval/requested` / `approval/decided` 状态，网页端没有可验证的 approve/reject RPC。审批卡只能在 Dili 显示“去原生界面处理”，不能伪造允许／拒绝。
+- 模型、权限和设置仍由原生界面管理；不要为了对齐 Codex 而生成一个空设置面板或假按钮。
+- 当前输入仍走原生路径：dsh-tui 用 PTY 注入，dsh Web 用 iframe。结构化 adapter 是下一步，必须先有可重复的 native 契约测试，再切默认入口。
+- 重新评估的条件：原生协议提供稳定的审批应答接口，并有版本门槛；届时再把审批也收进网页，否则保持“问题可答、审批跳原生”。
