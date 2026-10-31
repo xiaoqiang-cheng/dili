@@ -80,6 +80,21 @@ for(const backend of ['claude','dsh'] as const) {
   });
 }
 
+for(const backend of ['claude','dsh'] as const) {
+  test(`${backend} stops showing the question handoff after an ordinary turn end`,async({page})=>{
+    const app=await fixture(page,backend);
+    app.transcript.messages.push({id:'native-question',role:'assistant',text:'**需要你回答的问题**\n\n1. **实现方式**\n\n采用哪种方案？'});
+    app.contact.status='waiting_input';
+    app.contact.statusDetail=backend==='claude'?'原生会话正在等待你的输入':'DeepSeek Harness 正在等待你的回答';
+    await app.publish();
+    const notice=page.getByRole('status').filter({hasText:backend==='claude'?'Claude 正在等待原生终端中的输入':'DeepSeek Harness 正在等待原生界面中的问题回答'});
+    await expect(notice).toBeVisible();
+    app.contact.statusDetail=backend==='claude'?'本轮回复已结束，可以继续或验收':'DeepSeek Harness 本轮已结束，可以继续或验收';
+    await app.publish();
+    await expect(notice).toHaveCount(0);
+  });
+}
+
 test('Claude migrates old graphical drafts and pauses sends bound to the former writer',async({page})=>{
   const app=await fixture(page,'claude');
   await page.evaluate(id=>sessionStorage.setItem('sessiondeck.codex-chat-draft.'+id,JSON.stringify({text:'原来的草稿',attachments:[],queue:[{id:'old-queue',text:'原来的排队消息',attachments:[],identity:'old-generation'}]})),app.contact.id);

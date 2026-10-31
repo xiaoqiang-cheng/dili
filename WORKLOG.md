@@ -638,3 +638,10 @@
 - `renderConversationHtml` 对带 `tool` 的消息输出 `<details>` 卡片，包含工具名、执行状态、参数和结果；所有字段继续走 `escapeHtml`，无脚本且保留现有 CSP。没有工具结果的调用不会伪造结果。
 - 分享页直接复用 `ConversationPane`，因此 dsh 工具卡随共享会话一起显示；导出只读取当前 transcript，不额外启动原生服务。
 - 验证：`npm run check` 通过；`server/export.test.ts` 5 项通过（新增 HTML 转义与失败状态断言）；未调用真实模型，未重启正式服务。仅本地提交，不 push、不 tag。
+
+## 2026-10-31：修复记录页问题提示常驻
+
+- 原因：`ConversationPane` 原来只要 `session.status === 'waiting_input'` 且历史记录里出现过 `**需要你回答的问题**` 就显示「等待原生界面中的问题回答」。但 `waiting_input` 同时表示“普通回合已结束”：Claude 的 Stop / dsh 的 turn-end 都会进入该状态，旧问题因此一直触发提示，即使已经回答过。
+- 修复：抽出纯函数 `client/native-question.ts`。dsh 只在原生 `statusDetail` 明确说“等待回答”时显示；Claude 还要求问题仍是记录页的最后一条；普通回合结束、已出现后续消息或非 claude/dsh 后端都不再显示。原生问题仍待处理时提示照常保留，并提供前往原生界面/终端的入口。
+- 验证：`npm run check` 通过；`client/native-question.test.ts` 3 项通过；`tests/native-chat.spec.ts` 23 项通过（新增两个“回合结束后提示消失”的浏览器回归）；`npm test` 411 项，403 通过、4 跳过、4 个既有 Codex fixture 失败，无新增失败。
+- 三问自查：不改公共类型或原生协议；只读取适配器已经给出的 `statusDetail` 和记录文本，不猜测原生状态；提示消失只代表“当前没有可确认的待回答问题”，不把普通回合伪造成问题，也不隐藏真正等待的问题。未重启正式服务，仅本地提交。

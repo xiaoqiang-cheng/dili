@@ -4,6 +4,7 @@ import './chat-presentation.css';
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowDownToLine, Check, ChevronRight, CircleAlert, List, LoaderCircle, MessageSquare, RefreshCw, TerminalSquare } from 'lucide-react';
 import type { ConversationTranscript, Session } from '../shared/types';
+import { nativeQuestionPending as nativeQuestionPendingFromStatus } from './native-question';
 import { api } from './api';
 import Markdown from './Markdown';
 import MessageCopy from './MessageCopy';
@@ -224,10 +225,7 @@ export default function ConversationPane({ session, onTerminal, onSelection, all
     setPendingJump(null);
   }, [pendingJump, renderLimit, allMessages.length]);
   const isLoading = loading && !current;
-  const hasNativeQuestion = transcript?.messages.some(message => message.role === 'assistant' && message.text.includes('**需要你回答的问题**')) ?? false;
-  const nativeQuestionPending = ['claude', 'dsh'].includes(session.backend)
-    && session.status === 'waiting_input'
-    && hasNativeQuestion;
+  const nativeQuestionPending = nativeQuestionPendingFromStatus(session, transcript?.messages);
   const scrollToBottom = () => {
     if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
     followBottom.current = true; setAtBottom(true);
