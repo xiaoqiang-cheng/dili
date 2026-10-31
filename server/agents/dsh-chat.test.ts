@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DshChatAdapter, type DshChatNative, type DshStatusLike } from './dsh-chat.ts';
 import type { DshHistory } from '../conversation.ts';
+import type { DshChatSettings } from '../dsh.ts';
 
 const id = 'session-11111111-1111-4111-8111-111111111111';
 const date = Date.parse('2026-10-31T08:00:00.000Z');
@@ -26,6 +27,10 @@ class FakeNative implements DshChatNative {
   async getStatus(): Promise<DshStatusLike> { return this.status; }
   pendingRequests() { return { questions: this.questions, approvals: this.approvals }; }
   async answerQuestion(_id: string, callId: string, answers: { id: string; selected: string[]; custom?: string }[]) { this.answers.push({ callId, answers }); }
+  settings: DshChatSettings = { model: 'discover/deepseek-v4-flash', models: [{ id: 'discover/deepseek-v4-flash', label: 'deepseek-v4-flash' }, { id: 'discover/deepseek-v4-pro', label: 'deepseek-v4-pro' }], permission: 'workspace-write', permissions: [{ id: 'read-only', label: 'read-only' }, { id: 'workspace-write', label: 'workspace-write' }] };
+  settingsUpdates: { field: string; value: string }[] = [];
+  async readChatSettings() { return this.settings; }
+  async updateChatSettings(_id: string, field: 'model' | 'permission', value: string) { this.settingsUpdates.push({ field, value }); this.settings = { ...this.settings, [field]: value }; }
   listeners: ((id: string, event: unknown) => void)[] = [];
   onStatusChange() { return () => {}; }
   onSessionEvent(listener: (id: string, event: unknown) => void) { this.listeners.push(listener); return () => {}; }
@@ -108,14 +113,42 @@ test('dsh chat keeps approvals and multi-select questions honest instead of faki
   adapter.close();
 });
 
-test('dsh chat settings stay read-only and never invent a model or permission', async () => {
-  const adapter = new DshChatAdapter(new FakeNative());
+test('dsh chat settings fall back to read-only when the native catalog is unavailable', async () => {
+  const legacy = new FakeNative();
+  Object.defineProperty(legacy, 'readChatSettings', { value: undefined });
+  Object.defineProperty(legacy, 'updateChatSettings', { value: undefined });
+  const adapter = new DshChatAdapter(legacy);
   const settings = await adapter.readChatSettings(id);
   assert.equal(settings.model, null);
   assert.deepEqual(settings.models, []);
   assert.equal(settings.permission, null);
   assert.match(settings.disabledReason ?? '', /原生界面/);
-  await assert.rejects(adapter.updateChatSettings(), /只能.*原生界面修改/);
+  await assert.rejects(adapter.updateChatSettings(id, { version: settings.version, field: 'model', value: 'x' }), /只能.*原生界面修改/);
+  adapter.close();
+});
+
+test('dsh chat exposes native model and permission choices with versioned writes', async () => {
+  const native = new FakeNative();
+  const adapter = new DshChatAdapter(native, { writerWritable: () => true });
+  const first = await adapter.readChatSettings(id);
+  assert.equal(first.model, 'discover/deepseek-v4-flash');
+  assert.deepEqual(first.models.map(item => item.label), ['deepseek-v4-flash', 'deepseek-v4-pro']);
+  assert.equal(first.permission, 'workspace-write');
+  assert.equal(first.disabledReason, undefined);
+  const next = await adapter.updateChatSettings(id, { version: first.version, field: 'model', value: 'discover/deepseek-v4-pro' });
+  assert.equal(native.settingsUpdates[0]?.field, 'model');
+  assert.equal(next.model, 'discover/deepseek-v4-pro');
+  assert.notEqual(next.version, first.version);
+  await assert.rejects(adapter.updateChatSettings(id, { version: first.version, field: 'permission', value: 'read-only' }), /已变化/);
+  adapter.close();
+});
+
+test('dsh chat disables settings while dsh-tui owns the session', async () => {
+  const adapter = new DshChatAdapter(new FakeNative(), { writerWritable: () => false });
+  const settings = await adapter.readChatSettings(id);
+  assert.match(settings.disabledReason ?? '', /dsh-tui/);
+  await assert.rejects(adapter.sendPrompt(id, '不应发送'), /dsh-tui/);
+  await assert.rejects(adapter.updateChatSettings(id, { version: settings.version, field: 'permission', value: 'read-only' }), /dsh-tui/);
   adapter.close();
 });
 

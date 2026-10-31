@@ -663,3 +663,12 @@
 - 三问自查：公共聊天契约只增加可选问题字段，没有加入 dsh 事件名；阻塞／timed 问题、审批和设置分别有原生依据，缺数据时保持只读／未知；没有用网页按钮伪装审批，没有把没有 live-chunk 的回合伪造成流式文本。
 - 验证：`npm run check` 通过；`npm test` 413 项、405 通过、4 跳过、4 个既有 Codex fixture 失败（无新增）；隔离演示实例的浏览器全量 250 项通过（含新增 dsh 图形对话 3 项，使用 `LD_LIBRARY_PATH=/tmp/pw-libs/usr/lib/x86_64-linux-gnu`）。真实 dsh 0.2 隔离烟测：读取既有会话、创建临时会话发送“只回复 OK”、触发 `ask_user_question` 并经 `$events/result` 回答成功；另在独立端口 4398、临时数据目录和 `DSH_HOME` 副本上走完整 HTTP `/start mode chat`、`/chat`、`/stop`，返回 `executionTransport: web`、`interactionMode: chat` 和可读快照。当前构建没有稳定 live-chunk，因此流式气泡未出现，最终消息正常落盘。烟测使用临时副本，不改真实会话；未调用用户现有会话。
 - 已执行 `npm run build`：入口切到 `assets/index-B1a_uEBm.js`，旧哈希资源保留；未停止或重启运行中的服务。后端适配器需下次正常重启后才会让现有实例报告 dsh `graphicalChat`；当前刷新只能先加载新前端壳，能力仍以旧后端返回为准。
+
+## 2026-10-31：dsh 图形对话写锁、接管与原生设置
+
+- 修复重启后 dsh 图形对话“发不了消息”：写锁仍由 dsh-tui 持有时，发送会被原生 `session/writer-held` 拒绝；现在设置面板和输入区明确显示只读原因，并提供显式「接管图形对话」操作。接管要求原生状态 idle、没有待回答问题或审批，先停止 dsh-tui，再从同一 native session 恢复网页 writer；不静默杀进程、不伪造可发送状态。
+- 修复 dsh 模型/权限不可选：接入 0.2 原生 `session.modelCatalog`、`permissionPresets/catalog`、`session.projections`；模型走 `session.selectModel`，权限走 `/permission <preset>`。写入后读回确认；模型投影晚一个事件时短暂保留已确认值，权限写入轮询读回，避免界面回弹。
+- 修复 dsh 从 TUI 切图形后 `executionTransport` 仍为 `pty`、终端视图显示空 PTY：运行中接管后写回 `executionTransport: web`、`interactionMode: chat`，并持久化 `openSession` 返回的 `nativeUrl`，终端视图继续使用原生 Web 地址而不是空 PTY。
+- 三问自查：公共契约仍只用通用 `AgentChatSettings`／`AgentChatSettingsUpdate`，dsh RPC 和接管分支留在适配器／后端；三个后端能力仍按原生报告，dsh 缺目录或写锁不成立时明确只读，没有假选项；接管、设置和状态都有原生调用与读回，没有把界面按钮当成成功。
+- 验证：`npm run check` 通过；`npm test` 413 项、405 通过、4 跳过、4 个既有 Codex fixture 失败（无新增）；`npm run test:web` 252 项通过；`tests/dsh-chat.spec.ts` 含接管与原生设置共 5 项通过。隔离 dsh 0.2 实机烟测 `POST /start {mode:'chat',handoff:true}` 成功，返回 `executionTransport: web`；接管后 `POST /chat/messages` 返回 accepted 并收到 assistant “OK”；模型与权限写入均立即读回目标值。未重启用户正在使用的服务。
+- 已执行 `npm run build`：入口为 `assets/index-BKy8pTlP.js`，旧哈希资源保留。

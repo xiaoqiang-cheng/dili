@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentChatAdapter } from './chat.ts';
-import type { AgentChatAnswer, AgentChatHistoryPage, AgentChatItem, AgentChatRequest, AgentChatSettings, AgentChatSnapshot } from '../../shared/chat.ts';
+import type { AgentChatAnswer, AgentChatHistoryPage, AgentChatItem, AgentChatRequest, AgentChatSettings, AgentChatSettingsUpdate, AgentChatSnapshot } from '../../shared/chat.ts';
 import type { SessionStatus } from '../../shared/types.ts';
 import type { DshHistory } from '../conversation.ts';
+import type { DshChatSettings } from '../dsh.ts';
 import { dshChatItems, dshChatTurn } from './dsh-chat-items.ts';
 
 interface DshPendingQuestion { callId: string; questions: unknown[]; state?: 'open' | 'continued' }
@@ -21,6 +22,8 @@ export interface DshChatNative {
   getStatus(id: string): Promise<DshStatusLike>;
   pendingRequests?(id: string): DshPending;
   answerQuestion?(id: string, callId: string, answers: { id: string; selected: string[]; custom?: string }[]): Promise<void>;
+  readChatSettings?(id: string): Promise<DshChatSettings>;
+  updateChatSettings?(id: string, field: 'model' | 'permission', value: string): Promise<void>;
   onStatusChange?(listener: () => void): () => void;
   onSessionEvent?(listener: (id: string, event: unknown) => void): () => void;
 }
@@ -89,6 +92,8 @@ export interface DshChatAdapterOptions {
   notice?: string;
   /** Opening a stopped contact must not boot the native service. */
   shouldStart?: (nativeSessionId: string) => boolean;
+  /** Whether a web writer owns the session; a dsh-tui-owned session can read but not write. */
+  writerWritable?: (nativeSessionId: string) => boolean;
 }
 
 export class DshChatAdapter implements AgentChatAdapter {
@@ -98,6 +103,7 @@ export class DshChatAdapter implements AgentChatAdapter {
   private readonly pendingSynthetics = new Map<string, string[]>();
   private readonly turnIds = new Map<string, Map<number, string>>();
   private readonly live = new Map<string, { id: string; attemptId: string; turn: number; text: string }>();
+  private readonly settingsVersions = new Map<string, string>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private closed = false;
   private readonly offStatus: (() => void) | undefined;
@@ -248,6 +254,7 @@ export class DshChatAdapter implements AgentChatAdapter {
   }
 
   async sendPrompt(sessionId: string, text: string): Promise<{ turnId: string }> {
+    if (this.options.writerWritable?.(sessionId) === false) throw new Error('当前输入由 dsh-tui 持有；请先在图形对话中接管，再发送消息');
     if (!text.trim()) throw new Error('消息不能为空');
     await this.native.start();
     await this.native.prompt(sessionId, text);
@@ -293,21 +300,49 @@ export class DshChatAdapter implements AgentChatAdapter {
   }
 
   async readChatSettings(sessionId: string): Promise<AgentChatSettings> {
+    if (!this.native.readChatSettings) {
+      return {
+        nativeSessionId: sessionId,
+        version: 'dsh',
+        model: null,
+        models: [],
+        permission: null,
+        permissions: [],
+        modelReason: '当前 DeepSeek Harness 版本未提供模型目录',
+        permissionReason: '当前 DeepSeek Harness 版本未提供权限目录',
+        disabledReason: '当前 DeepSeek Harness 版本只能在原生界面修改模型和权限',
+        scope: '原生界面',
+      };
+    }
+    const native = await this.native.readChatSettings(sessionId);
+    const version = this.settingsVersions.get(sessionId) ?? randomUUID();
+    this.settingsVersions.set(sessionId, version);
+    const snapshot = this.snapshots.get(sessionId) ?? await this.readNative(sessionId);
+    const active = !!snapshot?.activeTurnId || (snapshot?.requests.length ?? 0) > 0;
+    const tuiOwned = this.options.writerWritable?.(sessionId) === false;
     return {
       nativeSessionId: sessionId,
-      version: 'dsh',
-      model: null,
-      models: [],
-      permission: null,
-      permissions: [],
-      modelReason: 'DeepSeek Harness 的模型由原生界面管理',
-      permissionReason: 'DeepSeek Harness 的权限预设由原生界面管理',
-      disabledReason: 'DeepSeek Harness 的模型和权限设置由原生界面管理',
-      scope: '原生界面',
+      version,
+      model: native.model,
+      models: native.models,
+      permission: native.permission,
+      permissions: native.permissions,
+      ...(native.permissionLabel ? { permissionLabel: native.permissionLabel } : {}),
+      ...(native.models.length ? {} : { modelReason: 'DeepSeek Harness 未返回可用模型目录' }),
+      ...(native.permissions.length ? {} : { permissionReason: 'DeepSeek Harness 未返回权限预设目录' }),
+      ...(tuiOwned ? { disabledReason: '当前输入由 dsh-tui 持有；先接管图形对话，再修改原生模型和权限' } : active ? { disabledReason: '请等待当前任务、审批或问题处理结束后再修改原生设置' } : {}),
+      scope: '作用于当前原生 dsh 会话；通过原生 Session API 修改。',
     };
   }
 
-  async updateChatSettings(): Promise<AgentChatSettings> {
-    throw new Error('DeepSeek Harness 的模型和权限设置只能在原生界面修改');
+  async updateChatSettings(sessionId: string, update: AgentChatSettingsUpdate): Promise<AgentChatSettings> {
+    const current = await this.readChatSettings(sessionId);
+    if (update.version !== current.version) throw new Error('原生设置已变化，请刷新后重试');
+    if (current.disabledReason) throw new Error(current.disabledReason);
+    if (!this.native.updateChatSettings) throw new Error('当前 DeepSeek Harness 版本没有提供网页设置接口');
+    if (update.field !== 'model' && update.field !== 'permission') throw new Error('不支持的设置项');
+    await this.native.updateChatSettings(sessionId, update.field, update.value);
+    this.settingsVersions.set(sessionId, randomUUID());
+    return this.readChatSettings(sessionId);
   }
 }

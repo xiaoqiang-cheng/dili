@@ -27,6 +27,14 @@ export interface DshBridgeOptions {
 interface NativeSession { nativeSessionId: string; nativeUrl: string }
 interface DshSummary { sessionId: string; running?: boolean; agentAvailable?: boolean; cwd?: string; updatedAt?: number }
 export interface DshStatus { status: SessionStatus; detail?: string; attentionKey?: string }
+export interface DshModelChoice { id: string; label: string; description?: string }
+export interface DshChatSettings {
+  model: string | null;
+  models: DshModelChoice[];
+  permission: string | null;
+  permissions: DshModelChoice[];
+  permissionLabel?: string;
+}
 export interface DshPendingQuestion { callId: string; questions: unknown[]; state?: 'open' | 'continued' }
 export interface DshPendingApproval { id: string; toolName?: string; reason?: string }
 interface TurnBoundary { type: 'turn/start' | 'turn/end'; seq: number; reason?: string }
@@ -117,6 +125,13 @@ export class DshBridge {
    * they are answerable only through the forwarded Remote Event result RPC. */
   private liveQuestions = new Map<string, Map<string, DshPendingQuestion & { eventId: string }>>();
   private eventClientId = '';
+  /** Model catalog choice ids are opaque here; keep the provider/model route
+   * beside them so a UI string can never be mistaken for a native route. */
+  private modelChoices = new Map<string, Map<string, { provider: string; model: string }>>();
+  /** The Session projection may lag one event behind a just-accepted native
+   * model/permission write; keep the confirmed value briefly so the settings
+   * response does not bounce back to the old choice. */
+  private recentSettings = new Map<string, { model?: string; permission?: string; at: number }>();
   onStatusChange(listener: () => void) { this.statusListeners.add(listener); return () => { this.statusListeners.delete(listener); }; }
   /** Live session events are for adapters only; they never replace read-only history. */
   onSessionEvent(listener: (id: string, event: unknown) => void) { this.eventListeners.add(listener); return () => { this.eventListeners.delete(listener); }; }
@@ -626,6 +641,76 @@ export class DshBridge {
     this.pending.get(id)?.delete(`question:${callId}`);
     this.revisions.set(id, (this.revisions.get(id) ?? 0) + 1);
     for (const listener of this.statusListeners) listener();
+  }
+
+  /** Read the native model and permission catalogs plus the session's current
+   * selections. This is a read-only projection read: it never sends a prompt. */
+  async readChatSettings(id: string): Promise<DshChatSettings> {
+    validateNativeId('dsh', id);
+    await this.start();
+    const [catalog, presets, projections] = await Promise.all([
+      this.rpc<{ default?: { provider?: string; model?: string }; groups?: { id?: string; name?: string; models?: { id?: string; name?: string; description?: string }[] }[] }>('session.modelCatalog', {}, {}),
+      this.rpc<{ options?: { value?: string; name?: string; description?: string }[] }>('permissionPresets/catalog', {}, {}),
+      this.rpc<{ values?: Record<string, unknown> } | null>('session.projections', { sessionId: id }),
+    ]);
+    const values = projections?.values ?? {};
+    const modelState = values.modelSelection as { lastUsed?: { provider?: string; model?: string } | null; pending?: { provider?: string; model?: string } | null } | undefined;
+    const selected = modelState?.pending ?? modelState?.lastUsed ?? catalog.default;
+    const choices = new Map<string, { provider: string; model: string; label: string; description?: string }>();
+    for (const group of catalog.groups ?? []) {
+      for (const model of group.models ?? []) {
+        if (!group.id || !model.id) continue;
+        const key = `${group.id}/${model.id}`;
+        choices.set(key, { provider: group.id, model: model.id, label: model.name || model.id, ...(model.description ? { description: model.description } : {}) });
+      }
+    }
+    const recent = this.recentSettings.get(id);
+    const fresh = recent && Date.now() - recent.at < 8000 ? recent : undefined;
+    const currentModel = fresh?.model ?? (selected?.provider && selected.model ? `${selected.provider}/${selected.model}` : null);
+    if (currentModel && !choices.has(currentModel)) {
+      const split = currentModel.indexOf('/');
+      const provider = selected?.provider ?? (split > 0 ? currentModel.slice(0, split) : '');
+      const model = selected?.model ?? (split > 0 ? currentModel.slice(split + 1) : '');
+      if (provider && model) choices.set(currentModel, { provider, model, label: `${model}（原生当前值）` });
+    }
+    this.modelChoices.set(id, new Map([...choices].map(([key, value]) => [key, { provider: value.provider, model: value.model }])));
+    const options = (presets.options ?? []).flatMap(option => typeof option.value === 'string' && option.value ? [{ id: option.value, label: option.name || option.value, ...(option.description ? { description: option.description } : {}) }] : []);
+    const projectedPermission = typeof (values.permissions as { currentValue?: unknown } | undefined)?.currentValue === 'string' ? (values.permissions as { currentValue: string }).currentValue : null;
+    const currentPermission = fresh?.permission ?? projectedPermission;
+    return {
+      model: currentModel,
+      models: [...choices].map(([id, choice]) => ({ id, label: choice.label, ...(choice.description ? { description: choice.description } : {}) })),
+      permission: currentPermission,
+      permissions: options,
+      ...(currentPermission && !options.some(option => option.id === currentPermission) ? { permissionLabel: `自定义原生权限组合（${currentPermission}）` } : {}),
+    };
+  }
+
+  /** Apply a model or permission choice through the native Session API. The
+   * caller must re-read settings; a command that was admitted is not proof
+   * that the projection changed. */
+  async updateChatSettings(id: string, field: 'model' | 'permission', value: string): Promise<void> {
+    validateNativeId('dsh', id);
+    await this.start();
+    const before = await this.readChatSettings(id);
+    if (field === 'model') {
+      const route = this.modelChoices.get(id)?.get(value);
+      if (!route || !before.models.some(choice => choice.id === value)) throw new Error('这个模型不在原生当前目录中，请刷新设置');
+      await this.rpc('session.selectModel', { sessionId: id, provider: route.provider, model: route.model });
+      this.recentSettings.set(id, { ...this.recentSettings.get(id), model: value, at: Date.now() });
+      return;
+    }
+    if (!before.permissions.some(choice => choice.id === value)) throw new Error('这个权限预设不在原生当前目录中，请刷新设置');
+    const result = await this.rpc<{ result?: { kind?: string; text?: string } }>('commands.execute', { agentId: id, line: `/permission ${value}`, submittedAttachments: [] });
+    if (result?.result?.kind !== 'success') throw new Error(result?.result?.text || 'DeepSeek Harness 未接受这次权限切换');
+    let after = await this.readChatSettings(id);
+    // The command can be admitted before the projection event is applied.
+    for (let attempt = 0; attempt < 5 && after.permission !== value; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      after = await this.readChatSettings(id);
+    }
+    if (after.permission !== value) throw new Error('原生权限设置未确认目标值，请刷新检查实际设置');
+    this.recentSettings.set(id, { ...this.recentSettings.get(id), permission: value, at: Date.now() });
   }
 
   /** Native history is explicitly read-only: it never attaches or resumes an

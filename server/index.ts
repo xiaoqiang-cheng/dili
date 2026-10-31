@@ -133,7 +133,10 @@ const terminals = new Terminals();
 const shells = new ShellTerminals();
 const nativeStatus = new NativeStatusWatcher();
 const dsh = new DshBridge({ dataDir });
-const dshChat = new DshChatAdapter(dsh, { shouldStart: nativeId => store.sessions().some(item => item.backend === 'dsh' && item.nativeSessionId === nativeId && item.running) });
+const dshChat = new DshChatAdapter(dsh, {
+  shouldStart: nativeId => store.sessions().some(item => item.backend === 'dsh' && item.nativeSessionId === nativeId && item.running),
+  writerWritable: nativeId => store.sessions().some(item => item.backend === 'dsh' && item.nativeSessionId === nativeId && item.running && item.executionTransport === 'web'),
+});
 const conversations = new ConversationReader({ dshHistory: id => dsh.readHistory(id) });
 // Codex's app-server is lazy-started on the first Codex contact. This keeps a
 // Claude/dsh-only installation usable when an older Codex CLI lacks the bridge
@@ -1174,9 +1177,30 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
     if (mode === 'chat') {
       if (starting.has(item.id)) fail('会话正在连接，请稍后重试', 409);
       if (!item.nativeSessionId) fail('DeepSeek Harness 会话标识尚未就绪', 409);
+      const nativeSessionId = item.nativeSessionId;
+      // dsh-tui owns the session writer. Reading through the web bridge is
+      // safe, but sending/settings would be rejected with session/writer-held.
+      if (item.executionTransport !== 'web') {
+        if (body.handoff !== true) fail('接管图形对话会退出当前 dsh-tui，并从同一份已保存会话恢复；需要确认交接', 409);
+        if (item.status === 'running' || item.status === 'waiting_approval') fail('请先等待当前 dsh-tui 任务结束，再接管图形对话', 409);
+        // dsh-tui may not report a hook transition while idle. Read the native
+        // observer before killing it so an active turn is never silently lost.
+        if (!dsh.readyState) await dsh.start();
+        const nativeStatus = await dsh.getStatus(nativeSessionId);
+        if (nativeStatus.status === 'running') fail('请先等待当前 dsh-tui 任务结束，再接管图形对话', 409);
+        const pending = dsh.pendingRequests(nativeSessionId);
+        if (pending.questions.length || pending.approvals.length) fail('请先处理原生待回答问题或审批，再接管图形对话', 409);
+        starting.add(item.id); stopping.add(item.id);
+        try {
+          await terminals.stop(item.id);
+          launchIds.delete(item.id); expectedNativeIds.delete(item.id);
+          status(item.id, { running: false, status: 'stopped', statusSource: 'process', statusDetail: 'dsh-tui 已退出，正在恢复图形会话' });
+          item = session(item.id);
+        } finally { starting.delete(item.id); stopping.delete(item.id); }
+      }
       if (!dsh.readyState) await dsh.start();
-      await dsh.openSession(item.nativeSessionId);
-      status(item.id, { interactionMode: 'chat', statusDetail: item.statusDetail ?? 'DeepSeek Harness 图形对话已连接' });
+      const native = await dsh.openSession(nativeSessionId);
+      status(item.id, { ...native, running: true, interactionMode: 'chat', executionTransport: 'web', status: 'idle', statusSource: 'native', statusDetail: 'DeepSeek Harness 图形对话已就绪；输入现在归网页会话所有' });
       broadcast(); return session(item.id);
     }
     // The terminal view is a client-side attachment to the same native session;

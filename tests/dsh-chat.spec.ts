@@ -5,16 +5,16 @@ import type { AgentChatSnapshot } from '../shared/chat';
 const id = 'dsh-chat-contact';
 const native = 'session-22222222-2222-4222-8222-222222222222';
 
-async function fixture(page: Page, initial?: Partial<AgentChatSnapshot>) {
+async function fixture(page: Page, initial?: Partial<AgentChatSnapshot>, contactOverrides: Partial<Session> = {}) {
   const seed = await (await page.request.get('/api/state')).json() as AppState;
-  const contact: Session = { ...seed.sessions[0], id, backend: 'dsh', title: 'DeepSeek 图形对话', cwd: '/workspace/demo', running: true, status: 'idle', statusSource: 'native', nativeSessionId: native, forkPending: false, interactionMode: 'terminal', executionTransport: 'web' };
+  const contact: Session = { ...seed.sessions[0], id, backend: 'dsh', title: 'DeepSeek 图形对话', cwd: '/workspace/demo', running: true, status: 'idle', statusSource: 'native', nativeSessionId: native, forkPending: false, interactionMode: 'terminal', executionTransport: 'web', ...contactOverrides };
   const state: AppState = { ...seed, demo: false, sessions: [contact], groups: [], activities: [], backends: seed.backends.map(item => item.id === 'dsh' ? { ...item, installed: true, version: '0.2.0-rc.2', capabilities: { ...item.capabilities, terminal: true, graphicalChat: true } } : item) };
   let snapshot: AgentChatSnapshot = {
     instanceId: 'fixture-instance', nativeSessionId: native, revision: 1, connected: true, activeTurnId: null,
     items: [{ id: 'u1', type: 'user', text: '检查登录', status: 'completed' }, { id: 'a1', type: 'assistant', text: '登录流程已经检查。', status: 'completed' }],
     requests: [], truncated: false, historyCursor: null, ...initial,
   };
-  const starts: string[] = [], sends: Record<string, unknown>[] = [], answers: Record<string, unknown>[] = [];
+  const starts: Record<string, unknown>[] = [], sends: Record<string, unknown>[] = [], answers: Record<string, unknown>[] = [], settingUpdates: Record<string, unknown>[] = [];
   await page.addInitScript(() => {
     localStorage.setItem('sessiondeck.private-view.dsh', 'chat');
     const sources: EventTarget[] = [];
@@ -26,10 +26,15 @@ async function fixture(page: Page, initial?: Partial<AgentChatSnapshot>) {
   await page.route('**/api/config', route => route.fulfill({ json: { csrfToken: 'test-token' } }));
   await page.route('**/api/sessions/' + id + '/read', route => route.fulfill({ json: contact }));
   await page.route('**/api/sessions/' + id + '/start', async route => {
-    starts.push((route.request().postDataJSON() as { mode?: string }).mode ?? 'terminal');
+    starts.push(route.request().postDataJSON() as Record<string, unknown>);
     return route.fulfill({ json: { ...contact, interactionMode: 'chat', executionTransport: 'web' } });
   });
-  await page.route('**/api/sessions/' + id + '/chat/settings', route => route.fulfill({ json: { nativeSessionId: native, version: 'dsh', model: null, models: [], permission: null, permissions: [], disabledReason: '由原生界面管理', scope: '原生界面' } }));
+  const nativeSettings = { nativeSessionId: native, version: 'settings-1', model: 'discover/deepseek-v4-flash', models: [{ id: 'discover/deepseek-v4-flash', label: 'deepseek-v4-flash' }, { id: 'discover/deepseek-v4-pro', label: 'deepseek-v4-pro' }], permission: 'workspace-write', permissions: [{ id: 'read-only', label: 'read-only' }, { id: 'workspace-write', label: 'workspace-write' }, { id: 'danger-full-access', label: 'danger-full-access' }], scope: '作用于当前原生 dsh 会话；通过原生 Session API 修改。' };
+  await page.route('**/api/sessions/' + id + '/chat/settings', async route => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: contact.executionTransport === 'web' ? nativeSettings : { ...nativeSettings, disabledReason: '当前输入由 dsh-tui 持有；先接管图形对话，再修改原生模型和权限' } });
+    settingUpdates.push(route.request().postDataJSON() as Record<string, unknown>);
+    return route.fulfill({ json: { ...nativeSettings, version: 'settings-2' } });
+  });
   await page.route('**/api/sessions/' + id + '/chat/messages', async route => {
     const body = route.request().postDataJSON() as Record<string, unknown>;
     sends.push(body);
@@ -44,7 +49,7 @@ async function fixture(page: Page, initial?: Partial<AgentChatSnapshot>) {
   await page.route('**/api/sessions/' + id + '/chat', route => route.fulfill({ json: snapshot }));
   await page.goto('/#/contacts?session=' + id);
   await expect(page.getByRole('region', { name: 'DeepSeek 图形会话' })).toBeVisible();
-  return { contact, snapshot: () => snapshot, starts, sends, answers };
+  return { contact, snapshot: () => snapshot, starts, sends, answers, settingUpdates };
 }
 
 test('dsh opens the shared structured chat with native history and no fake native composer', async ({ page }) => {
@@ -62,7 +67,7 @@ test('dsh send enters chat mode and acknowledges through the native message API'
   await page.getByLabel('给 DeepSeek 发送消息').fill('继续修复');
   await page.getByRole('button', { name: '发送', exact: true }).first().click();
   await expect.poll(() => app.sends.length).toBe(1);
-  expect(app.starts).toEqual(['chat']);
+  expect(app.starts).toEqual([{ mode: 'chat' }]);
   expect(app.sends[0]).toMatchObject({ text: '继续修复' });
   await expect(page.getByText('继续修复')).toBeVisible();
 });
@@ -75,4 +80,36 @@ test('dsh question cards submit through the structured endpoint instead of the n
   await expect.poll(() => app.answers.length).toBe(1);
   expect(app.answers[0]).toEqual({ answers: { q1: ['保留'] } });
   await expect(page.getByRole('button', { name: '提交回答', exact: true })).toHaveCount(0);
+});
+
+test('dsh-tui-owned sessions stay read-only until an explicit handoff', async ({ page }) => {
+  const app = await fixture(page, undefined, { executionTransport: 'pty' });
+  await expect(page.getByText(/当前输入由 dsh-tui 持有/).first()).toBeVisible();
+  await page.getByLabel('给 DeepSeek 发送消息').fill('继续修复');
+  await expect(page.getByRole('button', { name: '发送', exact: true })).toBeDisabled();
+  page.once('dialog', dialog => void dialog.accept());
+  await page.getByRole('button', { name: '接管图形对话' }).click();
+  await expect.poll(() => app.starts.length).toBe(1);
+  expect(app.starts[0]).toEqual({ mode: 'chat', handoff: true });
+  expect(app.sends).toHaveLength(0);
+});
+
+test('dsh native model and permission choices are selectable', async ({ page }) => {
+  const app = await fixture(page);
+  await page.getByRole('button', { name: '选择原生模型' }).click();
+  const model = page.getByLabel('原生模型', { exact: true });
+  await expect(model).toBeEnabled();
+  await expect(model).toContainText('deepseek-v4-pro');
+  await model.selectOption('discover/deepseek-v4-pro');
+  await page.getByRole('button', { name: '应用模型' }).click();
+  await expect.poll(() => app.settingUpdates.length).toBe(1);
+  expect(app.settingUpdates[0]).toMatchObject({ version: 'settings-1', field: 'model', value: 'discover/deepseek-v4-pro' });
+
+  await page.getByRole('button', { name: '选择原生权限' }).click();
+  const permission = page.getByLabel('原生权限', { exact: true });
+  await expect(permission).toBeEnabled();
+  await permission.selectOption('read-only');
+  await page.getByRole('button', { name: '应用权限' }).click();
+  await expect.poll(() => app.settingUpdates.length).toBe(2);
+  expect(app.settingUpdates[1]).toMatchObject({ field: 'permission', value: 'read-only' });
 });
