@@ -7,7 +7,6 @@ import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { zstdDecompressSync } from 'node:zlib';
-import { prepareDshAuto } from './dsh-auto.ts';
 import type { Backend, BackendInfo, DiscoveredSession, NativeSettings, Session } from '../shared/types.js';
 import { parseClaudePermissionModes } from '../shared/permissions.ts';
 
@@ -28,6 +27,11 @@ interface LogFile { path: string; id?: string; modified: number; created: number
 
 /** dsh 0.1 ids are `session-<uuid>`; dsh 0.2 (and dsh-tui) use the bare uuid. */
 export const DSH_ID = new RegExp(`^(?:session-)?${UUID.source.slice(1, -1)}$`, 'i');
+const DSH_BARE_ID = new RegExp(`^${UUID.source.slice(1, -1)}$`, 'i'), DSH_LEGACY_ID = new RegExp(`^session-${UUID.source.slice(1, -1)}$`, 'i');
+/** dsh 0.2 rejects the 0.1 `session-` prefix when dsh-tui resumes it, but the
+ * bare UUID is valid in both. Creation must never reuse the legacy form. */
+export const isCurrentDshId = (id: string) => DSH_BARE_ID.test(id);
+export const isLegacyDshId = (id: string) => DSH_LEGACY_ID.test(id);
 /** Structured chat needs the 0.2 Direct RPCs (session.prompt plus userQuestions.answer). */
 export function dshChatCapable(version: string | null): boolean {
   const match = version?.match(/^(\d+)\.(\d+)/);
@@ -80,14 +84,14 @@ export async function getBackendInfo(): Promise<BackendInfo[]> {
     const tui = id === 'dsh' ? await findDshTui() : null;
     return {
       id, label: LABELS[id], installed: true, version,
-      capabilities: { additionalDirectories: id !== 'dsh' && help.includes('--add-dir'), ...(id === 'claude' ? { permissionModes: parseClaudePermissionModes(help), bypassOption: help.includes('--allow-dangerously-skip-permissions') } : {}), terminal: id !== 'dsh' || !!tui, resume: id === 'dsh' || /\bresume\b/.test(help), fork: id === 'dsh' || (id === 'claude' ? help.includes('--fork-session') : /\bfork\b/.test(help)), discovery: true, nativeControl, graphicalChat: id === 'dsh' ? dshChatCapable(version) : nativeControl, autoMode: id === 'claude' ? help.includes('--permission-mode') && /["']auto["']/.test(help) : id === 'codex' ? help.includes('--approve-for-me') : true },
+      capabilities: { additionalDirectories: id !== 'dsh' && help.includes('--add-dir'), ...(id === 'claude' ? { permissionModes: parseClaudePermissionModes(help), bypassOption: help.includes('--allow-dangerously-skip-permissions') } : {}), terminal: id !== 'dsh' || !!tui, resume: id === 'dsh' || /\bresume\b/.test(help), fork: id === 'dsh' || (id === 'claude' ? help.includes('--fork-session') : /\bfork\b/.test(help)), discovery: true, nativeControl, graphicalChat: id === 'dsh' ? dshChatCapable(version) : nativeControl, autoMode: id === 'claude' ? help.includes('--permission-mode') && /["']auto["']/.test(help) : id === 'codex' ? help.includes('--approve-for-me') : false },
       note: id === 'dsh' ? (dshChatCapable(version) ? (tui ? '图形对话复用原生 session API；dsh-tui 仍可打开原生终端' : '图形对话复用原生 Web session API；安装 @deepseek-harness-tui/dsh-tui 可获得原生终端') : '原生 Web／终端界面；升级到 dsh 0.2 可启用图形对话') : id === 'codex' ? (nativeControl ? '原生 app-server 提供图形对话、流式回复、审批和精确会话；可切换原生终端' : '兼容终端模式：原生 ID 在完成一轮后确认；更新 Codex 可启用图形对话') : nativeControl ? '图形模式复用 Claude stream-json：流式正文、工具、审批与提问；与 TUI 通过已保存会话交接' : '兼容终端模式与对话记录；更新 Claude 可启用结构化图形对话',
     };
   }));
 }
 
 /** Arguments are always passed directly to exec/PTY, never through a shell. */
-export async function buildLaunch(session: Session, dataDir?: string, capabilities?: BackendInfo['capabilities']): Promise<{ file: string; args: string[]; nativeSessionId?: string; env?: Record<string, string> }> {
+export async function buildLaunch(session: Session, _dataDir?: string, capabilities?: BackendInfo['capabilities']): Promise<{ file: string; args: string[]; nativeSessionId?: string; env?: Record<string, string> }> {
   const source = session.nativeSessionId ? validateNativeId(session.backend, session.nativeSessionId) : null;
   if (session.forkPending && !source) throw new Error('原会话尚未获得原生 ID，无法 Fork');
   if (session.backend === 'dsh') {
@@ -96,15 +100,11 @@ export async function buildLaunch(session: Session, dataDir?: string, capabiliti
     // dsh-tui resolves the workspace from the session on resume; a new session
     // takes the directory as its only positional argument. It has no fork flag,
     // so a pending fork resumes the parent and the TUI branches from there.
-    let args = source ? ['--resume', source] : [session.cwd];
-    let env: Record<string, string> | undefined;
-    if (session.executionMode === 'auto') {
-      if (!dataDir) throw new Error('Harness Auto 缺少独立启动目录');
-      const overlay = await prepareDshAuto(join(dataDir, 'dsh-auto', session.id), source ?? undefined);
-      args = ['--patch', overlay.patch, ...args];
-      env = { NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import ${JSON.stringify(overlay.loader)}`.trim() };
-    }
-    return { file: tui, args, ...(source && !session.forkPending ? { nativeSessionId: source } : {}), ...(env ? { env } : {}) };
+    const args = source ? ['--resume', source] : [session.cwd];
+    // dsh 0.2 has no native `auto` permission preset, so Auto is not offered
+    // and no launch overlay is injected. Existing Auto contacts are normalized
+    // to native defaults before they start (see server/index.ts).
+    return { file: tui, args, ...(source && !session.forkPending ? { nativeSessionId: source } : {}) };
   }
   const file = await findExecutable(session.backend);
   if (!file) throw new Error(`未找到 ${LABELS[session.backend]}，请安装原生命令并加入 PATH`);

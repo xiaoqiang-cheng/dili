@@ -6,14 +6,17 @@
 2. **dsh-tui 存在**：`server/terminal.ts` 托管原生 PTY，输入、图片、审批都在原生 TUI 里完成；Dili 提供联系人、状态、工具卡和对话记录。
 3. **没有 dsh-tui 或显式使用原生界面**：`server/dsh.ts` 启动 Harness 自己的 Web 服务，页面用 iframe 打开原生界面；对话记录走原生 session 历史 API 或压缩日志。
 
+传输方式是**每个联系人**的属性，不是“装了 dsh-tui 就全走终端”：群聊投递、停止、Fork 和空闲观察都以 `executionTransport === 'web'` 判断，避免把网页会话误判成 PTY 而报“会话尚未启动”。
+
 用 `SESSIONDECK_DSH_PREFER_WEB=1` 可强制走 Web 桥（TUI 挂起但收不到输入时的退路）。
 
 ## 身份与服务
 
-- dsh 0.1 的会话 ID 是 `session-<uuid>`，0.2 / dsh-tui 是裸 UUID；`DSH_ID` 两者都接受。
+- dsh 0.1 的会话 ID 是 `session-<uuid>`，0.2 / dsh-tui 是裸 UUID；`DSH_ID` 两者都接受，但**新建必须用裸 UUID**：带前缀的目录会让 dsh-tui `--resume` 报“log unreadable or corrupt”。
+- 旧 `session-<uuid>` 联系人无法在当前 dsh 0.2 上恢复；`/start mode chat` 会新建一个裸 UUID 会话、写回联系人，并保留联系人本身。不要静默复用坏 ID。
 - 原生 Web 服务按需启动，端口由 `SESSIONDECK_DSH_PORT` 指定；未指定时每次选空闲端口。
 - 服务只监听本机；不要把它当成可远程访问的入口。
-- `server/dsh-auto.ts` 会在 dsh 配置目录写一个自动模式插件；写入使用 0600，失败不应阻止会话启动。
+- dsh 0.2 的原生权限目录只有 `read-only`、`workspace-write`、`danger-full-access`，没有 `auto`。Dili 不再为 dsh 提供 Auto，也不注入启动覆盖层；历史 Auto 联系人在启动时归一为原生默认，并在状态里说明原因。
 
 ## 能力边界
 

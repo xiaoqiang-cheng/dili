@@ -7,7 +7,7 @@ import { createServer } from 'node:net';
 import { pathToFileURL } from 'node:url';
 import WebSocket from 'ws';
 import { setTimeout as delay } from 'node:timers/promises';
-import { findExecutable, validateNativeId } from './adapters.js';
+import { findExecutable, isLegacyDshId, validateNativeId } from './adapters.ts';
 import type { SessionStatus } from '../shared/types.js';
 import { OwnedProcess } from './owned-process.ts';
 import { sameDirectory } from './paths.ts';
@@ -563,6 +563,9 @@ export class DshBridge {
         // Generic native errors may occur after queue acceptance. Only a
         // documented pre-dispatch missing-session rejection permits retry.
         if (method === 'session.prompt' && ['session-not-found', 'session/not-found'].includes(result.result.error?.code ?? '')) throw new DeliveryNotAcceptedError(message);
+        // Another native writer (dsh-tui) holds the session; the UI must offer a
+        // handoff instead of retrying the same call.
+        if (/already owned by an active write handle/i.test(message)) throw Object.assign(new Error('这个 DeepSeek Harness 会话正由 dsh-tui 原生终端占用；请先接管图形对话或结束原生终端。'), { status: 409, code: 'NATIVE_SESSION_BUSY' });
         throw new Error(message);
       }
       if (result.result?.ok !== true) throw new Error('DeepSeek Harness 返回了无效的 API 响应');
@@ -577,7 +580,9 @@ export class DshBridge {
 
   async createSession(cwd: string, _title?: string): Promise<NativeSession> {
     await this.start();
-    const result = await this.rpc<{ sessionId: string }>('session.create', { cwd, sessionId: `session-${randomUUID()}` });
+    // dsh 0.2 ids are bare UUIDs. The 0.1 `session-<uuid>` form creates a
+    // session dir that dsh-tui then refuses to resume.
+    const result = await this.rpc<{ sessionId: string }>('session.create', { cwd, sessionId: randomUUID() });
     return this.reference(result.sessionId);
   }
 
@@ -598,14 +603,12 @@ export class DshBridge {
     validateNativeId('dsh', id);
     await this.start();
     const result = await this.rpc<{ items: DshSummary[] }>('session.list', {});
-    if (!Array.isArray(result.items) || !result.items.some(item => item.sessionId === id)) throw new Error('未找到对应的 DeepSeek Harness 会话');
+    if (!Array.isArray(result.items) || !result.items.some(item => item.sessionId === id)) {
+      throw Object.assign(new Error(isLegacyDshId(id)
+        ? '这个联系人的原生会话 ID 是 dsh 0.1 的 `session-<uuid>` 形式，DeepSeek Harness 0.2 无法恢复。请重建这个会话。'
+        : '未找到对应的 DeepSeek Harness 会话'), { status: 409, ...(isLegacyDshId(id) ? { code: 'NATIVE_SESSION_LEGACY' as const } : {}) });
+    }
     return this.reference(id);
-  }
-
-  async setAutoMode(id: string): Promise<void> {
-    validateNativeId('dsh', id);
-    const result = await this.rpc<{ result?: { kind: string; text?: string } }>('commands.execute', { agentId: id, line: '/permission auto', submittedAttachments: [] });
-    if (result?.result?.kind !== 'success') throw new Error(result?.result?.text || 'Harness 原生 Auto 不可用，请检查原生权限预设与自动审核配置');
   }
 
   async prompt(id: string, text: string): Promise<void> {

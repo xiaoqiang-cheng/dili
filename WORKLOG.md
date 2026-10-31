@@ -672,3 +672,12 @@
 - 三问自查：公共契约仍只用通用 `AgentChatSettings`／`AgentChatSettingsUpdate`，dsh RPC 和接管分支留在适配器／后端；三个后端能力仍按原生报告，dsh 缺目录或写锁不成立时明确只读，没有假选项；接管、设置和状态都有原生调用与读回，没有把界面按钮当成成功。
 - 验证：`npm run check` 通过；`npm test` 413 项、405 通过、4 跳过、4 个既有 Codex fixture 失败（无新增）；`npm run test:web` 252 项通过；`tests/dsh-chat.spec.ts` 含接管与原生设置共 5 项通过。隔离 dsh 0.2 实机烟测 `POST /start {mode:'chat',handoff:true}` 成功，返回 `executionTransport: web`；接管后 `POST /chat/messages` 返回 accepted 并收到 assistant “OK”；模型与权限写入均立即读回目标值。未重启用户正在使用的服务。
 - 已执行 `npm run build`：入口为 `assets/index-BKy8pTlP.js`，旧哈希资源保留。
+
+## 2026-11-01：dsh 群成员回复失败与 0.2 会话身份
+
+- 修复 dsh 加入群聊后回复失败：成员创建时把 0.1 的 `session-<uuid>` 写进 dsh 0.2，dsh-tui `--resume` 直接报 “stored log is unreadable or corrupt”；群聊只看到“原生进程已退出（1）”。现在 `session.create` 使用裸 UUID，并在启动旧联系人时新建会话、写回 ID；`openSession` 对旧 ID 返回可读的 `NATIVE_SESSION_LEGACY`，不再盲目 resume。
+- 修复第二个根因：群聊投递、停止、Fork 和空闲观察原来只看“是否安装 dsh-tui”，把网页传输的 dsh 联系人误判成 PTY，报“会话尚未启动或已经退出”。`dshWebTransport` 改为按联系人的 `executionTransport === 'web'` 判断，纯函数放在 `shared/execution.ts` 并有单测。
+- 修复 dsh Auto 假能力：0.2 原生权限目录没有 `auto`，此前创建 Auto 成员会在 `permissionPresets` 处失败并留下坏状态。现在能力报告为 false、创建接口拒绝 dsh Auto、启动时把历史 Auto 联系人归一为原生默认并在状态里说明；删除 `server/dsh-auto.ts` 启动覆盖层与 `DshBridge.setAutoMode`。
+- dsh-tui 非零退出时，状态详情会带上原生输出的最后一条可操作错误（去掉 ANSI），不再只有退出码，便于群聊和联系人卡片直接看到原因。
+- 三问自查：`dshWebTransport` 和 Auto 归一都是通用契约，不引入 Codex/Claude 分支；三个后端的 Auto 能力都按原生报告，dsh 明确不支持而不是假装可用；会话 ID、传输方式、Auto 状态都有原生创建/启动/权限目录依据，失败时保留原始错误与可读原因。
+- 验证：`npm run check` 通过；`npm test` 415 项、407 通过、4 跳过、4 个既有 Codex fixture 失败（无新增）；真实实例把群成员「开发3」从 `session-0a83ac60-…` 修复为裸 UUID `ea3d9d82-…`，`POST /start {mode:'chat'}` 返回 `executionTransport: web`；对群聊发送验证任务后，成员在群内回复（消息序号 290）：「开发3 已恢复，可以继续接任务。」

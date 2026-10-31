@@ -123,10 +123,7 @@ try {
   }
   await rpc('session.rename', { sessionId: source.nativeSessionId, title: 'Pinned fixture source' });
   await rpc('session.selectModel', { sessionId: source.nativeSessionId, provider: 'deepseek-official', model: modern ? 'deepseek-flash' : 'deepseek-v4-flash', reasoningEffort: 'off' });
-  // Auto availability depends on the native review plugin, not the transport.
-  await bridge.setAutoMode(source.nativeSessionId).catch(error => {
-    assert.match(String(error), /unknown preset \"auto\"/);
-  });
+  // dsh 0.2 has no native `auto` preset, so Dili does not offer Auto here.
   const store = new Store(':memory:');
   const group = store.addGroup('Native fixture group', '');
   const member = store.addSession({ backend: 'dsh', title: 'Native member', cwd: workspace, groupId: group.id, nativeSessionId: source.nativeSessionId });

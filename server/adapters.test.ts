@@ -7,8 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { runInNewContext } from 'node:vm';
-import { dshAutoPlugin } from './dsh-auto.ts';
-import { buildLaunch, discoverSessions, dshChatCapable, resolveNativeSessionId, validateNativeId } from './adapters.js';
+import { buildLaunch, discoverSessions, dshChatCapable, isCurrentDshId, isLegacyDshId, resolveNativeSessionId, validateNativeId } from './adapters.js';
 import { zstdCompressSync } from 'node:zlib';
 import { DshBridge, dshDeepLinkClient } from './dsh.js';
 import type { Session } from '../shared/types.js';
@@ -77,7 +76,7 @@ test('Claude permission modes come from the installed CLI and launch args are sh
   assert.ok(!plain.includes('--permission-mode') && !plain.includes('--model') && !plain.includes('--allow-dangerously-skip-permissions'));
 });
 
-test('Auto launch keeps native defaults intact and opts in per contact for Claude, Codex and Harness', async t => {
+test('Auto launch opts in per contact for Claude and Codex and never injects a dsh overlay', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'dili-auto-launch-'));
   const names = ['SESSIONDECK_CLAUDE_BIN', 'SESSIONDECK_CODEX_BIN', 'SESSIONDECK_DSH_TUI_BIN'];
   const saved = names.map(name => process.env[name]);
@@ -88,24 +87,15 @@ test('Auto launch keeps native defaults intact and opts in per contact for Claud
     const launch = await buildLaunch(contact, directory);
     if (backend === 'claude') assert.deepEqual(launch.args.slice(0, 2), ['--permission-mode', 'auto']);
     if (backend === 'codex') { assert.ok(launch.args.includes('--approve-for-me')); assert.ok(!launch.args.includes('--dangerously-bypass-approvals-and-sandbox')); }
-    if (backend === 'dsh') { assert.equal(launch.args[0], '--patch'); assert.match(launch.env!.NODE_OPTIONS!, /--import/); }
+    // dsh 0.2 has no native `auto` preset, so an Auto contact gets native
+    // defaults instead of a permission overlay that would fail at runtime.
+    if (backend === 'dsh') { assert.ok(!launch.args.includes('--patch')); assert.equal(launch.env, undefined); }
     const normal = await buildLaunch({ ...contact, executionMode: 'default' }, directory);
     assert.ok(!normal.args.includes('--permission-mode')); assert.ok(!normal.args.includes('--approve-for-me')); assert.ok(!normal.args.includes('--patch'));
     const resumed = await buildLaunch({ ...contact, nativeSessionId: randomUUID() }, directory);
     assert.ok(resumed.args.includes('--resume') || resumed.args.includes('resume'));
   }
-  // Native preset changes are scoped to the intended main session, never subagents.
-  const target = randomUUID(); let listener: (input: { agent: { id: string; session: object } }) => void = () => {};
-  const changed: object[] = [];
-  const ctx = { inject: (_: string[], apply: (ctx: unknown) => void) => apply(ctx), on: (_: string, apply: typeof listener) => { listener = apply; }, permissionPresets: { set: (session: object, mode: string) => { assert.equal(mode, 'auto'); changed.push(session); } } };
-  Object.assign(ctx, { get: () => ctx.permissionPresets });
-  runInNewContext(dshAutoPlugin(target).replace('export default ', '') + '\ndiliAuto(ctx);', { ctx });
-  listener({ agent: { id: randomUUID(), session: {} } });
-  const session = {}; listener({ agent: { id: target, session } }); listener({ agent: { id: target, session } });
-  assert.deepEqual(changed, [session]);
-  Object.assign(ctx, { get: () => undefined });
-  runInNewContext(dshAutoPlugin(target).replace('export default ', '') + '\ndiliAuto(ctx);', { ctx });
-  assert.throws(() => listener({ agent: { id: target, session: {} } }), /原生 Auto 权限服务未安装/);
+  assert.equal(dshChatCapable('0.2.0-rc.2'), true);
 });
 
 test('discovery tolerates millisecond-only creation metadata and invalid native timestamps', async () => {
@@ -176,9 +166,6 @@ test('DSH native API uses precise identity and refuses fork cwd mismatch', async
     await assert.rejects(bridge.forkSession(id,'/different'),/工作目录/);
     assert.ok(!calls.some(call=>call.method==='session.fork'));
     assert.equal((await bridge.forkSession(id,'/tmp')).nativeSessionId,child);
-    await bridge.setAutoMode(id);
-    assert.equal(calls.at(-1)?.method,'commands.execute');
-    assert.deepEqual(calls.at(-1)?.payload,{agentId:id,line:'/permission auto',submittedAttachments:[]});
     await bridge.prompt(id,'group handoff');
     assert.deepEqual(calls.at(-1)?.payload,{sessionId:id,mode:'queue',content:[{type:'text',text:'group handoff'}]});
     await bridge.stopSession(id);assert.equal(calls.at(-1)?.method,'session.cancel');
@@ -380,4 +367,16 @@ test('dsh graphical chat is gated to the 0.2 Direct RPC protocol', () => {
   assert.equal(dshChatCapable('0.1.9'), false);
   assert.equal(dshChatCapable('unknown'), false);
   assert.equal(dshChatCapable(null), false);
+});
+
+test('dsh 0.2 sessions are created with bare UUIDs and 0.1 ids stay distinguishable', async () => {
+  const bare = randomUUID(), legacy = `session-${bare}`;
+  assert.equal(isCurrentDshId(bare), true);
+  assert.equal(isLegacyDshId(bare), false);
+  assert.equal(isLegacyDshId(legacy), true);
+  assert.equal(isCurrentDshId(legacy), false);
+  // Both forms pass validation for reading old contacts, but only the bare
+  // uuid may be handed to dsh-tui --resume on 0.2.
+  assert.equal(validateNativeId('dsh', bare), bare);
+  assert.equal(validateNativeId('dsh', legacy), legacy);
 });

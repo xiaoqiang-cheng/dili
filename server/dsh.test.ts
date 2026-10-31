@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import test, { type TestContext } from 'node:test';
 import { DshBridge } from './dsh.ts';
+import { isCurrentDshId } from './adapters.ts';
 import { DeliveryNotAcceptedError } from './delivery.ts';
 
 async function freePort() {
@@ -64,6 +65,15 @@ const server = http.createServer(async (request, response) => {
     const direct = method === 'userQuestions/answer', remoteResult = method === '$events/result';
     if (!request.url.endsWith(method) || method.includes('.') || !input.payload.args || (method === 'session/list' ? !input.payload.args._request : method === 'commands/execute' ? input.payload.args.agentId !== id : direct ? input.payload.args.agentId !== id || !input.payload.args.callId : remoteResult ? !input.payload.args.eventId : !input.payload.args.request)) { response.writeHead(400); response.end(); return; }
     if (method === 'session/prompt' && !input.payload.args.request.requestId) { response.writeHead(400); response.end(); return; }
+    // dsh 0.2 takes the requested id as a direct argument, not inside a request.
+    if (method === 'session/create') {
+      const requested = input.payload.args.request?.sessionId;
+      if (typeof requested !== 'string') { response.writeHead(400); response.end(); return; }
+      fs.appendFileSync(${JSON.stringify(join(dir, 'native-create'))}, requested + String.fromCharCode(10));
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ type: 'server-response', rpcId: input.rpcId, result: { ok: true, value: { sessionId: requested } } }));
+      return;
+    }
     if (direct) fs.appendFileSync(${JSON.stringify(join(dir, 'native-answers'))}, JSON.stringify(input.payload.args) + '\\n');
     if (remoteResult) fs.appendFileSync(${JSON.stringify(join(dir, 'native-remote-answers'))}, JSON.stringify(input.payload.args) + '\\n');
     if (!remoteResult) input.method = method.replace('/','.');
@@ -395,6 +405,21 @@ test('dsh close waits for invocation files after the native process exits on its
   assert.equal((await readdir(directory)).filter(name => name.startsWith('dsh-launch-')).length, 0);
 });
 
+test('dsh creates 0.2 sessions with a bare UUID and reports a legacy 0.1 id instead of resuming it', { timeout: 15_000 }, async t => {
+  const { bridge, directory } = await fixture(t, { modern: true });
+  await bridge.start();
+  const created = await bridge.createSession(directory);
+  assert.equal(isCurrentDshId(created.nativeSessionId), true, 'session.create must not mint a session- prefixed id on dsh 0.2');
+  assert.equal((await readFile(join(directory, 'native-create'), 'utf8')).trim(), created.nativeSessionId, 'the native create call must carry the same bare uuid');
+  const legacy = `session-${randomUUID()}`;
+  await assert.rejects(bridge.openSession(legacy), (error: Error & { code?: string }) => {
+    assert.equal(error.code, 'NATIVE_SESSION_LEGACY');
+    assert.match(error.message, /重建/);
+    return true;
+  });
+  await bridge.close();
+});
+
 test('slow successful readiness probes share one deadline and cannot create a native session after it expires', { timeout: 5000 }, async t => {
   const { bridge, directory } = await fixture(t, { probeDelayMs: 350, startupTimeoutMs: 650 });
   const started = Date.now();
@@ -457,7 +482,6 @@ test('dsh 0.2 authenticates RPC and read-only mux, tracks approvals/questions an
   await bridge.start();
   await configure({running:true,history:[{type:'turn/start',seq:0,data:{}}]});
   await waitStatus('running');
-  await bridge.setAutoMode(id);
   await bridge.prompt(id,'fixture task');
   const event=async (value:Record<string,unknown>)=>configure({modernFrame:{value:{type:'event',event:value}}});
   await event({type:'approval/asked',seq:1,data:{id:'permission'}});

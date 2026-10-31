@@ -17,7 +17,7 @@ import { VOICE_MAX_FRAME } from '../shared/voice.ts';
 import { ScratchpadStore } from './scratchpad.ts';
 import { Terminals, type LaunchCommand } from './terminal.ts';
 import { ShellTerminals } from './shell-terminals.ts';
-import { executionMode } from '../shared/execution.ts';
+import { dshWebTransport, executionMode } from '../shared/execution.ts';
 import { AgentSetup } from './agent-setup.ts';
 import { StartupService } from './startup.ts';
 import { allowedRemoteRequest, allowedRequest, readCookie, validToken } from './security.ts';
@@ -34,7 +34,7 @@ import { remoteBase, remoteHtml, remoteManifest } from './remote-base.ts';
 import { caddyConfig, DEFAULT_REMOTE, normalizeRemote, SecretBox, secretKey, Tunnel } from './remote.ts';
 import type { AuthStatus, RemoteSettings, RemoteStatus, ShareMode } from '../shared/auth.ts';
 import { demoBackends, seedDemo, demoCommand } from './demo.ts';
-import { getBackendInfo, buildLaunch, discoverSessions, resolveNativeSessionId, validateNativeId, findExecutable, effectiveClaudeSettings } from './adapters.ts';
+import { getBackendInfo, buildLaunch, discoverSessions, resolveNativeSessionId, validateNativeId, findExecutable, effectiveClaudeSettings, isLegacyDshId } from './adapters.ts';
 import { DshBridge } from './dsh.ts';
 import { DshChatAdapter } from './agents/dsh-chat.ts';
 import { submitDshInject } from './dsh-inject.ts';
@@ -282,7 +282,12 @@ function info(id: Backend) { return backends.find(b => b.id === id)!; }
 /** DeepSeek Harness runs in a PTY like Claude/Codex when dsh-tui is installed; otherwise through its native Web UI.
  * SESSIONDECK_DSH_PREFER_WEB=1 forces the Web bridge even when dsh-tui is on PATH — needed when the TUI
  * mounts but cannot accept prompts (version skew / GenUI focus), which otherwise breaks share send. */
-const dshWeb = (item: Pick<Session, 'backend'>) => item.backend === 'dsh' && !demo && (!info('dsh').capabilities.terminal || process.env.SESSIONDECK_DSH_PREFER_WEB === '1');
+// A dsh contact can be attached through the native Web session (structured chat)
+// or through dsh-tui. The transport is per contact; the installed TUI must not
+// force every dsh contact onto the terminal delivery path. PREFER_WEB keeps the
+// documented escape hatch for a TUI that mounts but cannot accept prompts.
+const dshWeb = (item: Pick<Session, 'backend' | 'executionTransport'>) => !demo
+  && (dshWebTransport(item) || (item.backend === 'dsh' && process.env.SESSIONDECK_DSH_PREFER_WEB === '1'));
 function status(id: string, patch: Partial<Session>, activity?: string) {
   if (closing) return;
   const old = session(id);
@@ -997,7 +1002,9 @@ app.post('/api/sessions', async (req, res) => {
   const targetGroup = groupId(req.body.groupId);
   const title = text(req.body.title, '名称');
   const placed = await memberPlacement(targetGroup, req.body.placement, title, req.body.cwd ? directory(req.body.cwd) : undefined);
-  const item = store.addSession({ backend: id, title, cwd: placed.cwd, ...(placed.worktree ? { worktree: placed.worktree } : {}), groupId: targetGroup, executionMode: executionMode(req.body.executionMode), ...(nativeSettings ? { nativeSettings } : {}) });
+  const wantedMode = executionMode(req.body.executionMode);
+  if (id === 'dsh' && wantedMode === 'auto') fail('DeepSeek Harness 没有原生 Auto 权限预设，请使用原生默认权限');
+  const item = store.addSession({ backend: id, title, cwd: placed.cwd, ...(placed.worktree ? { worktree: placed.worktree } : {}), groupId: targetGroup, executionMode: wantedMode, ...(nativeSettings ? { nativeSettings } : {}) });
   store.activity(item.id, 'create', `创建了 ${item.title}`); broadcast();
   if (item.groupId) await briefNewMember(item, req.body.briefing);
   res.status(201).json(session(item.id));
@@ -1126,6 +1133,15 @@ app.post('/api/sessions/:id/handoff', async (req, res) => {
 /** Starts or switches a contact's executor; shared by the HTTP route and group @-delivery. */
 async function startSession(id: string, body: { mode?: unknown; restart?: unknown; handoff?: unknown } = {}): Promise<Session> {
   let item = session(id);
+  // Older releases advertised a native dsh Auto preset that 0.2 does not
+  // ship. Normalize such contacts once instead of stranding them on every start.
+  let dshAutoNote = '';
+  if (item.backend === 'dsh' && item.executionMode === 'auto') {
+    store.updateSession(item.id, { executionMode: 'default' });
+    item = session(item.id);
+    dshAutoNote = 'DeepSeek Harness 没有原生 Auto 权限预设；已按原生默认权限启动';
+    store.activity(item.id, 'start', dshAutoNote);
+  }
   const requested = body.mode ?? 'terminal';
   if (requested !== 'terminal' && requested !== 'chat') fail('未知会话交互方式');
   const mode = requested as 'terminal' | 'chat';
@@ -1178,18 +1194,23 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
       if (starting.has(item.id)) fail('会话正在连接，请稍后重试', 409);
       if (!item.nativeSessionId) fail('DeepSeek Harness 会话标识尚未就绪', 409);
       const nativeSessionId = item.nativeSessionId;
+      // A dsh 0.1 `session-<uuid>` id cannot be resumed by dsh 0.2. Replacing the
+      // dead id keeps the contact and its settings while giving it a live session.
+      const replaceLegacy = isLegacyDshId(nativeSessionId);
       // dsh-tui owns the session writer. Reading through the web bridge is
       // safe, but sending/settings would be rejected with session/writer-held.
-      if (item.executionTransport !== 'web') {
-        if (body.handoff !== true) fail('接管图形对话会退出当前 dsh-tui，并从同一份已保存会话恢复；需要确认交接', 409);
+      if (replaceLegacy || item.executionTransport !== 'web') {
+        if (!replaceLegacy && body.handoff !== true) fail('接管图形对话会退出当前 dsh-tui，并从同一份已保存会话恢复；需要确认交接', 409);
         if (item.status === 'running' || item.status === 'waiting_approval') fail('请先等待当前 dsh-tui 任务结束，再接管图形对话', 409);
         // dsh-tui may not report a hook transition while idle. Read the native
         // observer before killing it so an active turn is never silently lost.
         if (!dsh.readyState) await dsh.start();
         const nativeStatus = await dsh.getStatus(nativeSessionId);
         if (nativeStatus.status === 'running') fail('请先等待当前 dsh-tui 任务结束，再接管图形对话', 409);
-        const pending = dsh.pendingRequests(nativeSessionId);
-        if (pending.questions.length || pending.approvals.length) fail('请先处理原生待回答问题或审批，再接管图形对话', 409);
+        if (!replaceLegacy) {
+          const pending = dsh.pendingRequests(nativeSessionId);
+          if (pending.questions.length || pending.approvals.length) fail('请先处理原生待回答问题或审批，再接管图形对话', 409);
+        }
         starting.add(item.id); stopping.add(item.id);
         try {
           await terminals.stop(item.id);
@@ -1199,8 +1220,13 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
         } finally { starting.delete(item.id); stopping.delete(item.id); }
       }
       if (!dsh.readyState) await dsh.start();
-      const native = await dsh.openSession(nativeSessionId);
-      status(item.id, { ...native, running: true, interactionMode: 'chat', executionTransport: 'web', status: 'idle', statusSource: 'native', statusDetail: 'DeepSeek Harness 图形对话已就绪；输入现在归网页会话所有' });
+      const native = replaceLegacy ? await dsh.createSession(item.cwd, item.title) : await dsh.openSession(nativeSessionId);
+      if (replaceLegacy) {
+        // Never carry two contacts on one native writer.
+        if (store.sessions().some(other => other.backend === 'dsh' && other.id !== item.id && other.nativeSessionId === native.nativeSessionId)) fail('新建的 DeepSeek Harness 会话与其他联系人冲突，请重新尝试', 409);
+        store.updateSession(item.id, { nativeSessionId: native.nativeSessionId, forkPending: false });
+      }
+      status(item.id, { ...native, nativeSessionId: native.nativeSessionId, forkPending: false, running: true, interactionMode: 'chat', executionTransport: 'web', status: 'idle', statusSource: 'native', statusDetail: [replaceLegacy ? '已把 dsh 0.1 的旧会话 ID 替换为新的原生会话；图形对话已就绪' : 'DeepSeek Harness 图形对话已就绪；输入现在归网页会话所有', dshAutoNote].filter(Boolean).join('；') });
       broadcast(); return session(item.id);
     }
     // The terminal view is a client-side attachment to the same native session;
@@ -1219,11 +1245,11 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
   expectedNativeIds.delete(item.id);
   try {
     if (dshWeb(item) || (item.backend === 'dsh' && mode === 'chat')) {
-      const native = item.nativeSessionId ? await dsh.openSession(item.nativeSessionId) : await dsh.createSession(item.cwd, item.title);
+      const legacy = !!item.nativeSessionId && isLegacyDshId(item.nativeSessionId);
+      const native = item.nativeSessionId && !legacy ? await dsh.openSession(item.nativeSessionId) : await dsh.createSession(item.cwd, item.title);
       // Keep the identity even if the native permission command is unavailable.
       status(item.id, { ...native, forkPending: false });
-      if (item.executionMode === 'auto') await dsh.setAutoMode(native.nativeSessionId);
-      status(item.id, { ...native, running: true, interactionMode: mode, executionTransport: 'web', status: 'idle', statusSource: 'native', statusDetail: mode === 'chat' ? 'DeepSeek Harness 图形对话已就绪' : '原生 Web 会话已就绪', forkPending: false, lastActivity: new Date().toISOString() });
+      status(item.id, { ...native, running: true, interactionMode: mode, executionTransport: 'web', status: 'idle', statusSource: 'native', statusDetail: [mode === 'chat' ? 'DeepSeek Harness 图形对话已就绪' : '原生 Web 会话已就绪', dshAutoNote].filter(Boolean).join('；'), forkPending: false, lastActivity: new Date().toISOString() });
     } else if (item.backend === 'codex' && !demo && info('codex').capabilities.nativeControl) {
         const bridge = await ensureCodexBridge();
         const executable = await findExecutable('codex');
@@ -1322,7 +1348,7 @@ async function stopSession(id: string, afterStop?: () => Session): Promise<Sessi
     }
     status(item.id, { status: 'unknown', statusSource: 'process', statusDetail: '正在停止，等待原生任务和进程退出' });
     broadcast();
-    if (dshWeb(item) || (item.backend === 'dsh' && item.executionTransport === 'web')) {
+    if (dshWeb(item)) {
       if (item.nativeSessionId) await dsh.stopSession(item.nativeSessionId);
       launchIds.delete(item.id);
       status(item.id, { running: false, nativeUrl: null, status: 'stopped', statusSource: 'native', statusDetail: '已取消当前原生任务，可重新进入会话' });
@@ -1571,6 +1597,14 @@ terminals.on('input', (id: string, data: string) => {
   // Keep authoritative approval/execution state until the backend changes it.
   if (session(id).statusSource !== 'native' && session(id).status !== 'unknown') status(id, { status: 'unknown', statusSource: 'process', statusDetail: '已发送输入，等待后端状态', lastActivity: new Date().toISOString() });
 });
+/** The last actionable line dsh-tui printed before exiting, or an empty string. */
+function dshExitReason(output: string): string {
+  const lines = output.split(/\r?\n/).map(line => line.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').trim()).filter(Boolean);
+  // The first actionable line carries the real reason; later lines are generic
+  // "profile exited / try safe mode" hints and must not replace it.
+  const candidate = lines.find(line => /failed|cannot|error|denied|占用|失败|无法/.test(line) && !/可运行 dsh-tui safe|异常退出（码|profile 已退出/.test(line));
+  return (candidate ?? '').slice(0, 300);
+}
 terminals.on('exit', (id: string, exitCode: number) => {
   // A viewer attached to a graphical executor does not own that executor.
   if (codexViewerTerminals.delete(id) && codexRuns.has(id) && !stopping.has(id)) {
@@ -1592,7 +1626,10 @@ terminals.on('exit', (id: string, exitCode: number) => {
       if (!closing) status(id, { status: 'error', statusSource: 'native', statusDetail: `终端已退出，无法确认任务取消：${error instanceof Error ? error.message : '连接异常'}` });
     }).finally(() => { void releaseCodexNative(nativeRun.nativeId).finally(() => { stopping.delete(id); }); });
   }
-  status(id, { running: false, status: exitCode === 0 ? 'stopped' : 'error', statusSource: 'process', statusDetail: `原生进程已退出（${exitCode}）` }, '会话进程已退出');
+  // dsh-tui prints its reason (bad resume id, occupied session, missing
+  // credential) before exiting. Prefer that native line over a bare exit code.
+  const failure = exitCode !== 0 && session(id).backend === 'dsh' ? dshExitReason(terminals.buffer(id)) : '';
+  status(id, { running: false, status: exitCode === 0 ? 'stopped' : 'error', statusSource: 'process', statusDetail: failure ? `原生进程已退出（${exitCode}）：${failure}` : `原生进程已退出（${exitCode}）` }, '会话进程已退出');
   terminalEvent(id, { type: 'exit', exitCode });
 });
 shells.on('data', (id: string, data: string) => terminalEvent(id, { type: 'data', data }, 'shellId'));
