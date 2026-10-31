@@ -1,6 +1,6 @@
 # 开发与验证
 
-更新日期：2026-10-23。首次运行见[安装指南](installation.md)，当前功能约定见[产品规格](product-spec.md)。仓库内开发以 [AGENTS.md](../AGENTS.md) 为准。
+更新日期：2026-10-31。首次运行见[安装指南](installation.md)，当前功能约定见[产品规格](product-spec.md)。仓库内开发以 [AGENTS.md](../AGENTS.md) 为准。
 
 ## 保护活动实例
 
@@ -27,11 +27,18 @@ npm run verify
 
 `doctor` 检查 Node、PTY、目录权限与原生命令，不检查登录凭据或调用模型；`verify` 依次运行类型检查、后端测试和浏览器验收，前端生产构建由浏览器验收在独立目录完成。
 
-浏览器验收使用独立端口、临时演示数据和临时前端构建目录，不复用或停止正在使用的服务，也不安装项目依赖。它会自行完成生产构建，无需提前执行 `npm run build`。首次需要安装 Chromium：
+浏览器验收使用独立端口、临时演示数据和临时前端构建目录，不复用或停止正在使用的服务，也不安装项目依赖。它会自行完成生产构建，无需提前执行 `npm run build`。工作台回归首次需要安装 Chromium：
 
 ```sh
 npx playwright install chromium
 npm run test:web
+```
+
+PWA 机器入口检查另有 iPhone WebKit 项目，需要同时安装 WebKit：
+
+```sh
+npx playwright install chromium webkit
+npm run test:pwa
 ```
 
 默认测试端口为 `4337`；若被占用，可使用 `SESSIONDECK_TEST_PORT=4339 npm run test:web`。测试拒绝使用正式服务默认端口 `4317`。
@@ -100,6 +107,6 @@ Codex app-server 只监听本机并使用随机访问令牌。令牌文件仅当
 
 CI 将类型/单测、浏览器回归、PWA 安装检查和打包烟测拆成并行 job；失败时分别上传 `unit.log`、`artifacts/playwright/`、`artifacts/pwa/` 与打包日志，避免串行失败时只剩最后一段输出。
 
-当前 CI 配置为 Node.js 24、Linux 和 Chromium，不是 macOS / Windows 的发行保证。测试数据、协议 fixture、真实 CLI + loopback provider、真实云端账号、实际部署验收是不同的证据；每次在 WORKLOG 写清版本、命令、范围与未验证项，不把历史测试数量复制为当前承诺。
+当前 CI 配置为 Node.js 24、Linux；工作台回归使用 Chromium，打包烟测不启动浏览器，PWA 入口另在 Chromium 与 iPhone WebKit 设备描述下运行。它不是 macOS / Windows 的发行保证。测试数据、协议 fixture、真实 CLI + loopback provider、真实云端账号、实际部署验收是不同的证据；每次在 WORKLOG 写清版本、命令、范围与未验证项，不把历史测试数量复制为当前承诺。
 
 发布制品、版本一致性及云端发布授权要求见[发布清单](releasing.md)。本地开发、测试、提交不授权 push、创建 tag 或其他云端操作。

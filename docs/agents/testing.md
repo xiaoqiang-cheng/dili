@@ -15,6 +15,7 @@
 
 - 浏览器验收自动使用临时 `SESSIONDECK_DATA_DIR`、`SESSIONDECK_CLIENT_DIR` 和测试端口（默认 4337），拒绝复用活动实例。
 - `npm run test:web` 会先构建到临时目录；不要为了测试去覆盖正在服务的 `dist/client`。
+- PWA 安装检查 `npm run test:pwa` 使用 Chromium 与 iPhone WebKit 项目，产物在 `artifacts/pwa/`；它独立于 `test:web`，需要 `npx playwright install chromium webkit`。
 - 原生烟测使用临时配置目录；Claude/Codex 的隔离工作流还要求 `unshare` 与可用用户命名空间。
 - 只清理本轮启动且身份可确认的进程；不要按端口杀进程。
 

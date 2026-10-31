@@ -599,3 +599,15 @@
 - 验证：`npm run check` 通过；`npm test` 共 405 项（397 通过、4 跳过、4 失败）。4 项 Codex fixture 失败均为 `/start` 返回“正在停止”或“Unknown fixture thread”，已在未改动的 HEAD 工作树复现，属预存在环境／夹具问题；新增路由断言后 `server/api.test.ts` 11 项通过。浏览器全量 243 项通过（Chromium，隔离 4337 演示实例），新增移动端 3 项通过；本轮同时修正了 4 个与当前实现不一致的旧浏览器断言（后行断言定位、群成员提示音夹具选择、异步群发送成功提示、SSE open 不再重复刷新后的快照竞态）。
 - 本机 Chromium 缺少 `libnspr4/libnss3/libasound`，测试时把对应 deb 解包到 `/tmp` 并用 `LD_LIBRARY_PATH` 运行，未修改系统或仓库依赖。
 - 正式服务 PID 311635（端口 4317）保持运行，未重启。为避免新前端调用尚不存在的后端路由，`dist/client` 已重新构建回与当前后端匹配的版本；后端新路由、SSE 补发和闲置休眠需从独立终端安全重启后生效，再执行 `npm run build` 发布新前端。已在本地提交，未 push、tag 或其他云端操作。
+
+## 2026-10-31：文档漂移审计（代码优先）
+
+- 起因：上一轮只读 TODO 就给出优先级，漏掉了已经落地的多机入口和群组工作树。本轮逐项对照代码、路由和测试再改文档，不把旧状态表当成事实。
+- 04 多机接入：`client/MachineHome.tsx`、`MachineSwitcher.tsx`、`machine-store.ts` 与 0.5.0 发布记录已经提供机器列表、验证、切换、扫码和邀请码转远程；当前是整页切换，不是统一聚合工作台。README 与 TODO 原写“仍在规划／待排期”，已改为“机器列表与整页切换基础版已完成；统一工作台待排期”，并拆出已完成项。
+- 13 工作树：群成员工作树已在 `server/worktrees.ts` 与群成员创建／Fork 流程实现；个人 Fork 弹窗只提供目录，`/fork` 的 worktree placement 要求群工作区。TODO 状态改为“群组工作树已完成；个人 Fork 待排期”。
+- 03 诊断：`GET /api/debug`、`client/DebugPanel.tsx` 和 owner-only 访问测试已落地；新增本地只读诊断与 SSE 补发的已完成项，但域名／证书／代理／远程链路仍是未完成项。
+- 其他修正：README 区分个人 Fork 与群工作树；`docs/pwa.md` 删除“没有顶部机器导航栏”的旧说法，改为 0.5.3 的紧凑切换条；`docs/installation.md` 示例版本 0.5.2→0.5.3；`docs/development.md` 区分工作台 Chromium 与 PWA WebKit；产品规格补充用量、导出、诊断、渲染上限、闲置休眠和 11.2 多机器入口；`AGENTS.md` 修正 dsh 用量措辞与 CI 浏览器说明；release notes 增加未发布条目。
+- 代码侧发现：PWA 测试 `playwright.pwa.config.ts` 的 iPhone 13 项目是 WebKit，而 CI 拆分后 `pwa` job 只安装 Chromium，实际会缺浏览器。已改为安装 `chromium webkit`；工作台 e2e 仍只用 Chromium。
+- 验证：`npm run check` 通过；`npx playwright test --config playwright.pwa.config.ts --list` 列出 48 项（含 iphone 项目）；31 份 Markdown 的相对链接按 git 跟踪路径核对无断链；CI YAML 解析通过。`npm test` 仍为 405 项、397 通过、4 跳过、4 个既有 Codex fixture 失败，失败点与提交前相同，未把既有失败说成本轮回归。
+- 未验证：`npm run test:pwa` 未在本机执行（缺少 WebKit 系统库），CI 修复需云端跑一次确认；真机 iPhone／Android、Harness 审批、远程域名／证书／隧道与云流水线仍未验收。
+- 仅本地提交，不 push、不 tag。

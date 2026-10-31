@@ -10,7 +10,7 @@
 
 ## 验证与版本管理
 
-- `npm run check` 做类型检查，`npm test` 验证服务端、共享层、客户端与脚本的纯逻辑，`npm run test:web` 构建并测试隔离的演示实例；`npm run verify` 串行执行三者，CI 则拆成并行 job。
+- `npm run check` 做类型检查，`npm test` 验证服务端、共享层、客户端与脚本的纯逻辑，`npm run test:web` 构建并测试隔离的演示实例；`npm run verify` 串行执行三者，CI 则拆成并行 job。PWA 安装检查单独运行 `npm run test:pwa`，需要 Chromium 与 WebKit。
 - 可以使用 `SESSIONDECK_TEST_PORT` 避开占用的测试端口；默认 Web 端口 `4317` 不能用作浏览器测试端口。
 - 本地开发、测试和提交不构成云端操作授权。未获得针对具体操作的明确授权，不创建、删除、推送或修改云端仓库；也不创建 Git tag。
 
@@ -40,7 +40,7 @@
 | --- | --- | --- | --- |
 | P0 | 客户端与共享层缺纯函数单测 | `shared/`、`client/` | `npm test` 覆盖 `group-prompt`、`state`、`contact-order`、`format`、`markdown-blocks`、`usage`、`export`、`sse-replay`、`idle-sleep`、`access`、`shell-quote`；新增逻辑继续按此约定配测试 |
 | P0 | 安全边界只写在规格里 | `server/security.ts`、`server/access.ts`、`attachments.ts`、`shell-quote.ts` | `security-boundaries.test.ts` 覆盖 shell 引号注入、图片签名/上限；`access.test.ts` 覆盖路由登记、分享权限、local/remote 边界；`security.test.ts` 覆盖 Host/Origin |
-| P0 | 没有 token／上下文／压缩信息 | `server/usage.ts`、`shared/usage.ts`、`client/SessionUsage.tsx` | Claude/Codex 历史汇总显示在会话信息；截断窗口标“最近窗口”；dsh 或旧版本显示“原生未提供”，不估算 |
+| P0 | 没有 token／上下文／压缩信息 | `server/usage.ts`、`shared/usage.ts`、`client/SessionUsage.tsx` | Claude/Codex 历史汇总显示在会话信息；截断窗口标“最近窗口”；dsh 仅在原生记录提供用量字段时显示，否则“原生未提供”，不按字数估算 |
 | P0 | 对话不能导出 | `server/export.ts`、`client/export-session.ts` | `GET /api/sessions/:id/export` 输出转义、无脚本、带 CSP 的独立 HTML；会话信息中可下载 |
 | P1 | WORKLOG 是时间线，不是领域陷阱 | `docs/agents/` | 已建立按领域笔记并在本文档路由 |
 | P1 | 联系人/长对话无渲染上限 | `client/App.tsx`、`ConversationPane.tsx`、`client/Markdown.tsx` | 联系人每页 120 张卡片渐进加载；对话默认渲染最近 200 条并可加载更早；长 Markdown 分块，代码高亮按需加载；隐藏页暂停轮询 |
@@ -50,7 +50,7 @@
 | P2 | 没有统一浏览器基线 | `package.json`、`vite.config.ts`、`scripts/browser-baseline.test.ts` | 已声明 `browserslist` 与 Vite `build.target`，静态扫描禁止 API |
 | P2 | 远程排障只能看日志 | `GET /api/debug`、`client/DebugPanel.tsx` | 只读快照：进程、修订、补发窗口、连接数、终端数、后端版本、数据目录；不返回正文、令牌或密钥 |
 | P2 | 空闲会话长期占进程 | `server/idle-sleep.ts`、`SESSIONDECK_IDLE_SLEEP_MINUTES` | 默认关闭；仅 idle 且超过阈值的运行中会话经既有停止路径休眠，等待输入/审批/异常/Fork 中永不休眠 |
-| P2 | CI 串行且失败无制品 | `.github/workflows/verify.yml` | 拆为 `unit`、`e2e`、`pwa`、`package` 四个并行 job，失败分别上传日志、Playwright 与 PWA 制品 |
+| P2 | CI 串行且失败无制品 | `.github/workflows/verify.yml` | 拆为 `unit`、`e2e`、`pwa`、`package` 四个并行 job；PWA job 安装 Chromium 与 WebKit，工作台回归使用 Chromium；失败分别上传日志、Playwright 与 PWA 制品 |
 
 ## 领域笔记
 
