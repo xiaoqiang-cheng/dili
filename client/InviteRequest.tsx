@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { timeoutSignal } from './timeout-signal';
 
 type Receipt = { id: string; claim: string };
 type Status = { status: 'pending' | 'approved' | 'rejected'; invite?: string; inviteStatus?: string };
@@ -9,7 +10,7 @@ export default function InviteRequest() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   async function call(path: string, body: object) {
-    const response = await fetch(`/connect/api/requests${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
+    const response = await fetch(`/connect/api/requests${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: timeoutSignal(15_000) });
     const result = await response.json(); if (!response.ok) throw new Error(result.error || '申请失败'); return result;
   }
   async function refresh(value: Receipt) { setBusy(true); setError(''); try { setStatus(await call(`/${encodeURIComponent(value.id)}/status`, { claim: value.claim })); } catch (cause) { setError(cause instanceof Error ? cause.message : '查询失败'); } finally { setBusy(false); } }

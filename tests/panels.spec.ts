@@ -231,7 +231,7 @@ test('opening a shell from a contact uses its directory and is immediately inter
 
 test('notification sounds work without system notification permission and respect mute', async ({ page, request }) => {
   const state = await (await request.get('/api/state')).json() as AppState;
-  const session = state.sessions.find(item => !item.archived)!;
+  const session = state.sessions.find(item => !item.archived && !item.groupId)!;
   await page.addInitScript(() => {
     const target = window as unknown as { panelSource: EventTarget; tones: number; resumes: number };
     target.tones = 0; target.resumes = 0;

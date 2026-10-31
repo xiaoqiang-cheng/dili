@@ -19,6 +19,8 @@ type Snapshot = { identity: string; transcript: ConversationTranscript; syncedAt
 type ScrollAnchor = { id: string; offset: number };
 
 const backendName = { claude: 'Claude Code', codex: 'Codex', dsh: 'DeepSeek Harness' };
+/** A long native history mounts progressively; the newest page is the useful one. */
+export const MESSAGE_RENDER_LIMIT = 200;
 
 function messageTime(value?: string) {
   if (!value) return '';
@@ -43,6 +45,8 @@ export default function ConversationPane({ session, onTerminal, onSelection, all
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [compactOutline, setCompactOutline] = useState(false);
   const [selectedInput, setSelectedInput] = useState<string | null>(null);
+  const [renderLimit, setRenderLimit] = useState(MESSAGE_RENDER_LIMIT);
+  const [pendingJump, setPendingJump] = useState<string | null>(null);
   const [highlightedInput, setHighlightedInput] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const followBottom = useRef(true);
@@ -89,12 +93,21 @@ export default function ConversationPane({ session, onTerminal, onSelection, all
   function jumpToInput(id: string) {
     const element = scroller.current;
     const target = [...(element?.querySelectorAll<HTMLElement>('[data-message-id]') ?? [])].find(item => item.dataset.messageId === id);
-    if (!element || !target) return;
+    setSelectedInput(id); setHighlightedInput(id);
+    if (!element) return;
+    if (!target) {
+      // The target is older than the rendered page: widen the window first and
+      // let the pending-jump effect scroll once it has mounted.
+      const index = transcript?.messages.findIndex(message => message.id === id) ?? -1;
+      if (index < 0) return;
+      setRenderLimit(limit => Math.min(transcript!.messages.length, Math.max(limit, transcript!.messages.length - index + 20)));
+      setPendingJump(id);
+      return;
+    }
     followBottom.current = false; anchor.current = null;
     element.scrollTop += (target.getBoundingClientRect().top - element.getBoundingClientRect().top) / interfaceScale() - 12;
     target.focus({ preventScroll: true });
     setAtBottom(element.scrollHeight - element.scrollTop - element.clientHeight < 64);
-    setSelectedInput(id); setHighlightedInput(id);
   }
 
   useEffect(() => {
@@ -106,6 +119,7 @@ export default function ConversationPane({ session, onTerminal, onSelection, all
     const cached = transcriptViews.get(session);
     setSnapshot(cached ? { identity, transcript: cached, syncedAt: new Date() } : null);
     setLoading(true); setRefreshing(false); setError(''); setAtBottom(true);
+    setRenderLimit(MESSAGE_RENDER_LIMIT); setPendingJump(null);
     followBottom.current = true; anchor.current = null;
     selectionCallback.current?.('');
 
@@ -189,7 +203,26 @@ export default function ConversationPane({ session, onTerminal, onSelection, all
   }, []);
 
   const transcript = current?.transcript;
-  const empty = !transcript?.messages.length;
+  const allMessages = transcript?.messages ?? [];
+  const hiddenMessages = Math.max(0, allMessages.length - renderLimit);
+  const renderedMessages = hiddenMessages > 0 ? allMessages.slice(hiddenMessages) : allMessages;
+  const empty = !allMessages.length;
+  useEffect(() => {
+    if (!pendingJump) return;
+    const element = scroller.current;
+    const target = [...(element?.querySelectorAll<HTMLElement>('[data-message-id]') ?? [])].find(item => item.dataset.messageId === pendingJump);
+    if (!target) {
+      // Still outside the window (or the history shrank): stop after the cap.
+      if (renderLimit < allMessages.length) setRenderLimit(limit => Math.min(allMessages.length, limit + MESSAGE_RENDER_LIMIT));
+      else setPendingJump(null);
+      return;
+    }
+    followBottom.current = false; anchor.current = null;
+    element!.scrollTop += (target.getBoundingClientRect().top - element!.getBoundingClientRect().top) / interfaceScale() - 12;
+    target.focus({ preventScroll: true });
+    setAtBottom(element!.scrollHeight - element!.scrollTop - element!.clientHeight < 64);
+    setPendingJump(null);
+  }, [pendingJump, renderLimit, allMessages.length]);
   const isLoading = loading && !current;
   const hasNativeQuestion = transcript?.messages.some(message => message.role === 'assistant' && message.text.includes('**需要你回答的问题**')) ?? false;
   const nativeQuestionPending = ['claude', 'dsh'].includes(session.backend)
@@ -223,7 +256,7 @@ export default function ConversationPane({ session, onTerminal, onSelection, all
         : empty ? <div className="conversation-empty"><MessageSquare size={28} /><h3>{error ? '暂时无法显示对话' : '还没有可显示的对话'}</h3>
           <p>{session.forkPending ? '启动 Fork 后，这里将显示新会话的记录。' : !session.nativeSessionId ? '启动原生会话并发送第一条消息后，记录会显示在这里。' : '原生记录保存后会出现在这里；可刷新记录或进入终端继续。'}</p>
           <button className="button secondary" onClick={onTerminal}><TerminalSquare size={14} />进入原生终端</button></div>
-          : <ol className="chat-messages conversation-messages">{transcript!.messages.map(message => <li key={message.id} data-message-id={message.id} tabIndex={message.role === 'user' ? -1 : undefined} className={`chat-message chat-${message.role} conversation-message from-${message.role}${message.id === highlightedInput ? ' conversation-message-highlighted' : ''}`}>
+          : <ol className="chat-messages conversation-messages">{hiddenMessages > 0 && <li className="chat-history-more"><button type="button" className="button secondary small-button" onClick={() => setRenderLimit(limit => Math.min(allMessages.length, limit + MESSAGE_RENDER_LIMIT))}>显示更早的消息（还有 {hiddenMessages} 条）</button></li>}{renderedMessages.map(message => <li key={message.id} data-message-id={message.id} tabIndex={message.role === 'user' ? -1 : undefined} className={`chat-message chat-${message.role} conversation-message from-${message.role}${message.id === highlightedInput ? ' conversation-message-highlighted' : ''}`}>
             <div className="chat-message-heading conversation-message-meta"><strong>{message.role === 'user' ? '你' : backendName[session.backend]}</strong>{messageTime(message.createdAt) && <time dateTime={message.createdAt}>{messageTime(message.createdAt)}</time>}<MessageCopy text={message.text} /></div>
             <div className="chat-message-body conversation-text">{message.role === 'assistant' ? <Markdown text={message.text} /> : message.text}</div>
           </li>)}

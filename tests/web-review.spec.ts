@@ -23,7 +23,9 @@ test('a message completed after navigation clears its submitted draft and preser
   await expect.poll(() => intercepted).toBe(1);
   await navigate(second.title);
   release();
-  await expect(page.getByRole('status').filter({ hasText: '已记录到群聊' })).toBeVisible();
+  // Success is communicated by the submitted-draft event, not a transient toast;
+  // the navigated-away group must still drop the draft it just posted.
+  await expect.poll(() => page.evaluate(id => sessionStorage.getItem(`sessiondeck.group-draft.${id}`), first.id)).toBeNull();
   await navigate(first.title);
   await expect(page.getByRole('article').getByText('第一条发布成功后应清掉原草稿', { exact: true })).toBeVisible();
   await expect(page.getByLabel('群组消息')).toHaveValue('');

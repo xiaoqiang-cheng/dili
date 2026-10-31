@@ -1,7 +1,8 @@
 import { Archive, Ellipsis, Pin, PinOff, Settings2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { Group, Session } from '../shared/types';
-import { BackendAvatar, relativeTime } from './App';
+import { BackendAvatar } from './App';
+import { relativeTime } from './format';
 import './group-chat.css';
 
 /** WeChat-style group avatar: member avatars tiled 2×2 or 3×3, with a group mark. */
@@ -15,11 +16,6 @@ export function GroupAvatar({ members, small = false }: { members: Session[]; sm
     <span className="group-avatar-mark">群</span>
   </span>;
 }
-
-/** Actionable member reminders affect attention sorting, not the group's message
- * unread count. Reading group replies does not resolve an approval or error. */
-export const memberNeedsAction = (member: Session) => !member.archived && member.unread > 0 && (member.status === 'waiting_approval' || member.status === 'error');
-export const groupNeedsAttention = (group: Group, members: Session[]) => (group.unread ?? 0) > 0 || members.some(memberNeedsAction);
 
 export default function GroupCard({ group, members, active, onOpen, onPin, onEdit, onArchive }: {
   group: Group; members: Session[]; active: boolean; onOpen: () => void; onPin: () => void; onEdit: () => void; onArchive: () => void;

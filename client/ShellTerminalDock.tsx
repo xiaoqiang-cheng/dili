@@ -89,7 +89,7 @@ export default function ShellTerminalDock({ open, sessionId, requestedShellId, o
       finally { if (!cancelled) setLoading(false); }
     };
     void load();
-    const timer = window.setInterval(() => { void load(); }, 3000);
+    const timer = window.setInterval(() => { if (document.visibilityState !== 'hidden') void load(); }, 3000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [open, refresh, createShell, sessionId, requestedShellId, busy, requestFocus]);
   useEffect(() => {

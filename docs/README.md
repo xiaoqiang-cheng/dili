@@ -21,7 +21,8 @@
 | [图形工作台方案](graphical-workbench-architecture.md) | 架构目标、分阶段改造和有日期的实施记录；目标不等于已实现。 |
 | [Claude 图形会话](claude-streaming.md) | stream-json 执行、交接、分页和当前设置能力。 |
 | [统一预览工作区](unified-preview-workspace.md) | 标签、目录与文件并排、草稿和布局恢复约定。 |
-| [本地开发约定](../AGENTS.md) | 活动实例保护、验证与版本管理边界。 |
+| [领域笔记](agents/) | 按区域记录的陷阱与原因：会话、协议、安全、终端、dsh、中继、测试、性能、i18n。 |
+| [本地开发约定](../AGENTS.md) | 活动实例保护、改动前三问、工程约定、已知短板与验证边界。 |
 
 ## 设计与历史记录
 

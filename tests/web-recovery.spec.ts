@@ -345,6 +345,9 @@ test('late snapshots cannot undo live attention, and a restarted service adopts 
   const latest: AppState = { ...initial, revision: 11, sessions: initial.sessions.map(item => item.id === session.id ? { ...item, status: 'waiting_input', statusDetail: '最新结果等你验收', unread: 1 } : item) };
   await deliver(latest);
   await expect(card).toContainText('最新结果等你验收');
+  // Opening the live stream no longer refetches the whole state; trigger the
+  // second response explicitly so the stale snapshot can still race the live one.
+  await page.evaluate(() => { void fetch('/api/state'); void fetch('/api/state'); });
   releaseOld();
   await expect.poll(() => responses).toBeGreaterThanOrEqual(2);
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));

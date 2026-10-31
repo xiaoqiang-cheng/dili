@@ -6,6 +6,7 @@ import AppVersion from './AppVersion';
 import { AUTO_MODE_NOTE, type ExecutionMode } from '../shared/execution';
 import { claudePermissionChoices, claudePermissionLabel } from '../shared/permissions';
 import { DEFAULT_GROUP_PROMPT } from '../shared/group-prompt';
+import { t } from '../shared/i18n';
 import ClaudeTerminalSettings from './ClaudeTerminalSettings';
 import { appUrl } from './urls';
 import { machineHome } from './machine-links';
@@ -16,7 +17,7 @@ import {
   GitFork, Globe2, LoaderCircle, MessageSquare, Pencil, Pin, PinOff, Play, Plus,
   Radio, Search, Settings2, Share2, SlidersHorizontal, Square, UsersRound, X,
   PanelBottomOpen, Volume2, VolumeX, TerminalSquare, Link2, PanelLeftOpen, PanelLeftClose,
-  FilePenLine, Palette, Maximize2, Minimize2, PanelRightOpen,
+  FilePenLine, Palette, Maximize2, Minimize2, PanelRightOpen, Activity, Download,
 } from 'lucide-react';
 import type { AppState, StatePatch, Backend, DiscoveredSession, Group, GroupReadReceipt, GroupMessage, Session, SessionStatus } from '../shared/types';
 import { applyGroupRead, applyPendingGroupReads, applyStatePatch } from './state';
@@ -38,14 +39,19 @@ import VoiceSettings from './VoiceSettings';
 import { AgentSetupControls, StartupSettings } from './SetupSettings';
 import type { AgentSetupInfo } from '../shared/setup';
 import AppearanceDialog from './AppearanceDialog';
+import DebugPanel from './DebugPanel';
+import SessionUsageLine from './SessionUsage';
+import { exportSessionHtml } from './export-session';
 import InterfaceZoom from './InterfaceZoom';
 import BackendLogo from './BackendLogo';
 import { SessionChrome, SessionToolbarHost } from './SessionToolbar';
-import { useContactFilters, useContactSort, type ContactSort } from './preferences';
+import { useContactFilters, useContactSort } from './preferences';
+import { CONTACT_RENDER_STEP, attention, buildContacts, pending, visibleContacts, type ContactSort, type ListMode } from './contact-order';
+import { relativeTime, shortPath } from './format';
 import { readLocalPreference, writeLocalPreference, useDialog } from './ui';
 import ModalShell from './Modal';
 import GroupChat from './GroupChat';
-import GroupCard, { groupNeedsAttention } from './GroupCard';
+import GroupCard from './GroupCard';
 import { SecuritySettings, ShareDialog } from './Sharing';
 import type { AuthStatus } from '../shared/auth';
 
@@ -64,19 +70,7 @@ export const STATUS: Record<SessionStatus, { label: string; className: string }>
 type Modal = { type: 'create'; groupId?: string; backend?: Backend } | { type: 'import' } | { type: 'rename'; session: Session }
   | { type: 'directories'; session: Session } | { type: 'groupDirectories'; group: Group }
   | { type: 'fork'; session: Session; groupId?: string } | { type: 'handoff'; session: Session } | { type: 'group'; group?: Group }
-  | { type: 'replaceDraft'; draft: string; sourceName: string; proceed: () => void } | { type: 'help' } | { type: 'appearance' } | { type: 'shareLink'; session?: Session; group?: Group } | { type: 'addMember'; groupId: string } | { type: 'share'; session: Session; text: string } | null;
-/** The agent is blocked on a person: waiting for input or approval, or failed. */
-export const attention = (s: Session) => s.status === 'waiting_input' || s.status === 'waiting_approval' || s.status === 'error';
-/** Red badge: blocked on a person AND not looked at since. Opening the session clears it. */
-export const pending = (s: Session) => attention(s) && s.unread > 0;
-export const relativeTime = (value: string) => {
-  const minutes = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 60000));
-  if (!Number.isFinite(minutes)) return '—';
-  if (minutes < 1) return '刚刚'; if (minutes < 60) return `${minutes} 分钟前`;
-  if (minutes < 1440) return `${Math.floor(minutes / 60)} 小时前`;
-  return `${Math.floor(minutes / 1440)} 天前`;
-};
-const shortPath = (path: string) => path.replace(/\/$/, '').split('/').filter(Boolean).slice(-2).join('/') || path;
+  | { type: 'replaceDraft'; draft: string; sourceName: string; proceed: () => void } | { type: 'help' } | { type: 'appearance' } | { type: 'debug' } | { type: 'shareLink'; session?: Session; group?: Group } | { type: 'addMember'; groupId: string } | { type: 'share'; session: Session; text: string } | null;
 
 /** Four independent sessions gather around a shared task; colors follow the theme. */
 export function BrandMark({ size = 18 }: { size?: number }) {
@@ -387,7 +381,10 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     // state until it recovers rather than showing stale cards indefinitely.
     let lastEventAt = Date.now();
     const touch = () => { lastEventAt = Date.now(); };
-    stream.onopen = () => { touch(); setConnected(true); setHasConnected(true); setGroupReload((value) => value + 1); void getToken(true).catch(() => {}); void refresh().catch(() => {}); };
+    // Reconnects are served by the server's Last-Event-ID replay (or a full
+    // snapshot when the gap is too large), so an extra fetch here would only
+    // race the stream and make replayed patches stale.
+    stream.onopen = () => { touch(); setConnected(true); setHasConnected(true); setGroupReload((value) => value + 1); void getToken(true).catch(() => {}); };
     stream.onerror = () => setConnected(false);
     stream.addEventListener('ping', touch);
     // Sent by the relay admin from its device list. Stays on screen longer than an
@@ -519,46 +516,14 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   const running = sessions.filter((session) => !session.archived && session.status === 'running');
   const archived = sessions.filter((session) => session.archived);
   // Groups sit in the contact list like IM chats; opening one keeps the list.
-  const listMode = groupId ? 'contacts' : view;
-  const sessionsVisible = sessions.filter((session) => {
-    if (listMode === 'archive' ? !session.archived : listMode === 'attention' ? session.archived || !pending(session) : listMode === 'running' ? session.archived || session.status !== 'running' : session.archived || !!session.groupId) return false;
-    return (backendFilter === 'all' || session.backend === backendFilter)
-      && (statusFilter === 'all' || (statusFilter === 'attention' ? attention(session) : statusFilter === 'unread' ? session.unread > 0 : session.status === statusFilter))
-      && `${session.title} ${session.cwd} ${session.lastUserInput || ''} ${BACKEND[session.backend].name}`.toLowerCase().includes(query.trim().toLowerCase());
-  });
-  const membersOf = (id: string) => sessions.filter((session) => session.groupId === id);
-  const groupsVisible = (listMode === 'contacts' || listMode === 'attention' || listMode === 'archive') && ['all', 'attention', 'unread'].includes(statusFilter) ? (state?.groups ?? []).filter((group) => {
-    if (listMode === 'archive' ? !group.archived : group.archived) return false;
-    const members = membersOf(group.id);
-    if ((listMode === 'attention' || statusFilter !== 'all') && !groupNeedsAttention(group, members)) return false;
-    if (backendFilter !== 'all' && !members.some((member) => member.backend === backendFilter)) return false;
-    return `${group.title} ${group.goal} ${members.map((member) => member.title).join(' ')}`.toLowerCase().includes(query.trim().toLowerCase());
-  }) : [];
-  type ListEntry = { kind: 'session'; id: string; session: Session } | { kind: 'group'; id: string; group: Group; members: Session[] };
-  const visible: ListEntry[] = [
-    ...sessionsVisible.map((session) => ({ kind: 'session' as const, id: session.id, session })),
-    ...groupsVisible.map((group) => ({ kind: 'group' as const, id: group.id, group, members: membersOf(group.id) })),
-  ].sort((a, b) => {
-    // Each entry belongs to exactly one tier; an attached idle process
-    // is not an active task, and read errors/approvals no longer jump ahead.
-    const tier = (entry: ListEntry) => {
-      if (entry.kind === 'group') { const live = entry.members.filter((member) => !member.archived); return entry.group.pinned ? 0 : groupNeedsAttention(entry.group, live) ? 1 : live.some((member) => member.status === 'running') ? 2 : 4; }
-      const s = entry.session; return s.pinned ? 0 : pending(s) && !s.archived ? 1 : s.status === 'running' ? 2 : s.status === 'waiting_input' ? 3 : 4;
-    };
-    const priority = tier(a) - tier(b);
-    if (priority) return priority;
-    const name = (entry: ListEntry) => entry.kind === 'group' ? entry.group.title : entry.session.title;
-    if (contactSort === 'name') return name(a).localeCompare(name(b), 'zh-CN', { numeric: true, sensitivity: 'base' });
-    const timestamp = (value?: string | null) => value ? Date.parse(value) || 0 : 0;
-    if (contactSort === 'input') {
-      // A group's latest message plays the role of a contact's latest input.
-      const input = (entry: ListEntry) => timestamp(entry.kind === 'group' ? entry.group.lastMessage?.at : entry.session.lastUserInputAt);
-      const inputOrder = input(b) - input(a);
-      if (inputOrder) return inputOrder;
-    }
-    const created = (entry: ListEntry) => timestamp(entry.kind === 'group' ? entry.group.createdAt : entry.session.createdAt);
-    return created(b) - created(a) || name(a).localeCompare(name(b), 'zh-CN', { numeric: true, sensitivity: 'base' });
-  });
+  const listMode: ListMode = groupId ? 'contacts' : view === 'attention' || view === 'running' || view === 'archive' ? view : 'contacts';
+  const visible = useMemo(() => buildContacts({
+    sessions, groups: state?.groups ?? [], mode: listMode, backend: backendFilter, status: statusFilter, query, sort: contactSort,
+  }), [sessions, state?.groups, listMode, backendFilter, statusFilter, query, contactSort]);
+  // A large contact list mounts progressively; changing a filter resets the window.
+  const [contactLimit, setContactLimit] = useState(CONTACT_RENDER_STEP);
+  useEffect(() => { setContactLimit(CONTACT_RENDER_STEP); }, [listMode, backendFilter, statusFilter, query, contactSort]);
+  const shownContacts = visibleContacts(visible, contactLimit);
   const pageTitle = currentGroup?.title ?? ({ contacts: '会话联系人', attention: '需要你处理', running: '正在运行', activity: '最近活动', archive: '已归档', backends: '连接与能力' } as Record<string, string>)[view] ?? '会话联系人';
   // Invite links can point to several Dili devices. The remote auth status
   // carries the paired name; an unnamed/manual remote page leaves this blank.
@@ -637,6 +602,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
           { label: '网页服务', icon: <Globe2 size={14} />, active: servicePreviewOpen, onSelect: toggleServicePreview },
           { label: '随手记', icon: <FilePenLine size={14} />, active: scratchpadOpen, onSelect: toggleScratchpad },
           { label: '外观主题', icon: <Palette size={14} />, onSelect: () => setModal({ type: 'appearance' }) },
+          { label: '运行诊断', icon: <Activity size={14} />, onSelect: () => setModal({ type: 'debug' }) },
           { label: '使用说明与快捷键', icon: <CircleHelp size={14} />, onSelect: () => setModal({ type: 'help' }) },
         ]} />
       </div>
@@ -679,7 +645,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
 
       {!state && !connectionError && <div className="loading-state"><LoaderCircle className="spin" size={22} /><p>正在连接你的工作空间…</p></div>}
       {state && view === 'activity' ? <ActivityView activities={state.activities} sessions={state.sessions} open={openSession} /> : state && view === 'backends' ? <><section className="backend-setting-card zoom-settings-card" aria-label="外观设置"><InterfaceZoom /></section><BackendSettings state={state} local={!auth.remote} onTerminal={id => { setTerminalSessionId(undefined); setSetupShellId(id); setTerminalPanelOpen(true); }} refresh={() => void run('refresh', () => api('/backends/refresh', {}), '已重新检测本机后端')} onCreate={(backend) => { setBackendFilter(backend); setModal({ type: 'create', backend }); }} /><div className="backend-settings"><section className="backend-setting-card" aria-label="提醒方式"><div className="backend-setting-title"><Bell size={20} /><div><h2>提醒方式</h2><p>需要你输入、审批或出错时，卡片会亮红点；这里决定是否同时发声和弹系统通知。</p></div></div><div className="notify-toggles"><button className={`button secondary small-button ${soundEnabled ? 'active' : ''}`} aria-label={soundEnabled ? '关闭提示音' : '开启提示音'} aria-pressed={soundEnabled} onClick={() => { const enabled = !soundEnabled; setSoundEnabled(enabled); writeLocalPreference('sessiondeck.sound', enabled ? 'on' : 'off'); if (enabled) notificationSound(); }}>{soundEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}{soundEnabled ? '提示音已开' : '提示音已关'}</button><button className={`button secondary small-button ${notifications ? 'active' : ''}`} aria-label={notifications ? '关闭系统通知' : '开启系统通知'} aria-pressed={notifications} onClick={() => void toggleNotifications()}>{notifications ? <Bell size={14} /> : <BellOff size={14} />}{notifications ? '系统通知已开' : '系统通知已关'}</button></div></section><VoiceSettings local={!auth.remote} demo={state.demo} /><StartupSettings local={!auth.remote} /><SecuritySettings auth={auth} notify={notify} /></div></> : state && <>
-          {visible.length > 0 ? <div className="contact-grid">{visible.map((entry) => entry.kind === 'group' ? <GroupCard key={entry.id} group={entry.group} members={entry.members} active={entry.id === groupId} onArchive={() => void run(`archive:${entry.id}`, () => api(`/groups/${entry.id}`, { archived: !entry.group.archived }, 'PATCH'), entry.group.archived ? '群聊已恢复' : '群聊已归档，消息和成员已保留')} onOpen={() => navigate(`group:${entry.id}`)} onPin={() => void run(`pin:${entry.id}`, () => api(`/groups/${entry.id}`, { pinned: !entry.group.pinned }, 'PATCH'))} onEdit={() => setModal({ type: 'group', group: entry.group })} /> : ((session) => <SessionCard key={session.id} session={session} active={session.id === selectedId} onShare={() => setModal({ type: 'shareLink', session })} canFork={state.backends.find((backend) => backend.id === session.backend)?.capabilities.fork && !!session.nativeSessionId && !session.forkPending || false} onOpen={(invoker) => openSession(session, invoker)} onRename={() => setModal({ type: 'rename', session })} onFork={() => setModal({ type: 'fork', session, groupId: session.groupId ?? undefined })} onPin={() => void patch(session, { pinned: !session.pinned })} onArchive={() => void patch(session, { archived: !session.archived })} onCopyDirectory={() => void copyText(session.cwd, '工作目录')} />)(entry.session))}</div> : <EmptyState filtered={filtered} view={view} group={false} backendCount={state.backends.filter((backend) => backend.installed).length} connections={() => navigate('backends')} create={() => setModal({ type: 'create' })} importSessions={() => setModal({ type: 'import' })} clear={clearFilters} />}
+          {visible.length > 0 ? <><div className="contact-grid">{shownContacts.map((entry) => entry.kind === 'group' ? <GroupCard key={entry.id} group={entry.group} members={entry.members} active={entry.id === groupId} onArchive={() => void run(`archive:${entry.id}`, () => api(`/groups/${entry.id}`, { archived: !entry.group.archived }, 'PATCH'), entry.group.archived ? '群聊已恢复' : '群聊已归档，消息和成员已保留')} onOpen={() => navigate(`group:${entry.id}`)} onPin={() => void run(`pin:${entry.id}`, () => api(`/groups/${entry.id}`, { pinned: !entry.group.pinned }, 'PATCH'))} onEdit={() => setModal({ type: 'group', group: entry.group })} /> : ((session) => <SessionCard key={session.id} session={session} active={session.id === selectedId} onShare={() => setModal({ type: 'shareLink', session })} canFork={state.backends.find((backend) => backend.id === session.backend)?.capabilities.fork && !!session.nativeSessionId && !session.forkPending || false} onOpen={(invoker) => openSession(session, invoker)} onRename={() => setModal({ type: 'rename', session })} onFork={() => setModal({ type: 'fork', session, groupId: session.groupId ?? undefined })} onPin={() => void patch(session, { pinned: !session.pinned })} onArchive={() => void patch(session, { archived: !session.archived })} onCopyDirectory={() => void copyText(session.cwd, '工作目录')} />)(entry.session))}</div>{shownContacts.length < visible.length && <div className="contact-more"><button className="button secondary" type="button" onClick={() => setContactLimit(value => value + CONTACT_RENDER_STEP)}>显示更多（已显示 {shownContacts.length} / 共 {visible.length}）</button></div>}</> : <EmptyState filtered={filtered} view={view} group={false} backendCount={state.backends.filter((backend) => backend.installed).length} connections={() => navigate('backends')} create={() => setModal({ type: 'create' })} importSessions={() => setModal({ type: 'import' })} clear={clearFilters} />}
 
         </>}
     </main>
@@ -735,6 +701,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
             <div><span>后端</span><strong>{BACKEND[selected.backend].name}</strong></div>
             <div><span>状态</span><StatusBadge session={selected} /></div>
             {selected.statusDetail && <p>{selected.statusDetail}</p>}
+            <SessionUsageLine session={selected} />
             <div><span>工作目录</span><code title={selected.cwd}>{selected.cwd}</code><button className="icon-button" aria-label="复制会话目录" title="复制工作目录" onClick={() => void copyText(selected.cwd, '工作目录')}><Copy size={13} /></button></div>
             {selected.archived && <button className="text-button" onClick={() => void patch(selected, { archived: false })}><Archive size={13} />已归档 · 恢复联系人</button>}
             {selectedGroup && <button className="text-button" onClick={() => navigate(`group:${selectedGroup.id}`)}><UsersRound size={13} />{selectedGroup.title}</button>}
@@ -745,6 +712,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
             <button className="text-button" onClick={() => setModal({ type: 'handoff', session: selected })}><ArrowRightLeft size={13} />转到其他平台</button>
             <button className="text-button" onClick={() => setModal({ type: 'shareLink', session: selected })}><Link2 size={13} />分享给同事</button>
             <button className="text-button" onClick={() => void copyText(`${location.origin}${location.pathname}${location.search}${workspaceHash({ view, selectedId: selected.id })}`, '会话链接')}><Copy size={13} />复制会话链接</button>
+            <button className="text-button" onClick={() => void exportSessionHtml(selected).then(() => notify(t('session.exported'))).catch(cause => notify(cause instanceof Error ? cause.message : '导出失败'))}><Download size={13} />{t('session.export')}</button>
             <div><span>{selected.forkPending ? '来源会话标识' : '原生会话标识'}</span>{selected.nativeSessionId ? <><code>{selected.nativeSessionId}</code><button className="icon-button" aria-label="复制原生会话标识" title="复制原生会话标识" onClick={() => void copyText(selected.nativeSessionId!, '原生会话标识')}><Copy size={13} /></button></> : <small>首次启动后生成</small>}</div>{selected.forkPending && <p>原生 Fork 尚未完成；启动后会获得独立的会话标识。</p>}
             {selected.backend === 'claude' ? <><div><span>权限模式</span><small>{claudePermissionLabel(selected.nativeSettings?.permission ?? (selected.executionMode === 'auto' ? 'auto' : null))}</small></div><div><span>模型</span><small>{selected.nativeSettings?.model ?? '原生默认'}</small></div></> : <div><span>执行模式</span><small>{selected.executionMode === 'auto' ? 'Auto · 自动审核' : '原生默认'}</small></div>}
             <div><span>创建时间</span><time dateTime={selected.createdAt}>{new Date(selected.createdAt).toLocaleString('zh-CN')}</time></div>
@@ -768,11 +736,12 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     </div>
     {modal?.type === 'help' && <HelpDialog close={closeModal} />}
     {modal?.type === 'appearance' && <AppearanceDialog close={closeModal} />}
+    {modal?.type === 'debug' && <DebugPanel close={closeModal} />}
     {modal?.type === 'replaceDraft' && <ModalShell title="替换当前群组草稿？" subtitle={`将 ${modal.sourceName} 的消息转交为任务，当前草稿需要先处理。`} close={closeModal}><div className="modal-fields"><p className="draft-replace-preview">{modal.draft || '当前草稿已选择接收成员。'}</p><p className="form-note">保留草稿会取消这次转交。替换后，可编辑任务内容并选择接收成员；创建任务仍需你提交。</p></div><div className="modal-footer"><button className="button secondary" onClick={closeModal}>保留当前草稿</button><button className="button primary" onClick={() => { modal.proceed(); closeModal(); }}>替换为转交任务</button></div></ModalShell>}
     {modal?.type === 'shareLink' && <ShareDialog group={modal.group} session={modal.session} close={closeModal} notify={notify} />}
     {modal?.type === 'groupDirectories' && state && <GroupWorkspacePermissions group={state.groups.find(item => item.id === modal.group.id) ?? modal.group} members={state.sessions.filter(item => item.groupId === modal.group.id)} backends={state.backends} close={closeModal} refresh={refresh} />}
     {modal?.type === 'directories' && state && <WorkspacePermissions session={state.sessions.find(item => item.id === modal.session.id) ?? modal.session} backend={state.backends.find(item => item.id === modal.session.backend)!} close={closeModal} refresh={refresh} />}
-    {modal && modal.type !== 'help' && modal.type !== 'appearance' && modal.type !== 'replaceDraft' && modal.type !== 'shareLink' && modal.type !== 'directories' && modal.type !== 'groupDirectories' && state && <AppModal modal={modal} state={state} close={closeModal} done={async (session?: Session, group?: Group) => { await refresh().catch(() => {}); closeModal(); if (group) navigate(`group:${group.id}`); if (session) { if (session.groupId) navigate(`group:${session.groupId}`); openSession(session); } }} notify={notify} />}
+    {modal && modal.type !== 'help' && modal.type !== 'appearance' && modal.type !== 'debug' && modal.type !== 'replaceDraft' && modal.type !== 'shareLink' && modal.type !== 'directories' && modal.type !== 'groupDirectories' && state && <AppModal modal={modal} state={state} close={closeModal} done={async (session?: Session, group?: Group) => { await refresh().catch(() => {}); closeModal(); if (group) navigate(`group:${group.id}`); if (session) { if (session.groupId) navigate(`group:${session.groupId}`); openSession(session); } }} notify={notify} />}
     {toast && <div className="toast" role="status"><CheckCheck size={16} />{toast}<button aria-label="关闭提示" onClick={() => setToast('')}><X size={14} /></button></div>}
   </div>;
 }

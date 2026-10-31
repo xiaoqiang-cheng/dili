@@ -585,3 +585,17 @@
 - Codex／Claude 结构化视图及三平台历史视图共用整条消息复制按钮，用户与助手均可复制原文，保留换行、缩进和 Markdown；复用现有剪贴板及 HTTP 回退，结果只在按钮旁短暂显示，不增加全局通知。
 - 类型检查、差异格式检查通过；隔离浏览器专项 11 项通过，覆盖两平台结构化消息、三平台历史消息、真实剪贴板内容、API 缺失／拒绝时的浏览器选区复制、失败提示、手机布局、目录复制及既有对话布局／目录回归。测试激活应用实际 standalone CSS 规则，未将 Chromium 模拟视为真实 iPhone 长按验收；两张手机截图已检查。
 - 正式服务 PID 1860（启动时间 Oct 29 21:54:56）保持运行。本轮仅前端修改，使用标准原子构建更新，刷新页面即可体验；没有停止或重启当前实例，没有 push、tag 或其他云端操作。
+
+## 2026-10-31：对标 pi-web 的工程化补强
+
+- 通读 pi-web 后按其可借鉴点补齐 dili：纯逻辑抽测、安全边界、用量观测、对话导出、领域笔记、渲染上限、移动端浏览器验收、SSE 断线补发、i18n 地基、浏览器基线、只读诊断、闲置休眠与 CI 拆分。
+- 三问自查：公共契约仍按后端能力描述，未把 Codex 专有事件带进 `AppState`；用量只读本地原生历史，dsh 或旧版本显示“原生未提供”，不做估算；导出、诊断和用量都有原生依据，演示模式明确 409／空用量，不伪造成功。
+- 客户端抽出 `contact-order`、`format`、`group-attention`、`markdown-blocks`、`state` 等纯函数并配单测；联系人每页 120 张、对话默认最近 200 条，均可渐进加载；长 Markdown 分块，代码高亮按需动态加载；联系人、群历史和终端在隐藏页暂停轮询，恢复可见时补一次；`AbortSignal.timeout` 换成本地基线可用的 `timeoutSignal`。
+- 服务端新增 `GET /api/sessions/:id/usage`、`GET /api/sessions/:id/export`、`GET /api/debug`，全部登记到 `server/access.ts`；导出 HTML 转义、无脚本、带 CSP；诊断只返回进程、修订、补发窗口、连接、会话和终端计数，不返回正文、目录、令牌或密钥。
+- SSE 事件带 `id: <revision>`，服务端保留 200 条／4 MiB 补丁；`Last-Event-ID` 连续时只补缺失补丁，缺口或超出窗口回退完整过滤快照；分享访问者始终只收过滤快照。`EventSource` 重连不再额外触发全量刷新，减少与补发竞态。
+- 闲置休眠默认关闭，`SESSIONDECK_IDLE_SLEEP_MINUTES` 开启后只停止已进入 idle 且超时的运行中会话，等待输入、等待审批、异常和 Fork 中永不休眠；停止复用既有生命周期，原生历史与身份保留。
+- 文案地基 `shared/i18n.ts`：28+ 键、`{name}` 占位符、`missingKeys` 与测试；本轮改到的用量、导出、诊断、刷新等字符串已迁移，其余中文不做一次性大改。
+- 浏览器基线与 CI：`browserslist` 和 Vite `build.target` 固定 Chrome/Edge/Firefox 111、Safari/iOS 16.2；`scripts/browser-baseline.test.ts` 扫描后行断言和基线外 API；CI 拆为 `unit`、`e2e`、`pwa`、`package` 四个并行 job，失败分别上传日志、Playwright 与 PWA 制品。
+- 验证：`npm run check` 通过；`npm test` 共 405 项（397 通过、4 跳过、4 失败）。4 项 Codex fixture 失败均为 `/start` 返回“正在停止”或“Unknown fixture thread”，已在未改动的 HEAD 工作树复现，属预存在环境／夹具问题；新增路由断言后 `server/api.test.ts` 11 项通过。浏览器全量 243 项通过（Chromium，隔离 4337 演示实例），新增移动端 3 项通过；本轮同时修正了 4 个与当前实现不一致的旧浏览器断言（后行断言定位、群成员提示音夹具选择、异步群发送成功提示、SSE open 不再重复刷新后的快照竞态）。
+- 本机 Chromium 缺少 `libnspr4/libnss3/libasound`，测试时把对应 deb 解包到 `/tmp` 并用 `LD_LIBRARY_PATH` 运行，未修改系统或仓库依赖。
+- 正式服务 PID 311635（端口 4317）保持运行，未重启。为避免新前端调用尚不存在的后端路由，`dist/client` 已重新构建回与当前后端匹配的版本；后端新路由、SSE 补发和闲置休眠需从独立终端安全重启后生效，再执行 `npm run build` 发布新前端。已在本地提交，未 push、tag 或其他云端操作。

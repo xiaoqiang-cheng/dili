@@ -8,6 +8,10 @@ import { chmod, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Store } from './store.ts';
+import { renderConversationHtml, exportFileName } from './export.ts';
+import { SseReplayBuffer } from './sse-replay.ts';
+import { shellQuote } from './shell-quote.ts';
+import { IDLE_SLEEP_ENV, idleSleepMinutes, shouldSleep } from './idle-sleep.ts';
 import { FunAsr, VoiceConnections } from './voice.ts';
 import { VOICE_MAX_FRAME } from '../shared/voice.ts';
 import { ScratchpadStore } from './scratchpad.ts';
@@ -180,10 +184,10 @@ const expectedNativeIds = new Map<string, string>();
 // to a new run of the same contact, even when the native session ID is unchanged.
 const launchIds = new Map<string, string>();
 let closing = false;
-const shellQuote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
 let backends: BackendInfo[] = demo ? demoBackends : await getBackendInfo();
 if (demo) seedDemo(store, process.cwd());
 const publisher = new StatePublisher(store, { instanceId, backends, defaultCwd: process.cwd(), demo });
+const replay = new SseReplayBuffer();
 
 function state(): AppState {
   return publisher.snapshot();
@@ -192,7 +196,8 @@ function broadcast() {
   if (closing) return;
   const patch = publisher.takePatch();
   if (!patch) return;
-  const chunk = `event: patch\ndata: ${JSON.stringify(patch)}\n\n`;
+  const chunk = `id: ${patch.revision}\nevent: patch\ndata: ${JSON.stringify(patch)}\n\n`;
+  replay.push(patch.revision, patch.baseRevision, chunk);
   for (const [client, viewer] of sse) {
     // A sleeping tab must not retain an unbounded queue of obsolete full states.
     if (client.destroyed || client.writableLength > 2_097_152) { sse.delete(client); client.destroy(); }
@@ -437,6 +442,27 @@ app.use('/api', (req, res, next) => {
 
 app.get('/api/config', (_req, res) => res.json({ csrfToken: auth.csrf(principalOf(res)) }));
 app.get('/api/state', (_req, res) => res.json(viewState(principalOf(res))));
+app.get('/api/debug', (_req, res) => {
+  const snapshot = publisher.snapshot();
+  res.json({
+    instanceId, pid: process.pid, node: process.versions.node, platform: process.platform,
+    uptimeSeconds: Math.round(process.uptime()), memoryRssBytes: process.memoryUsage().rss,
+    demo, revision: snapshot.revision ?? 0,
+    replay: { retained: replay.size, latestRevision: replay.latestRevision },
+    sessions: {
+      total: snapshot.sessions.length,
+      running: snapshot.sessions.filter(item => item.running).length,
+      attention: snapshot.sessions.filter(item => !item.archived && (item.status === 'waiting_input' || item.status === 'waiting_approval' || item.status === 'error')).length,
+      archived: snapshot.sessions.filter(item => item.archived).length,
+    },
+    groups: snapshot.groups.length,
+    connections: { stateStreams: sse.size, websockets: wss.clients.size },
+    terminals: { sessions: terminals.size, shells: shells.size },
+    idleSleepMinutes: idleSleep,
+    dataDir,
+    backends: backends.map(item => ({ id: item.id, installed: item.installed, version: item.version, graphicalChat: item.capabilities.graphicalChat === true, terminal: item.capabilities.terminal })),
+  });
+});
 app.get('/api/scratchpad', (_req, res) => res.json(scratchpad.read()));
 app.patch('/api/scratchpad', (req, res) => res.json(scratchpad.save(req.body)));
 
@@ -732,6 +758,28 @@ app.get('/api/sessions/:id/conversation', async (req, res) => {
   updatePreview(item, transcript);
   res.json(transcript);
 });
+app.get('/api/sessions/:id/usage', async (req, res) => {
+  const item = session(String(req.params.id));
+  if (demo) return res.json({ usage: null, note: '演示会话没有原生用量记录。' });
+  const transcript = await conversations.read(item);
+  const current = closing ? undefined : store.session(item.id);
+  if (!current || current.nativeSessionId !== item.nativeSessionId || current.forkPending !== item.forkPending) return res.status(409).json({ error: '会话身份已更新，请重新读取用量' });
+  res.json({ usage: transcript.usage ?? null, note: transcript.usage ? '来自本地原生历史。' : '当前原生版本未提供用量信息。' });
+});
+app.get('/api/sessions/:id/export', async (req, res) => {
+  const item = session(String(req.params.id));
+  if (demo) fail('演示模式没有可导出的原生记录', 409);
+  const transcript = await conversations.read(item);
+  const current = closing ? undefined : store.session(item.id);
+  if (!current || current.nativeSessionId !== item.nativeSessionId || current.forkPending !== item.forkPending) fail('会话身份已更新，请重新读取对话', 409);
+  if (!transcript.messages.length) fail('没有可导出的对话记录', 409);
+  const html = renderConversationHtml({ session: item, transcript });
+  const name = exportFileName(item.title);
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="dili-conversation.html"; filename*=UTF-8''${encodeURIComponent(name)}`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(html);
+});
 app.get(['/api/sessions/:id/workspace/tree', '/api/workspaces/:root/workspace/tree'], async (req, res) => {
   const cwd = req.params.root !== undefined
     ? (principalOf(res).kind === 'owner' ? directory(String(req.params.root)) : fail('仅所有者可以打开目录', 403))
@@ -804,7 +852,17 @@ app.get('/api/events', (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
   const principal = principalOf(res);
-  res.write(`event: state\ndata: ${JSON.stringify(viewState(principal))}\n\n`);
+  // EventSource reconnects with Last-Event-ID; replay the missing patches when
+  // the window is intact, and fall back to a full filtered snapshot otherwise.
+  const rawLastId = req.headers['last-event-id'];
+  const lastEventId = Number(Array.isArray(rawLastId) ? rawLastId[0] : rawLastId);
+  const replayed = principal.kind === 'owner' && Number.isSafeInteger(lastEventId) && lastEventId >= 0 ? replay.after(lastEventId) : null;
+  if (replayed?.length) {
+    for (const chunk of replayed) res.write(chunk);
+  } else {
+    const snapshot = viewState(principal);
+    res.write(`id: ${snapshot.revision ?? 0}\nevent: state\ndata: ${JSON.stringify(snapshot)}\n\n`);
+  }
   sse.set(res, { principal, device: res.locals.device });
   if (principal.kind === 'owner' && heldNotices.length) { res.write(`event: notice\ndata: ${JSON.stringify(heldNotices)}\n\n`); heldNotices = []; }
   // A named ping (not a comment) lets the browser notice a stalled stream,
@@ -1708,6 +1766,22 @@ server.once('error', error => {
   console.error((error as NodeJS.ErrnoException).code === 'EADDRINUSE' ? `端口 ${port} 已被占用，请设置 SESSIONDECK_PORT 为其他端口。` : error.message);
   shutdown(1);
 });
+const idleSleep = idleSleepMinutes();
+let idleSleepTimer: NodeJS.Timeout | null = null;
+if (idleSleep > 0) {
+  idleSleepTimer = setInterval(() => {
+    if (demo || closing) return;
+    for (const item of store.sessions()) {
+      if (!shouldSleep(item, Date.now(), idleSleep)) continue;
+      if (starting.has(item.id) || stopping.has(item.id) || terminals.isStopping(item.id)) continue;
+      void stopSession(item.id).then(() => store.activity(item.id, 'sleep', `闲置 ${idleSleep} 分钟后停止进程`))
+        .catch(error => console.error(`闲置休眠失败：${error instanceof Error ? error.message : String(error)}`));
+    }
+  }, 60_000);
+  idleSleepTimer.unref();
+  console.log(`闲置休眠已开启：${idleSleep} 分钟（${IDLE_SLEEP_ENV}）`);
+}
+
 server.listen(port, host, () => {
   console.log(`Dili${demo ? ' [演示模式，不调用真实模型]' : ''} → http://${host.includes(':') ? `[${host}]` : host}:${port}\n本地数据：${dataDir}`);
   // Tasks whose member already finished or failed before this start are collected now.
@@ -1722,6 +1796,7 @@ function shutdown(exitCode = 0) {
   clearInterval(nativePoll);
   clearInterval(previewPoll);
   clearInterval(viewerCheck);
+  if (idleSleepTimer) clearInterval(idleSleepTimer);
   chatApi.close();
   voiceConnections.close();
   const voiceClosed = voiceEngine.close();

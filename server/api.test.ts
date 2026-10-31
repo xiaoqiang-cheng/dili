@@ -114,6 +114,15 @@ test('local HTTP and real demo PTYs complete the contact, fork and group flow', 
     assert.equal((await request<AppState>('/api/state')).sessions.length, count);
   });
 
+  await t.test('usage and export routes are registered and honest in demo mode', async () => {
+    const created = await request<Session>('/api/sessions', 'POST', { backend: 'codex', title: 'Route smoke', cwd: directory }, 201);
+    const usage = await request<{ usage: null; note: string }>(`/api/sessions/${created.id}/usage`);
+    assert.equal(usage.usage, null);
+    assert.match(usage.note, /演示/);
+    const exported = await request<{ error: string }>(`/api/sessions/${created.id}/export`, 'GET', undefined, 409);
+    assert.match(exported.error, /演示模式/);
+  });
+
   let group: Group;
   let member: Session;
   let reviewer: Session;

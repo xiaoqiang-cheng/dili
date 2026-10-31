@@ -109,7 +109,7 @@ for(const backend of ['claude','dsh'] as const) {
     app.contact.status='running';await app.publish();await expect(activity).toBeVisible();
     app.transcript.messages.push({id:'answer',role:'assistant',text:'完成任务。'});
     app.contact.status='waiting_input';app.contact.lastAttentionKey='completed-turn';await app.publish();
-    await expect(activity).toHaveCount(0);await expect(page.locator('.conversation-text')).toHaveText('完成任务。');
+    await expect(activity).toHaveCount(0);await expect(page.locator('.conversation-message.from-assistant .conversation-text')).toHaveText('完成任务。');
     expect(app.result.posts).toHaveLength(1);
   });
 

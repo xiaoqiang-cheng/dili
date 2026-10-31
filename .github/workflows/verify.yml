@@ -5,7 +5,8 @@ on:
   pull_request:
   workflow_dispatch:
 jobs:
-  verify:
+  unit:
+    name: Types and unit tests
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -15,29 +16,101 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run preflight
-      - run: npx playwright install --with-deps chromium webkit
-      - name: Verify application
+      - name: Type check
         run: |
           set -o pipefail
-          npm run verify 2>&1 | tee verify.log
-          npm run test:pwa 2>&1 | tee -a verify.log
+          npm run check 2>&1 | tee check.log
+      - name: Pure logic and server contracts
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee unit.log
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-diagnostics
+          path: |
+            check.log
+            unit.log
+
+  e2e:
+    name: Browser regression
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run preflight
+      - run: npx playwright install --with-deps chromium
+      - name: Isolated demo instance
+        run: |
+          set -o pipefail
+          npm run test:web 2>&1 | tee e2e.log
       - name: Report verification failure
         if: failure()
         run: |
           node --input-type=module <<'JS'
           import { existsSync, readFileSync } from 'node:fs';
-          if (existsSync('verify.log')) {
-            const log = readFileSync('verify.log', 'utf8').slice(-3500);
+          if (existsSync('e2e.log')) {
+            const log = readFileSync('e2e.log', 'utf8').slice(-3500);
             console.log('::error title=Verification diagnostics::' + log.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A'));
           }
           JS
-      - name: Upload regression diagnostics
+      - name: Upload browser traces and screenshots
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: verification-diagnostics
+          name: playwright-artifacts
           path: |
-            verify.log
+            e2e.log
             artifacts/playwright/
+
+  pwa:
+    name: PWA install check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run preflight
+      - run: npx playwright install --with-deps chromium
+      - name: Installable shell
+        run: |
+          set -o pipefail
+          npm run test:pwa 2>&1 | tee pwa.log
+      - name: Upload PWA diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pwa-artifacts
+          path: |
+            pwa.log
             artifacts/pwa/
-      - run: npm run test:package
+
+  package:
+    name: Package smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run preflight
+      - name: Pack and boot
+        run: |
+          set -o pipefail
+          npm run test:package 2>&1 | tee package.log
+      - name: Upload package diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-diagnostics
+          path: package.log

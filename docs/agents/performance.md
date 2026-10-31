@@ -1,0 +1,39 @@
+# 性能与资源上限
+
+## 已有机制
+
+| 机制 | 位置 | 上限 |
+| --- | --- | --- |
+| 对话读取短缓存 | `server/conversation.ts` | 1.5 秒内复用，最多 256 个会话 |
+| 前端对话快照 | `client/chat-view-cache.ts` | 8 个联系人／约 200 万字符／10 分钟 |
+| Codex 首屏 | `server/codex.ts` | 最近 20 轮，失败缩小为 5 轮、1 轮 |
+| Claude 分页 | `server/conversation.ts` | 每页 40 条、单次扫描 2 MiB |
+| 终端回放 | `server/terminal-replay.ts` | 最近 1000 行，内存 |
+| SSE 背压 | `server/index.ts` | 单连接 2 MiB 积压即断开 |
+| 终端 WS 背压 | `server/index.ts` | 单连接 2 MiB 积压即断开 |
+| 活动列表 | `server/state.ts` | 100 条 |
+| 消息正文 | `shared/conversation` 读取 | 单条 24k、总计 512k 字符 |
+| SSE 补发窗口 | `server/sse-replay.ts` | 200 条或 4 MiB，超出回退完整快照 |
+| 联系人渲染 | `client/contact-order.ts` | 每页 120 张，点击加载更多 |
+| 对话消息渲染 | `client/ConversationPane.tsx` | 最近 200 条，点击加载更早 |
+| Markdown 分块 | `client/Markdown.tsx` | 超过 4000 字符按标题/围栏分块 |
+
+## 渲染上限
+
+- 联系人列表超过 `CONTACT_RENDER_STEP` 时只渲染前 N 条，提供“显示更多”，并显示“已显示 X / 共 Y”。
+- 对话记录默认只渲染最近 `MESSAGE_RENDER_LIMIT` 条；更早的消息需要点“显示更早的消息”，避免无限 DOM。
+- 长 Markdown 按空行 + 标题/围栏切块（`client/markdown-blocks.ts`），避免一段超大文档阻塞主线程；未闭合的代码块保持整块。
+- 代码高亮 `rehype-highlight` 按需动态加载：只有消息里出现围栏时才加载，没有代码的消息不付这份体积。
+
+## 轮询与隐藏页
+
+- 联系人状态由 SSE 推送；只有历史预览按需读取。
+- 会话历史轮询：运行中 3 秒、空闲按事件触发；页面隐藏时暂停，恢复可见时补一次。
+- 全局时钟、群组历史、群成员实时预览、底部终端列表和 watchdog 在隐藏页暂停；SSE 连接保持，恢复可见时各补一次。
+- 不要在前台不可见时做文件监听或全量刷新。
+
+## 排查
+
+- `GET /api/debug` 提供进程、修订、补发窗口、连接、会话和终端的只读快照；界面入口在“更多 → 运行诊断”，先看它再猜。
+- 性能问题先区分：网络（SSE 积压）、服务（历史扫描、SQLite）、渲染（DOM 数量、高亮）。
+- 加缓存前先问失效条件；状态、权限和分享视图不能缓存到过期。

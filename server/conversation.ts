@@ -6,8 +6,10 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { DatabaseSync } from 'node:sqlite';
 import { zstdDecompressSync } from 'node:zlib';
 import type { Backend, ConversationMessage, ConversationTranscript, Session } from '../shared/types.js';
+import type { SessionUsage } from '../shared/usage.js';
 import type { AgentChatHistoryPage } from '../shared/chat.ts';
 import { validateNativeId } from './adapters.ts';
+import { parseUsage } from './usage.ts';
 
 export type ConversationSession = Pick<Session, 'backend' | 'nativeSessionId' | 'forkPending' | 'cwd'>;
 export interface DshHistory { events?: { event?: unknown }[]; hasMore?: boolean }
@@ -338,7 +340,7 @@ export class ConversationReader {
     return this.read(session);
   }
 
-  private finish(messages: ConversationMessage[], truncated: boolean, updatedAt?: string): ConversationTranscript {
+  private finish(messages: ConversationMessage[], truncated: boolean, updatedAt?: string, usage?: SessionUsage | null): ConversationTranscript {
     const latestUser = messages.findLast(item => item.role === 'user');
     const maxMessages = Math.max(1, Math.min(200, this.options.maxMessages ?? 200));
     if (messages.length > maxMessages) { truncated = true; messages = messages.slice(-maxMessages); }
@@ -361,7 +363,7 @@ export class ConversationReader {
       result.unshift(user);
       truncated = true;
     }
-    return { messages: result, truncated, ...(updatedAt ? { updatedAt } : {}), ...(truncated ? { notice: '当前显示最近的部分对话，完整记录可在原生界面查看。' } : {}) };
+    return { messages: result, truncated, ...(updatedAt ? { updatedAt } : {}), ...(truncated ? { notice: '当前显示最近的部分对话，完整记录可在原生界面查看。' } : {}), ...(usage !== undefined ? { usage } : {}) };
   }
 
   private async load(session: ConversationSession, key: string): Promise<ConversationTranscript> {
@@ -371,7 +373,8 @@ export class ConversationReader {
         const history = await this.options.dshHistory(nativeId);
         if (history && Array.isArray(history.events)) {
           const messages = dshMessages(history.events.map(item => item.event), nativeId);
-          return this.finish(messages, history.hasMore === true, messages.at(-1)?.createdAt);
+          const usage = parseUsage('dsh', history.events.map(item => item.event), history.hasMore === true);
+          return this.finish(messages, history.hasMore === true, messages.at(-1)?.createdAt, usage);
         }
       } catch { /* The service may be restarting; the saved exact log is still usable. */ }
     }
@@ -443,7 +446,8 @@ export class ConversationReader {
           ?? await this.userBefore(file, offset, session);
         if (user) messages.unshift(user);
       }
-      const transcript = this.finish(messages, truncated, info.mtime.toISOString());
+      const usage = parseUsage(session.backend, rows.map(row => row.value), offset > 0 || truncated);
+      const transcript = this.finish(messages, truncated, info.mtime.toISOString(), usage);
       this.cache.set(key, { checked: Date.now(), signature, fileSize: info.size, transcript });
       return transcript;
     } finally { await file.close(); }

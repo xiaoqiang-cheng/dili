@@ -90,12 +90,15 @@ SESSIONDECK_CLIENT_DIR="$dili_demo_root/client" npm run dev
 | `SESSIONDECK_DSH_PORT` | 未设置时每次启动自动选择空闲端口；按需启动的 dsh 原生 Web 服务 |
 | `SESSIONDECK_CODEX_PORT` | `4319`，按需启动的 Codex app-server；`0` 自动选择空闲端口 |
 | `SESSIONDECK_CLAUDE_BIN` / `SESSIONDECK_CODEX_BIN` / `SESSIONDECK_DSH_BIN` | 可选原生程序绝对路径，未设置则从 `PATH` 查找 |
+| `SESSIONDECK_IDLE_SLEEP_MINUTES` | 未设置或 `0` 时关闭；开启后，连续空闲达到该分钟数的已启动会话会被停止（原生历史保留，可重新启动）。等待输入、等待审批、异常和 Fork 中的会话永不休眠 |
 
 Codex app-server 只监听本机并使用随机访问令牌。令牌文件仅当前用户可读，正常关闭后删除；令牌不会发送给网页或出现在命令参数中。
 
 ## 构建与 CI
 
-`npm run check` 类型检查，`npm test` 服务端检查，`npm run test:web` 构建并验证隔离演示实例；`npm run verify` 串行执行三者。不要并行执行会共用测试产物的多轮浏览器检查。
+`npm run check` 类型检查，`npm test` 服务端与共享层纯逻辑检查，`npm run test:web` 构建并验证隔离演示实例；`npm run verify` 串行执行三者。不要并行执行会共用测试产物的多轮浏览器检查。
+
+CI 将类型/单测、浏览器回归、PWA 安装检查和打包烟测拆成并行 job；失败时分别上传 `unit.log`、`artifacts/playwright/`、`artifacts/pwa/` 与打包日志，避免串行失败时只剩最后一段输出。
 
 当前 CI 配置为 Node.js 24、Linux 和 Chromium，不是 macOS / Windows 的发行保证。测试数据、协议 fixture、真实 CLI + loopback provider、真实云端账号、实际部署验收是不同的证据；每次在 WORKLOG 写清版本、命令、范围与未验证项，不把历史测试数量复制为当前承诺。
 

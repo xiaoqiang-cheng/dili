@@ -1,4 +1,5 @@
 import { appUrl } from './urls';
+import { timeoutSignal } from './timeout-signal';
 let tokenPromise: Promise<string> | undefined;
 
 export class ApiError extends Error {
@@ -7,7 +8,7 @@ export class ApiError extends Error {
 
 async function request(url: string, options?: RequestInit, timeoutMs = 30_000) {
   try {
-    return await fetch(appUrl(url), { ...options, signal: AbortSignal.timeout(timeoutMs) });
+    return await fetch(appUrl(url), { ...options, signal: timeoutSignal(timeoutMs) });
   } catch (cause) {
     if (cause instanceof Error && (cause.name === 'TimeoutError' || cause.name === 'AbortError')) {
       throw new Error(options?.method && options.method !== 'GET'

@@ -3,7 +3,8 @@ import type { Backend, SessionStatus } from '../shared/types';
 import type { View } from './navigation';
 import { readLocalPreference, writeLocalPreference } from './ui';
 
-export type ContactSort = 'input' | 'name' | 'created';
+import type { ContactSort } from './contact-order';
+export type { ContactSort };
 type ContactFilters = { query: string; backend: Backend | 'all'; status: SessionStatus | 'attention' | 'unread' | 'all' };
 const defaults: ContactFilters = { query: '', backend: 'all', status: 'all' };
 const statuses = new Set(['all', 'attention', 'unread', 'idle', 'running', 'waiting_input', 'waiting_approval', 'error', 'stopped', 'unknown']);

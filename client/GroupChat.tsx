@@ -8,7 +8,8 @@ import { Maximize2, Minimize2, FolderGit2, FolderOpen, FolderPlus, GitMerge, Rot
 import type { AgentChatSnapshot } from '../shared/chat';
 import type { Delivery, Group, GroupDetail, GroupMessage, Session, WorktreeStatus } from '../shared/types';
 import { api } from './api';
-import { BackendAvatar, StatusBadge, relativeTime } from './App';
+import { BackendAvatar, StatusBadge } from './App';
+import { relativeTime } from './format';
 import ConversationPane from './ConversationPane';
 import Markdown from './Markdown';
 import ModalShell from './Modal';
@@ -78,8 +79,11 @@ function useLiveReplies(members: Session[], detail: GroupDetail) {
       if (alive) setLive(next);
     };
     void poll();
-    const timer = setInterval(() => void poll(), 1200);
-    return () => { alive = false; clearInterval(timer); };
+    // A hidden tab does not need live typing previews; resume on return.
+    const timer = setInterval(() => { if (document.visibilityState !== 'hidden') void poll(); }, 1200);
+    const onVisible = () => { if (document.visibilityState !== 'hidden') void poll(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { alive = false; clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
     // The member list key captures every input that changes the polling set.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);

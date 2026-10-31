@@ -1,5 +1,6 @@
 import type { ChatAttachment } from './attachments.ts';
 import type { ExecutionMode } from './execution.ts';
+import type { SessionUsage } from './usage.ts';
 
 export type Backend = 'claude' | 'codex' | 'dsh';
 export type SessionStatus = 'idle' | 'running' | 'waiting_input' | 'waiting_approval' | 'error' | 'stopped' | 'unknown';
@@ -105,6 +106,8 @@ export interface ConversationTranscript {
   updatedAt?: string;
   truncated: boolean;
   notice?: string;
+  /** Tokens the native history reports; null when the backend reports none. */
+  usage?: SessionUsage | null;
 }
 
 /** Results describe only the explicitly selected, current group members. */

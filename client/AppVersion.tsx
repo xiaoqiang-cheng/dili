@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { timeoutSignal } from './timeout-signal';
 import { latestStableTag, compareVersions } from '../shared/versions';
 import { appUrl } from './urls';
 const repository = 'https://github.com/xiaoqiang-cheng/dili';
@@ -13,7 +14,7 @@ export default function AppVersion() {
   async function check(automatic = false) {
     setBusy(true); setError('');
     try {
-      const response = await fetch('https://api.github.com/repos/xiaoqiang-cheng/dili/tags?per_page=100', { signal: AbortSignal.timeout(10_000), headers: { Accept: 'application/vnd.github+json' } });
+      const response = await fetch('https://api.github.com/repos/xiaoqiang-cheng/dili/tags?per_page=100', { signal: timeoutSignal(10_000), headers: { Accept: 'application/vnd.github+json' } });
       if (!response.ok) throw new Error(response.status === 403 || response.status === 429 ? '仓库查询限流，请稍后重试' : '暂时无法检查版本');
       const tag = latestStableTag(await response.json());
       setLatest(tag); setChecked(true);
@@ -34,7 +35,7 @@ export default function AppVersion() {
     const checkBuild = async () => {
       if (document.visibilityState === 'hidden') return;
       try {
-        const response = await fetch(appUrl('/build-info.json'), { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+        const response = await fetch(appUrl('/build-info.json'), { cache: 'no-store', signal: timeoutSignal(5000) });
         if (!response.ok) return;
         const info = await response.json();
         if (!disposed && typeof info.build === 'string') setAvailable(info.build !== __DILI_BUILD__);

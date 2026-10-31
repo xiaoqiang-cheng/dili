@@ -19,6 +19,7 @@ export default defineConfig({
   build: {
     // Browser tests build into an isolated throwaway directory so they never
     // replace assets served by an already-running local SessionDeck instance.
+    target: ['chrome111', 'edge111', 'firefox111', 'safari16.2'],
     outDir: process.env.SESSIONDECK_CLIENT_DIR || 'dist/client',
     emptyOutDir: true,
     rollupOptions: {

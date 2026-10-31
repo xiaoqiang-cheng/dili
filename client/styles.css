@@ -951,3 +951,14 @@ select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--line-stro
   .app-version-anchor .app-version { position: fixed; top: calc(64px + var(--safe-top)); left: 16px; right: 16px; width: auto; }
   .version-badge { padding: 4px 7px; font-size: 10px; }
 }
+
+/* Bounded contact list: the first page mounts immediately, the rest on demand. */
+.contact-more { display: flex; justify-content: center; padding: 10px 6px 18px; }
+.contact-more .button { font-size: 12.5px; }
+.usage-pending, .usage-missing, .usage-value { overflow-wrap: anywhere; }
+.usage-missing { color: var(--muted); }
+.debug-grid { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 16px; }
+.debug-grid > div { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 10px; align-items: baseline; font-size: 12.5px; }
+.debug-grid > div > span { color: var(--muted); }
+.debug-grid code { overflow-wrap: anywhere; font-size: 12px; }
+.chat-history-more { display: flex; justify-content: center; padding: 4px 0 10px; }

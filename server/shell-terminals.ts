@@ -21,6 +21,7 @@ export class ShellTerminals extends EventEmitter {
       this.emit('exit', id, exitCode);
     });
   }
+  get size() { return this.entries.size; }
   list(): ShellTerminal[] { return [...this.entries.values()].map(entry => ({ ...entry })); }
   get(id: string): ShellTerminal | undefined { const entry = this.entries.get(id); return entry ? { ...entry } : undefined; }
   buffer(id: string) { return this.terminals.buffer(id); }

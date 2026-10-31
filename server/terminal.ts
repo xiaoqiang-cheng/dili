@@ -38,6 +38,7 @@ export class Terminals extends EventEmitter {
   private ended = new Map<string, string>();
   private stopping = new Map<string, Promise<void>>();
   private closed = false;
+  get size() { return this.live.size; }
   has(id: string) { return this.live.has(id); }
   generation(id: string) { return this.live.get(id)?.generation ?? null; }
   isStopping(id: string) { return this.stopping.has(id); }
