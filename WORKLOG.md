@@ -645,3 +645,4 @@
 - 修复：抽出纯函数 `client/native-question.ts`。dsh 只在原生 `statusDetail` 明确说“等待回答”时显示；Claude 还要求问题仍是记录页的最后一条；普通回合结束、已出现后续消息或非 claude/dsh 后端都不再显示。原生问题仍待处理时提示照常保留，并提供前往原生界面/终端的入口。
 - 验证：`npm run check` 通过；`client/native-question.test.ts` 3 项通过；`tests/native-chat.spec.ts` 23 项通过（新增两个“回合结束后提示消失”的浏览器回归）；`npm test` 411 项，403 通过、4 跳过、4 个既有 Codex fixture 失败，无新增失败。
 - 三问自查：不改公共类型或原生协议；只读取适配器已经给出的 `statusDetail` 和记录文本，不猜测原生状态；提示消失只代表“当前没有可确认的待回答问题”，不把普通回合伪造成问题，也不隐藏真正等待的问题。未重启正式服务，仅本地提交。
+- 随后按用户确认执行 `npm run build`：入口从旧哈希切到 `assets/index-rzs9uLCD.js`，运行中的服务已返回新入口（HTTP 200），旧哈希资源保留；未重启或停止服务。浏览器刷新即可加载修复。
