@@ -53,6 +53,11 @@
 /* Generating with nothing typed: the send slot becomes Stop, like an IM call-to-action. */
 .resizable-composer.compact [data-turn][data-empty] .composer-send { display:none; }
 .resizable-composer.compact [data-turn][data-empty] .composer-stop { order:5; display:inline-flex; height:36px; margin-bottom:2px; border-radius:18px; }
+/* Native PTY input has no per-turn stop endpoint; hand off to the native
+   terminal from the same slot instead of pretending this is Stop generation. */
+.resizable-composer:not(.compact) .composer-native-terminal { display:none; }
+.resizable-composer.compact .composer-native-terminal { order:7; display:none; }
+.resizable-composer.compact [data-turn][data-empty] .composer-native-terminal { order:5; display:inline-flex; align-items:center; gap:5px; height:36px; margin-bottom:2px; border-radius:18px; padding:0 12px; }
 /* Tray: forced onto its own line, shown only while open. */
 .resizable-composer.compact [data-tools-open]::after { content:''; order:6; flex-basis:100%; height:0; }
 .resizable-composer.compact :is(.attachment-actions,.agent-chat-quick-settings,.voice-input,.composer-preview-toggle,.composer-queue,.composer-stop) { order:7; display:none; }

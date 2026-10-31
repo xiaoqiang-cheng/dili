@@ -611,3 +611,11 @@
 - 验证：`npm run check` 通过；`npx playwright test --config playwright.pwa.config.ts --list` 列出 48 项（含 iphone 项目）；31 份 Markdown 的相对链接按 git 跟踪路径核对无断链；CI YAML 解析通过。`npm test` 仍为 405 项、397 通过、4 跳过、4 个既有 Codex fixture 失败，失败点与提交前相同，未把既有失败说成本轮回归。
 - 未验证：`npm run test:pwa` 未在本机执行（缺少 WebKit 系统库），CI 修复需云端跑一次确认；真机 iPhone／Android、Harness 审批、远程域名／证书／隧道与云流水线仍未验收。
 - 仅本地提交，不 push、不 tag。
+
+## 2026-10-31：三平台输入输出体验：输入区第一阶段
+
+- 按代码审计三条输入链路：Codex／Claude 结构化 `AgentChatPane`、Claude PTY／dsh-tui 的 `NativeInputComposer`、dsh Web-only iframe；确认旧手机规则把结构化会话的「停止生成」套到了原生输入区，但原生路径没有网页内单轮停止接口。
+- 原生输入区在生成中且空输入时改为显示「终端」入口，点击进入原生终端处理停止或审批；不再伪造停止按钮。桌面端保持标题栏既有「停止会话」，不改变其结束整个托管连接的含义。
+- 原生输入区按后端说明生成中发送的真实去向：dsh 交给原生 TUI，Claude PTY 填入原生终端；要排到本轮之后须显式「加入队列」。占位文案同步说明 Enter 目标。
+- 三问自查：公共聊天契约未加入 Codex 专有事件；原生路径以终端回退而不是假装支持单轮停止；连接未就绪时仍由现有发送错误保留草稿，不显示成功。待办已把发送前 `/input` 预检单列为下一阶段，不在本轮宣称完成。
+- 验证：`npm run check` 通过；隔离 4337 演示实例的 `tests/native-chat.spec.ts` 20 项通过（含新增手机端终端入口断言），未调用真实模型。正式服务未停止或重启；仅本地提交，不 push、不 tag。

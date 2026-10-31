@@ -231,3 +231,15 @@ test('DeepSeek reopens recent history while its native log refresh is pending', 
   } finally { release(); }
   await expect(page.getByText('DeepSeek 最新内容', { exact: true })).toBeVisible();
 });
+
+test('native generation hands off to the terminal instead of faking a stop control', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const app = await fixture(page, 'dsh');
+  const handoff = page.getByRole('button', { name: '在原生终端中停止当前任务' });
+  await expect(handoff).toBeVisible();
+  await expect(page.getByRole('button', { name: '发送', exact: true })).toBeHidden();
+  await expect(page.locator('.composer-hint')).toContainText('交给原生 TUI');
+  await app.input.fill('补充一句');
+  await expect(handoff).toBeHidden();
+  await expect(app.send).toBeVisible();
+});
