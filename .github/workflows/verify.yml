@@ -79,7 +79,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run preflight
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps chromium webkit
       - name: Installable shell
         run: |
           set -o pipefail
