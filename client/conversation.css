@@ -31,3 +31,17 @@
 .conversation-message.pending .conversation-message-meta span { color: var(--muted); }
 
 .conversation-primary { position:relative; display:flex; flex:1; min-width:0; min-height:0; flex-direction:column; }
+
+/* Native dsh tool events use the same collapsible reading level as the
+   structured chat tool cards, but stay inside the transcript palette. */
+.conversation-tool { border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+.conversation-tool summary { display:flex; align-items:center; gap:7px; padding:9px 12px; background:var(--subtle); cursor:pointer; list-style:none; font-size:12px; }
+.conversation-tool summary::-webkit-details-marker { display:none; }
+.conversation-tool summary>span { flex:1; min-width:0; overflow-wrap:anywhere; }
+.conversation-tool summary small { color:var(--muted); white-space:nowrap; }
+.conversation-tool summary>svg { flex-shrink:0; }
+.conversation-tool[open] summary>svg:first-child { transform:rotate(90deg); }
+.conversation-tool.failed { border-color:var(--error-line); }
+.conversation-tool pre { margin:0; padding:12px; max-height:320px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; line-height:1.7; }
+.conversation-tool-output { border-top:1px solid var(--line); color:var(--muted); }
+@media (max-width: 640px) { .conversation-tool pre { max-height:240px; } }

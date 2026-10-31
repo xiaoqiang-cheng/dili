@@ -141,6 +141,22 @@ function codexMessages(rows: Line[], nativeId: string): ConversationMessage[] {
   return output;
 }
 
+const MAX_TOOL_TEXT = 4_000;
+const clipToolText = (value: string): string => value.length > MAX_TOOL_TEXT ? value.slice(0, MAX_TOOL_TEXT - 1) + '…' : value;
+function prettyToolArgs(value: string): string {
+  try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; }
+}
+
+/** Native dsh tool/result events carry the call identity on the message, while
+ * older files may only carry it on the nested source. Never guess a pairing. */
+function dshToolResult(data: RecordValue): { callId?: string; text: string; error: boolean } {
+  const result = record(data.message), source = record(result?.source);
+  const callId = typeof data.callId === 'string' ? data.callId
+    : typeof result?.toolCallId === 'string' ? result.toolCallId
+      : typeof source?.callId === 'string' ? source.callId : undefined;
+  return { callId, text: textContent(result?.content), error: data.error !== undefined || result?.isError === true };
+}
+
 function dshMessages(events: unknown[], nativeId: string): ConversationMessage[] {
   const output: ConversationMessage[] = [];
   for (const value of events) {
@@ -152,7 +168,24 @@ function dshMessages(events: unknown[], nativeId: string): ConversationMessage[]
         const text = questionContent(call.arguments);
         const item = message(`dsh:${nativeId}:${String(event.seq)}`, 'assistant', text, event.time);
         if (item) output.push(item);
+        continue;
       }
+      const name = typeof call?.name === 'string' && call.name.trim() ? call.name.trim() : '工具';
+      const callId = typeof call?.callId === 'string' ? call.callId : `seq:${String(event.seq)}`;
+      const args = typeof call?.arguments === 'string' ? call.arguments : call?.arguments === undefined ? undefined : JSON.stringify(call.arguments);
+      const item = message(`dsh:${nativeId}:${String(event.seq)}`, 'assistant', `工具调用：${name}`, event.time);
+      if (item) {
+        item.tool = { callId, name, ...(args ? { args: clipToolText(prettyToolArgs(args)) } : {}), status: 'running' };
+        output.push(item);
+      }
+      continue;
+    }
+    if (event.type === 'tool/result') {
+      const result = dshToolResult(data);
+      if (!result.callId) continue;
+      const target = output.findLast(item => item.tool?.callId === result.callId);
+      if (!target?.tool) continue;
+      target.tool = { ...target.tool, ...(result.text ? { result: clipToolText(result.text) } : {}), status: result.error ? 'error' : 'ok' };
       continue;
     }
     if (event.surfaceOp !== 'append') continue;

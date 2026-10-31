@@ -2,7 +2,7 @@ import { transcriptViews } from './chat-view-cache';
 import { PaneToolOverflow, SessionToolbar, useSessionChrome } from './SessionToolbar';
 import './chat-presentation.css';
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowDownToLine, List, MessageSquare, RefreshCw, TerminalSquare } from 'lucide-react';
+import { ArrowDownToLine, Check, ChevronRight, CircleAlert, List, LoaderCircle, MessageSquare, RefreshCw, TerminalSquare } from 'lucide-react';
 import type { ConversationTranscript, Session } from '../shared/types';
 import { api } from './api';
 import Markdown from './Markdown';
@@ -256,9 +256,13 @@ export default function ConversationPane({ session, onTerminal, onSelection, all
         : empty ? <div className="conversation-empty"><MessageSquare size={28} /><h3>{error ? '暂时无法显示对话' : '还没有可显示的对话'}</h3>
           <p>{session.forkPending ? '启动 Fork 后，这里将显示新会话的记录。' : !session.nativeSessionId ? '启动原生会话并发送第一条消息后，记录会显示在这里。' : '原生记录保存后会出现在这里；可刷新记录或进入终端继续。'}</p>
           <button className="button secondary" onClick={onTerminal}><TerminalSquare size={14} />进入原生终端</button></div>
-          : <ol className="chat-messages conversation-messages">{hiddenMessages > 0 && <li className="chat-history-more"><button type="button" className="button secondary small-button" onClick={() => setRenderLimit(limit => Math.min(allMessages.length, limit + MESSAGE_RENDER_LIMIT))}>显示更早的消息（还有 {hiddenMessages} 条）</button></li>}{renderedMessages.map(message => <li key={message.id} data-message-id={message.id} tabIndex={message.role === 'user' ? -1 : undefined} className={`chat-message chat-${message.role} conversation-message from-${message.role}${message.id === highlightedInput ? ' conversation-message-highlighted' : ''}`}>
-            <div className="chat-message-heading conversation-message-meta"><strong>{message.role === 'user' ? '你' : backendName[session.backend]}</strong>{messageTime(message.createdAt) && <time dateTime={message.createdAt}>{messageTime(message.createdAt)}</time>}<MessageCopy text={message.text} /></div>
-            <div className="chat-message-body conversation-text">{message.role === 'assistant' ? <Markdown text={message.text} /> : message.text}</div>
+          : <ol className="chat-messages conversation-messages">{hiddenMessages > 0 && <li className="chat-history-more"><button type="button" className="button secondary small-button" onClick={() => setRenderLimit(limit => Math.min(allMessages.length, limit + MESSAGE_RENDER_LIMIT))}>显示更早的消息（还有 {hiddenMessages} 条）</button></li>}{renderedMessages.map(message => <li key={message.id} data-message-id={message.id} tabIndex={message.role === 'user' ? -1 : undefined} className={`chat-message chat-${message.role} conversation-message from-${message.role}${message.tool ? ' conversation-tool-message' : ''}${message.id === highlightedInput ? ' conversation-message-highlighted' : ''}`}>
+            <div className="chat-message-heading conversation-message-meta"><strong>{message.role === 'user' ? '你' : backendName[session.backend]}</strong>{messageTime(message.createdAt) && <time dateTime={message.createdAt}>{messageTime(message.createdAt)}</time>}{!message.tool && <MessageCopy text={message.text} />}</div>
+            {message.tool ? <details className={`conversation-tool ${message.tool.status === 'error' ? 'failed' : ''}`}>
+              <summary><ChevronRight size={13} />{message.tool.status === 'running' ? <LoaderCircle size={13} className="spin" /> : message.tool.status === 'error' ? <CircleAlert size={13} /> : <Check size={13} />}<span>{message.tool.name}</span><small>{message.tool.status === 'running' ? '执行中' : message.tool.status === 'error' ? '失败' : '已完成'}</small></summary>
+              {message.tool.args && <pre>{message.tool.args}</pre>}
+              {message.tool.result && <pre className="conversation-tool-output">{message.tool.result}</pre>}
+            </details> : <div className="chat-message-body conversation-text">{message.role === 'assistant' ? <Markdown text={message.text} /> : message.text}</div>}
           </li>)}
           {localPending && !transcript!.messages.some(message => message.role === 'user' && message.text === localPending.text) && <li className="chat-message chat-user conversation-message from-user pending" aria-busy={localActivity?.phase === 'sending' || undefined}>
             <div className="chat-message-heading conversation-message-meta"><strong>你</strong><span>{localActivity?.phase === 'sending' ? '发送中' : '待确认'}</span></div>

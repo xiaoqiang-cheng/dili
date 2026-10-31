@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import type { AppState, ConversationMessage, Session } from '../shared/types';
 
-async function fixture(page: Page, backend: 'claude' | 'dsh') {
+async function fixture(page: Page, backend: 'claude' | 'dsh', messages: ConversationMessage[] = []) {
   const seed = await (await page.request.get('/api/state')).json() as AppState;
   const contact: Session = {...seed.sessions[0], id:'native-chat-' + backend,backend,title:backend+' 图形发送',running:true,status:'running',statusSource:'native',nativeSessionId:'test-thread',forkPending:false};
   const state: AppState = {...seed,demo:false,sessions:[contact],groups:[],activities:[],backends:seed.backends.map(item=>item.id===backend?{...item,installed:true,capabilities:{...item.capabilities,terminal:true,graphicalChat:backend==='claude'}}:item)};
@@ -23,7 +23,7 @@ async function fixture(page: Page, backend: 'claude' | 'dsh') {
     modes.push(mode); contact.interactionMode = mode;
     return route.fulfill({json:contact});
   });
-  const transcript = {messages:[] as ConversationMessage[],truncated:false};
+  const transcript = {messages,truncated:false};
   await page.route('**/api/sessions/'+contact.id+'/conversation',route=>route.fulfill({json:transcript}));
   await page.route('**/api/sessions/'+contact.id+'/input*',async route=>{
     if(route.request().method()==='GET') return route.fulfill({json:{generation:'test-generation',directSubmit:result.directSubmit,submission:{status:result.status}}});
@@ -242,4 +242,19 @@ test('native generation hands off to the terminal instead of faking a stop contr
   await app.input.fill('补充一句');
   await expect(handoff).toBeHidden();
   await expect(app.send).toBeVisible();
+});
+
+
+test('DeepSeek native tool calls render as expandable cards with their result', async ({ page }) => {
+  await fixture(page, 'dsh', [{
+    id: 'tool-call-1', role: 'assistant', text: '工具调用：bash',
+    tool: { callId: 'call-1', name: 'bash', args: '{\n  "command": "ls"\n}', result: 'file-a\nfile-b', status: 'ok' },
+  }]);
+  const card = page.locator('.conversation-tool');
+  await expect(card).toBeVisible();
+  await expect(card.locator('summary')).toContainText('bash');
+  await expect(card.locator('summary')).toContainText('已完成');
+  await card.locator('summary').click();
+  await expect(card.locator('pre').first()).toContainText('"command": "ls"');
+  await expect(card.locator('.conversation-tool-output')).toContainText('file-a');
 });

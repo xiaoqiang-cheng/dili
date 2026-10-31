@@ -94,11 +94,21 @@ export interface DiscoveredSession {
   cwdAvailable?: boolean;
 }
 
+export interface ConversationTool {
+  callId: string;
+  name: string;
+  args?: string;
+  result?: string;
+  status: 'running' | 'ok' | 'error';
+}
+
 export interface ConversationMessage {
   id: string;
   role: 'user' | 'assistant';
   text: string;
   createdAt?: string;
+  /** Native tool call attached to this message; absent for plain text turns. */
+  tool?: ConversationTool;
 }
 
 export interface ConversationTranscript {

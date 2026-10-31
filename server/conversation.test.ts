@@ -287,6 +287,31 @@ test('DeepSeek ask_user_question tool calls appear in the conversation transcrip
   assert.match(result.messages[0].text, /删除 — 需要同步迁移/);
 });
 
+test('DeepSeek tool calls and results become bounded, honest tool cards', async t => {
+  const { file, reader } = await fixture(t), a = contact('dsh');
+  await file(a, [{ type: 'session', id: a.nativeSessionId, cwd: a.cwd },
+    { type: 'tool/call', seq: 8, time: Date.parse(date) + 8, data: { turn: 1, step: 1, callId: 'call-bash', name: 'bash', arguments: JSON.stringify({ command: 'ls' }) } },
+    { type: 'tool/result', seq: 9, time: Date.parse(date) + 9, data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'call-bash', content: [{ type: 'text', text: 'file-a\nfile-b' }], isError: false }, sourceEventSeqs: [8], surfaceOp: 'append' } },
+    { type: 'tool/call', seq: 10, time: Date.parse(date) + 10, data: { turn: 1, step: 2, callId: 'call-fail', name: 'read', arguments: '{"path":"missing"}' } },
+    { type: 'tool/result', seq: 11, time: Date.parse(date) + 11, data: { turn: 1, step: 2, message: { role: 'tool', toolCallId: 'call-fail', content: [{ type: 'text', text: 'not found' }], isError: true }, surfaceOp: 'append' } },
+    { type: 'tool/call', seq: 12, time: Date.parse(date) + 12, data: { turn: 1, step: 3, callId: 'call-long', name: 'bash', arguments: JSON.stringify({ command: 'x'.repeat(5_000) }) } },
+    { type: 'tool/result', seq: 13, time: Date.parse(date) + 13, data: { turn: 1, step: 3, message: { role: 'tool', toolCallId: 'call-long', content: [{ type: 'text', text: 'y'.repeat(5_000) }], isError: false }, surfaceOp: 'append' } },
+  ]);
+  const result = await reader.read(a);
+  assert.equal(result.messages.length, 3);
+  assert.equal(result.messages[0].text, '工具调用：bash');
+  assert.equal(result.messages[0].tool?.name, 'bash');
+  assert.equal(result.messages[0].tool?.status, 'ok');
+  assert.match(result.messages[0].tool?.args ?? '', /"command": "ls"/);
+  assert.equal(result.messages[0].tool?.result, 'file-a\nfile-b');
+  assert.equal(result.messages[1].tool?.status, 'error');
+  assert.equal(result.messages[1].tool?.result, 'not found');
+  assert.equal(result.messages[2].tool?.args?.length, 4_000);
+  assert.equal(result.messages[2].tool?.result?.length, 4_000);
+  assert.match(result.messages[2].tool?.args ?? '', /…$/);
+  assert.match(result.messages[2].tool?.result ?? '', /…$/);
+});
+
 test('DeepSeek live history is cached, bounded and never called for a pending fork', async t => {
   const { paths } = await fixture(t), a = contact('dsh');
   let calls = 0;
