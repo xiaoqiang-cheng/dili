@@ -23,6 +23,14 @@ test('the route table has no duplicate method and path pairs', () => {
   }
 });
 
+test('host web proxy and native proxy are owner-only', () => {
+  for (const [method, path] of [['POST', '/api/web-proxy'], ['GET', '/api/sessions/s1/native-proxy']] as const) {
+    assert.equal(allowed(owner, method, path).allowed, true);
+    assert.equal(allowed(share(), method, path).allowed, false);
+    assert.equal(allowed(null, method, path).allowed, false);
+  }
+});
+
 test('HEAD uses the GET registration and query-independent matching', () => {
   assert.ok(matchRoute('HEAD', '/api/state'));
   assert.equal(matchRoute('HEAD', '/api/state')?.route.method, 'GET');

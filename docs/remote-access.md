@@ -45,7 +45,7 @@ SESSIONDECK_RELAY_DATA_DIR=/path/to/private-relay-data npm run relay
 
 邀请码只开通连接，不代替所有者登录，也不赋予共享权限。TLS 在可信中继终止，中继能接触经其转发的内容；这不是端到端加密。语音同样经过中继再由主机识别，详见[语音输入](installation.md#可选语音输入funasr)。
 
-网页预览目前仍由浏览器直连目标地址；通过中继打开 Dili 不会自动转发主机上其他端口，手机的 `localhost` 也不是服务主机。端口转发另见 [TODO 23](../TODO.md#23-网页服务远程预览与端口转发2026-10-23)。
+本地访问时网页预览仍由浏览器直连目标地址。公网访问时，浏览器不能直连主机的回环或私网地址，Dili 会改用主机侧 `/web-proxy/<token>/` 转发：dsh 原生界面自动使用，普通网页服务需在主机设置 `SESSIONDECK_WEB_PROXY_TARGETS` 显式允许。手机上的 `localhost` 仍不是服务主机；路径代理与独立预览子域名的边界见 [TODO 23](../TODO.md#23-网页服务远程预览与端口转发2026-10-23)。
 
 ## SSH 高级方式
 
@@ -60,9 +60,9 @@ SESSIONDECK_RELAY_DATA_DIR=/path/to/private-relay-data npm run relay
 3. 电脑：确认可以免密 `ssh 用户@服务器` 登录（隧道使用 BatchMode，不会弹出密码输入）。
 4. 填写公开地址、服务器地址、SSH 用户，点「启用远程访问」，状态变为「已连接」即可。
 
-- 远程请求使用独立的监听端口（默认 Web 端口 + 1，可用 `SESSIONDECK_REMOTE_PORT` 指定），只绑定本机回环；隧道只转发这个端口，因此"来自 127.0.0.1"不会被当作本机所有者。
+- 远程请求使用独立的监听端口（默认 Web 端口 + 1，可用 `SESSIONDECK_REMOTE_PORT` 指定），默认只绑定 `127.0.0.1`；可用 `SESSIONDECK_REMOTE_BIND` 绑定固定私网/P2P 地址，并必须用防火墙限制来源。隧道只转发这个端口，因此"来自 127.0.0.1"不会被当作本机所有者。
 - 服务器端隧道只绑定 `127.0.0.1`，外网只能经过 Caddy 的 HTTPS 访问；TLS 在你的服务器上解密。
-- DeepSeek Harness 的原生网页界面只在本机可用，远程暂不支持。
+- 公网访问 dsh 原生网页界面时，Dili 会经主机侧 `/web-proxy/` 转发并隐藏启动令牌；本地仍直连。普通网页服务需在主机设置 `SESSIONDECK_WEB_PROXY_TARGETS`。链路部署见 [remote-network.md](agents/remote-network.md)。
 
 ### PWA 同域入口与服务依赖
 

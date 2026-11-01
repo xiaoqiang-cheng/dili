@@ -1,5 +1,15 @@
 # Dili 本地迭代记录
 
+## 2026-11-01：A 方案主机转发与 P2P 回退基础
+
+- 新增所有者专用的主机侧 HTTP/WebSocket 代理（`server/web-proxy.ts`）：浏览器只拿短期内存令牌，上游地址不出现在前端状态；Dili 设备 Cookie 在转发前剔除，上游 `Set-Cookie` 的 Domain 移除、Path 收窄到代理前缀，重定向改写到公网设备前缀内。
+- 公网 dsh 原生界面改走 `/api/sessions/:id/native-proxy`；dsh 启动令牌只在首次无 Cookie 请求时作为上游 query 出现，检测到 `dsh-auth-*` 后不再重放，避免 303 循环。本地访问继续直连 `nativeUrl`，不改变本地体验。真实 dsh 在带 `/connect/d/<id>` 前缀的临时代理上通过 Chromium 打开并显示原生界面。
+- 远程网页服务面板改为自动经主机代理，普通目标必须在 `SESSIONDECK_WEB_PROXY_TARGETS` 中；本地仍为浏览器直连。路径代理不重写 HTML/JS，使用根路径绝对资源的站点明确提示可能不完整，不承诺任意站点可嵌入。
+- 远程监听新增 `SESSIONDECK_REMOTE_BIND`（默认 `127.0.0.1`），可绑定 EasyTier/WireGuard 私网地址；中继新增 `SESSIONDECK_RELAY_P2P_UPSTREAM`，通过 `/api/auth/status` 探活，健康才返回 P2P 上游，否则保留 FRP。探活缓存 5 秒，设备撤销语义不变。
+- 三个问题的回答：1）代理是平台中立的网络能力，没有 Codex 专属类型进入公共契约；dsh 的 Cookie/令牌处理只在其原生 Web 适配器路径中。2）普通网页服务对所有后端一视同仁；dsh 只代理其真实原生界面，本地仍可回退直连，无法嵌入或连接失败时显示错误而不是伪造成功。3）没有只做界面：代理真实转发 HTTP/WS，P2P 有真实探活与 FRP 回退；本轮未声称已经在用户家庭网络或公网服务器完成部署验收。
+- 新增 `server/web-proxy.test.ts`（HTTP、重定向、Cookie、启动令牌、WebSocket）、`server/web-proxy-api.test.ts`（所有者与允许列表契约）、`server/relay-p2p.test.ts`（解析、缓存、失败回退、中继路由）与访问登记测试。`npm test`：427 项，419 通过、4 跳过、4 个既有 Codex fixture 失败（与基线相同）；`npm run test:web`：254 通过（5.7 分钟）；`npm run build` 隔离目录构建通过。`npm run test:pwa`：32 通过，16 个 iPhone/WebKit 用例因本机未安装 WebKit 可执行文件失败，不是应用断言失败。
+- 文档新增 `docs/agents/remote-network.md`，同步 relay／dsh／security／remote-access／预览工作区／TODO／AGENTS。活动服务未重启；正式实例仍运行旧后端，需在安全窗口重启后生效。
+
 ## 2026-10-23：文档结构整理与 README 改版
 
 - 将首页改为面向新用户的产品介绍，突出会话联系人、统一图形工作台、群组和远程接续，并加入清楚标明为布局示意的工作台插图、源码快速开始及能力边界。

@@ -2,6 +2,7 @@ import express from 'express';
 import { createServer } from 'node:http';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
+import { isIP } from 'node:net';
 import { resolve, join } from 'node:path';
 import { statSync, realpathSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { chmod, rename, stat, unlink, writeFile } from 'node:fs/promises';
@@ -9,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Store } from './store.ts';
 import { renderConversationHtml, exportFileName } from './export.ts';
+import { WebProxy, parseProxyTarget } from './web-proxy.ts';
+import { parseServicePreviewUrl } from '../shared/service-preview.ts';
 import { SseReplayBuffer } from './sse-replay.ts';
 import { shellQuote } from './shell-quote.ts';
 import { IDLE_SLEEP_ENV, idleSleepMinutes, shouldSleep } from './idle-sleep.ts';
@@ -85,6 +88,10 @@ const LOCAL_OWNER: Principal = { kind: 'owner', local: true };
 // server's loopback and the reverse proxy there terminates TLS.
 const envRemotePort = process.env.SESSIONDECK_REMOTE_PORT ? Number(process.env.SESSIONDECK_REMOTE_PORT) : null;
 if (envRemotePort !== null && (!Number.isInteger(envRemotePort) || envRemotePort < 1024 || envRemotePort > 65535 || envRemotePort === port)) throw new Error('SESSIONDECK_REMOTE_PORT 必须是与 Web 端口不同的 1024–65535 端口');
+// Loopback by default. A fixed private/VPN address lets the relay reach this
+// listener directly over EasyTier/WireGuard while FRP remains the fallback.
+const envRemoteBind = process.env.SESSIONDECK_REMOTE_BIND?.trim() || '127.0.0.1';
+if (!isIP(envRemoteBind)) throw new Error('SESSIONDECK_REMOTE_BIND 必须是 IP 地址，例如 127.0.0.1、10.144.0.2 或 0.0.0.0');
 // A random key file beside the database seals the saved SSH password.
 const secretKeyFile = join(dataDir, 'secret.key');
 if (!existsSync(secretKeyFile)) writeFileSync(secretKeyFile, randomBytes(32), { mode: 0o600, flag: 'wx' });
@@ -133,6 +140,16 @@ const terminals = new Terminals();
 const shells = new ShellTerminals();
 const nativeStatus = new NativeStatusWatcher();
 const dsh = new DshBridge({ dataDir });
+// Host-side web services are proxied only after an explicit owner request and,
+// for generic preview URLs, only when the host operator allowlisted the origin.
+const webProxy = new WebProxy();
+const webProxyAllowlist = (process.env.SESSIONDECK_WEB_PROXY_TARGETS ?? '')
+  .split(',').map(value => value.trim()).filter(Boolean).flatMap(value => {
+    try { return [new URL(value).origin]; } catch { return []; }
+  });
+function proxyTargetAllowed(url: URL): boolean {
+  return webProxyAllowlist.includes(url.origin);
+}
 const dshChat = new DshChatAdapter(dsh, {
   shouldStart: nativeId => store.sessions().some(item => item.backend === 'dsh' && item.nativeSessionId === nativeId && item.running),
   writerWritable: nativeId => store.sessions().some(item => item.backend === 'dsh' && item.nativeSessionId === nativeId && item.running && item.executionTransport === 'web'),
@@ -438,7 +455,10 @@ app.post('/api/sessions/:id/terminal/image', captureTerminalImage,
     }
   });
 registerAttachments(app, express.raw, attachments, { csrf: csrfValid, allowedGroup: id => !!store.group(id), allowed: id => { const item = store.session(id); return !demo && !!item && !item.archived && ['codex', 'claude', 'dsh'].includes(item.backend); } });
-app.use(express.json({ limit: '128kb' }));
+const jsonBody = express.json({ limit: '128kb' });
+// A proxied web app owns its own request body. Parsing it here would consume the
+// stream before /web-proxy can pipe it to the local service.
+app.use((req, res, next) => req.path.startsWith('/web-proxy') ? next() : jsonBody(req, res, next));
 // Login and share redemption run before a device exists; the remote listener
 // already requires a matching Origin for them, and SameSite blocks the cookie.
 const preAuth = new Set(['/api/auth/login', '/api/auth/redeem', '/api/auth/logout']);
@@ -540,7 +560,7 @@ async function applyRemote() {
     await new Promise<void>((accept, reject) => {
       const failed = (error: NodeJS.ErrnoException) => reject(Object.assign(new Error(error.code === 'EADDRINUSE' ? `远程监听端口 ${settings.localPort} 已被占用` : error.message), { status: 409 }));
       remoteServer.once('error', failed);
-      remoteServer.listen(settings.localPort, '127.0.0.1', () => { remoteServer.off('error', failed); accept(); });
+      remoteServer.listen(settings.localPort, envRemoteBind, () => { remoteServer.off('error', failed); accept(); });
     });
   }
   await tunnel.configure(settings.mode !== 'invite' && settings.enabled && remoteServer.listening ? settings : null, sshPassword());
@@ -1661,6 +1681,20 @@ function upgrade(req: import('node:http').IncomingMessage, socket: import('node:
     voiceWss.handleUpgrade(req, socket, head, ws => voiceConnections.attach(ws, device));
     return;
   }
+  const proxyMatch = /^\/web-proxy\/([A-Za-z0-9_-]+)(\/.*)?$/.exec(url.pathname);
+  if (proxyMatch) {
+    const remote = isRemote(req);
+    const device = remote ? readCookie(req.headers.cookie, DEVICE_COOKIE) : undefined;
+    const principal = remote ? auth.principal(device) : LOCAL_OWNER;
+    const allowed = remote ? allowedRemoteRequest(req, remoteSettings().publicUrl, remoteSettings().localPort) : allowedRequest(req, port, wildcardHost);
+    if (!allowed || !principal || principal.kind !== 'owner') { socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return; }
+    const suffix = proxyMatch[2]?.replace(/^\//, '') ?? '';
+    if (!webProxy.handleUpgrade(req, socket, head, { token: proxyMatch[1]!, suffix, search: url.search, stripCookies: [DEVICE_COOKIE] })) {
+      socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+      socket.destroy();
+    }
+    return;
+  }
   const shellMatch = /^\/api\/shells\/([^/]+)\/terminal$/.exec(url.pathname);
   if (!url.pathname.startsWith('/api/terminal/') && !shellMatch) return; // Vite owns its own HMR upgrade.
   const remote = isRemote(req);
@@ -1812,6 +1846,47 @@ const previewPoll = setInterval(() => { void pollPreviews(); }, 5000);
 previewPoll.unref();
 void pollPreviews();
 
+app.post('/api/web-proxy', (req, res) => {
+  if (principalOf(res).kind !== 'owner') fail('仅所有者可以打开主机网页服务', 403);
+  const raw = typeof req.body?.url === 'string' ? req.body.url : '';
+  const parsed = parseServicePreviewUrl(raw);
+  if (!parsed.ok) fail(parsed.error);
+  const url = new URL(parsed.url);
+  if (!proxyTargetAllowed(url)) fail('这个地址没有在主机允许列表（SESSIONDECK_WEB_PROXY_TARGETS）中，不能经主机转发', 403);
+  const target = webProxy.register(url, { label: `${url.host}${url.pathname}`, initialQuery: url.search, hash: url.hash });
+  res.status(201).json({ path: `/web-proxy/${target.token}/`, hash: target.hash, expiresAt: target.expiresAt });
+});
+
+app.get('/api/sessions/:id/native-proxy', (req, res) => {
+  if (principalOf(res).kind !== 'owner') fail('仅所有者可以打开原生界面', 403);
+  const item = session(String(req.params.id));
+  if (item.backend !== 'dsh' || !item.nativeUrl) fail('这个联系人没有可转发的原生界面', 404);
+  const url = parseProxyTarget(item.nativeUrl);
+  const target = webProxy.register(url, {
+    label: item.title,
+    initialQuery: url.search,
+    initialCookie: 'dsh-auth-',
+    hash: url.hash,
+    rewriteOrigin: true,
+  });
+  res.json({ path: `/web-proxy/${target.token}/`, hash: target.hash, expiresAt: target.expiresAt });
+});
+
+// The relay/Caddy strips the public device prefix before this listener sees the
+// request, so the browser-facing path is /web-proxy/<token>/; proxy Location and
+// cookie paths add remoteBase back so they still work behind the relay.
+app.use('/web-proxy', (req, res) => {
+  if (principalOf(res).kind !== 'owner') { res.status(403).type('text/plain').send('仅所有者可以打开主机网页服务'); return; }
+  const match = /^\/web-proxy\/([A-Za-z0-9_-]+)(\/.*)?$/.exec(req.originalUrl);
+  if (!match) { res.status(404).type('text/plain').send('网页服务不存在或已过期'); return; }
+  const suffix = match[2]?.replace(/^\//, '') ?? '';
+  const parsed = new URL(req.originalUrl, 'http://127.0.0.1');
+  const base = isRemote(req) ? remoteBase(remoteSettings()) : '';
+  if (!webProxy.handle(req, res, {
+    token: match[1]!, suffix, search: parsed.search, publicBase: base, stripCookies: [DEVICE_COOKIE],
+  })) res.status(404).type('text/plain').send('网页服务不存在或已过期');
+});
+
 app.use('/api', (_req, res) => res.status(404).json({ error: '接口不存在' }));
 if (process.argv.includes('--dev')) {
   const { createServer: createViteServer } = await import('vite');
@@ -1865,7 +1940,7 @@ server.listen(port, host, () => {
   if (!demo) for (const item of store.sessions()) groupReplies.statusChanged(item);
   relayNotices.start();
   void applyRemote().then(() => {
-    if (remoteServer.listening) console.log(`远程访问监听 → http://127.0.0.1:${remoteSettings().localPort}（需要登录）`);
+    if (remoteServer.listening) console.log(`远程访问监听 → http://${envRemoteBind}:${remoteSettings().localPort}（需要登录）`);
   }).catch(error => console.error(`远程访问未启动：${error instanceof Error ? error.message : String(error)}`));
 });
 function shutdown(exitCode = 0) {

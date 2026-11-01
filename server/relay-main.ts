@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync, chmodSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
@@ -7,6 +8,7 @@ import { RelayStore } from './relay-store.ts';
 import { createRelayApp } from './relay-service.ts';
 import { RelayBandwidth } from './relay-bandwidth.ts';
 import { acquireInstanceLock } from './instance-lock.ts';
+import { P2PHealth, parseP2PUpstreams } from './relay-p2p.ts';
 
 const directory = resolve(process.env.SESSIONDECK_RELAY_DATA_DIR || join(homedir(), '.local/share/sessiondeck-relay'));
 const port = Number(process.env.SESSIONDECK_RELAY_PORT || 18501);
@@ -39,7 +41,23 @@ const bandwidth = new RelayBandwidth(interfaces, capacity);
 bandwidth.sample();
 const bandwidthTimer = setInterval(() => bandwidth.sample(), 5000);
 bandwidthTimer.unref();
-const app = createRelayApp(store, { serverUrl, domains, adminToken, pluginToken, adminHtml, bandwidth, clientsDir: resolve(process.env.SESSIONDECK_RELAY_CLIENTS_DIR || join(dirname(adminHtml), 'clients')) });
+const p2pConfig = parseP2PUpstreams(process.env.SESSIONDECK_RELAY_P2P_UPSTREAM);
+const publicHost = new URL(serverUrl).host;
+function probeP2P(target: string): Promise<boolean> {
+  const index = target.lastIndexOf(':');
+  const host = target.slice(0, index).replace(/^\[|\]$/g, ''), port = Number(target.slice(index + 1));
+  return new Promise(resolve => {
+    const probe = httpRequest({ host, port, path: '/api/auth/status', method: 'GET', headers: { host: publicHost, 'user-agent': 'dili-relay-health' }, timeout: 800 }, response => {
+      response.resume();
+      resolve(response.statusCode === 200);
+    });
+    probe.on('timeout', () => probe.destroy());
+    probe.on('error', () => resolve(false));
+    probe.end();
+  });
+}
+const p2p = (p2pConfig.default || p2pConfig.devices.size) ? new P2PHealth(p2pConfig, probeP2P) : undefined;
+const app = createRelayApp(store, { serverUrl, domains, adminToken, pluginToken, adminHtml, bandwidth, p2p, clientsDir: resolve(process.env.SESSIONDECK_RELAY_CLIENTS_DIR || join(dirname(adminHtml), 'clients')) });
 const server = app.listen(port, '127.0.0.1', () => console.log(`Dili 配对服务 → ${serverUrl}/\n管理密钥文件：${join(directory, 'admin.token')}`));
 let closing = false;
 function close() { if (closing) return; closing = true; clearInterval(bandwidthTimer); server.close(() => { db.close(); void lock.release().then(() => process.exit(0)); }); server.closeAllConnections(); }

@@ -1,7 +1,9 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ExternalLink, Globe2, LoaderCircle, RefreshCw, X } from 'lucide-react';
 import { parseServicePreviewUrl, SERVICE_PREVIEW_PRESETS } from '../shared/service-preview';
 import { Splitter } from './WorkspaceExplorer';
+import { api } from './api';
+import { appUrl } from './urls';
 import { readLocalPreference, writeLocalPreference } from './ui';
 import './service-preview.css';
 
@@ -23,9 +25,12 @@ function remember(url: string) {
   return next;
 }
 
-export default function ServicePreviewPanel({ open, close, inert, embedded = false, initialUrl = '', onNavigate }: { open: boolean; close: () => void; inert: boolean; embedded?: boolean; initialUrl?: string; onNavigate?: (url: string) => void }) {
+export default function ServicePreviewPanel({ open, close, inert, embedded = false, initialUrl = '', onNavigate, remote = false }: { open: boolean; close: () => void; inert: boolean; embedded?: boolean; initialUrl?: string; onNavigate?: (url: string) => void; remote?: boolean }) {
   const [draft, setDraft] = useState(() => initialUrl || readLocalPreference(DRAFT_KEY) || 'http://127.0.0.1:5173/');
-  const [activeUrl, setActiveUrl] = useState(() => { const parsed = initialUrl ? parseServicePreviewUrl(initialUrl) : null; return parsed?.ok ? parsed.url : ''; });
+  const [sourceUrl, setSourceUrl] = useState(() => { const parsed = initialUrl ? parseServicePreviewUrl(initialUrl) : null; return parsed?.ok ? parsed.url : ''; });
+  const [activeUrl, setActiveUrl] = useState(() => { const parsed = initialUrl ? parseServicePreviewUrl(initialUrl) : null; return !remote && parsed?.ok ? parsed.url : ''; });
+  const request = useRef(0);
+  const resolvedInitial = useRef('');
   const hintId = useId();
   const errorId = useId();
   const [generation, setGeneration] = useState(0);
@@ -39,17 +44,45 @@ export default function ServicePreviewPanel({ open, close, inert, embedded = fal
 
   useEffect(() => { writeLocalPreference(DRAFT_KEY, draft); }, [draft]);
 
-  const openUrl = (value: string) => {
+  const openUrl = async (value: string) => {
     const parsed = parseServicePreviewUrl(value);
     if (!parsed.ok) { setError(parsed.error); return; }
+    const requestId = ++request.current;
     setError('');
+    resolvedInitial.current = parsed.url;
     setDraft(parsed.url);
-    setActiveUrl(parsed.url);
+    setSourceUrl(parsed.url);
     onNavigate?.(parsed.url);
-    setGeneration(current => current + 1);
-    setLoading(true);
     setRecent(remember(parsed.url));
+    if (!remote) {
+      setActiveUrl(parsed.url);
+      setGeneration(current => current + 1);
+      setLoading(true);
+      return;
+    }
+    // A public PWA cannot reach the host's loopback or LAN service directly.
+    // Mint a short-lived, host-side proxy instead; the browser only sees Dili's
+    // own origin, and the upstream query token never becomes part of the URL.
+    setActiveUrl('');
+    setLoading(true);
+    try {
+      const proxied = await api<{ path: string; hash?: string }>('/web-proxy', { url: parsed.url });
+      if (requestId !== request.current) return;
+      setActiveUrl(`${appUrl(proxied.path)}${proxied.hash ?? ''}`);
+      setGeneration(current => current + 1);
+    } catch (cause) {
+      if (requestId !== request.current) return;
+      setLoading(false);
+      setError(cause instanceof Error ? cause.message : '无法通过主机打开这个服务');
+    }
   };
+
+  useEffect(() => {
+    if (!remote || !initialUrl || resolvedInitial.current === initialUrl) return;
+    void openUrl(initialUrl);
+    // Only resolve the URL carried by this tab; later edits go through submit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialUrl, remote]);
 
   const suggestions = useMemo(() => {
     const presetUrls = new Set<string>(SERVICE_PREVIEW_PRESETS.map(item => item.url));
@@ -69,7 +102,7 @@ export default function ServicePreviewPanel({ open, close, inert, embedded = fal
       <div className="service-preview-title"><Globe2 size={15} /><strong>网页服务</strong></div>
       <button type="button" className="icon-button" aria-label="关闭网页服务" title="关闭" onClick={close}><X size={16} /></button>
     </header>
-    <form className="service-preview-form" onSubmit={event => { event.preventDefault(); openUrl(draft); }}>
+    <form className="service-preview-form" onSubmit={event => { event.preventDefault(); void openUrl(draft); }}>
       <label className="service-preview-url">
         <span className="sr-only">服务地址</span>
         <input value={draft} onChange={event => { setDraft(event.target.value); setError(''); }} placeholder="http://127.0.0.1:5173 或 :5173" spellCheck={false} autoComplete="off" aria-invalid={!!error} aria-describedby={error ? errorId : hintId} />
@@ -81,16 +114,14 @@ export default function ServicePreviewPanel({ open, close, inert, embedded = fal
       </>}
     </form>
     <div className="service-preview-suggestions" aria-label="常用地址">
-      {suggestions.map(item => <button type="button" key={item.url} className={activeUrl === item.url ? 'active' : ''} onClick={() => openUrl(item.url)}>{item.label}</button>)}
+      {suggestions.map(item => <button type="button" key={item.url} className={sourceUrl === item.url ? 'active' : ''} onClick={() => void openUrl(item.url)}>{item.label}</button>)}
     </div>
     {error ? <p id={errorId} className="service-preview-error" role="alert">{error}</p>
-      : <p id={hintId} className="service-preview-hint">直连预览：地址须能从当前浏览器访问；公网主机端口转发尚未接入。站点禁止嵌入时可在新标签打开。</p>}
+      : <p id={hintId} className="service-preview-hint">{remote ? '经主机转发：公网访问时由 Dili 主机连接服务，浏览器只访问 Dili 域名。只打开你信任的服务；当前路径代理与 Dili 同源，尚不是独立预览子域名的隔离边界。使用根路径绝对资源的站点可能无法完整嵌入。' : '直连预览：地址须能从当前浏览器访问；站点禁止嵌入时可在新标签打开。'}</p>}
     <div className="service-preview-frame-wrap">
-      {!activeUrl && <div className="service-preview-empty"><Globe2 size={28} /><p>粘贴 Vite / 本地服务地址后点打开</p><p>例如 <code>http://10.11.1.111:5173/</code></p></div>}
-      {activeUrl && <>
-        {loading && <div className="service-preview-loading" role="status"><LoaderCircle size={16} className="spin" />正在加载…</div>}
-        <iframe key={`${activeUrl}:${generation}`} className="service-preview-frame" title={`网页服务 ${activeUrl}`} src={activeUrl} sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" onLoad={() => setLoading(false)} />
-      </>}
+      {!activeUrl && !loading && <div className="service-preview-empty"><Globe2 size={28} /><p>粘贴 Vite / 本地服务地址后点打开</p><p>例如 <code>http://10.11.1.111:5173/</code></p></div>}
+      {loading && <div className="service-preview-loading" role="status"><LoaderCircle size={16} className="spin" />正在加载…</div>}
+      {activeUrl && <iframe key={`${activeUrl}:${generation}`} className="service-preview-frame" title={`网页服务 ${activeUrl}`} src={activeUrl} sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" onLoad={() => setLoading(false)} />}
     </div>
   </aside>;
 }

@@ -18,6 +18,15 @@
 - 服务只监听本机；不要把它当成可远程访问的入口。
 - dsh 0.2 的原生权限目录只有 `read-only`、`workspace-write`、`danger-full-access`，没有 `auto`。Dili 不再为 dsh 提供 Auto，也不注入启动覆盖层；历史 Auto 联系人在启动时归一为原生默认，并在状态里说明原因。
 
+## 远程原生界面（2026-11-01）
+
+公网 PWA 不能直接 iframe 访问主机的 `127.0.0.1:44400`（混合内容 + Private Network Access）。远程访问时，`GET /api/sessions/:id/native-proxy` 会为主机的 dsh Web 服务登记一个短期代理目标，前端改用 `/web-proxy/<token>/`，并保留 `#sessiondeckSession=`。代理首次访问才把 dsh 启动令牌作为上游 query 发出，令牌不出现在浏览器地址栏；检测到 `dsh-auth-*` Cookie 后不再重放令牌，避免 dsh 303 循环。
+
+- 代理只允许所有者，HTTP 与 WebSocket 都走主机侧转发；Dili 的设备 Cookie 在转发前剔除。
+- 本地访问仍直接用 `nativeUrl`，不经过代理。
+- 远程 dsh 的「在新窗口打开原生界面」使用同一代理地址；同一浏览器的新标签共享 dsh Cookie。
+- 该代理不改变 dsh 的审批、写锁和原生状态语义；它只是网络路径。
+
 ## 能力边界
 
 - 多工作区／`--add-dir`：**不支持**，界面必须解释原因，不能假装成功。

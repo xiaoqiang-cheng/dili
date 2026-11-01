@@ -38,6 +38,8 @@ export const ROUTES: Route[] = [
   { method: 'DELETE', path: '/api/shares/:id', access: 'owner' },
 
   { method: 'GET', path: '/api/config', access: 'read' },
+  { method: 'POST', path: '/api/web-proxy', access: 'owner' },
+  { method: 'GET', path: '/api/sessions/:id/native-proxy', access: 'owner' },
   { method: 'GET', path: '/api/scratchpad', access: 'owner' },
   { method: 'PATCH', path: '/api/scratchpad', access: 'owner' },
   { method: 'GET', path: '/api/state', access: 'read' },

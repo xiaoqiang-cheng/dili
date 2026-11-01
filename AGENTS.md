@@ -48,6 +48,7 @@
 | P1 | SSE 重连只能整包重取 | `server/sse-replay.ts`、`server/index.ts` | 事件带 `id: revision`；`Last-Event-ID` 命中连续窗口时补发，缺口回退完整快照；窗口 200 条/4 MiB |
 | P1 | 文案硬编码 | `shared/i18n.ts` | 已建立消息表、占位符与缺失键测试（`missingKeys`）；现有中文按区域逐步迁移，不做一次性大改 |
 | P2 | 没有统一浏览器基线 | `package.json`、`vite.config.ts`、`scripts/browser-baseline.test.ts` | 已声明 `browserslist` 与 Vite `build.target`，静态扫描禁止 API |
+| P1 | 远程网页服务路径代理不兼容根路径绝对资源 | `server/web-proxy.ts`、`docs/agents/remote-network.md` | 已支持 dsh 与 `SESSIONDECK_WEB_PROXY_TARGETS` 中的目标；独立预览子域名待排期（TODO 23） |
 | P2 | 远程排障只能看日志 | `GET /api/debug`、`client/DebugPanel.tsx` | 只读快照：进程、修订、补发窗口、连接数、终端数、后端版本、数据目录；不返回正文、令牌或密钥 |
 | P2 | 空闲会话长期占进程 | `server/idle-sleep.ts`、`SESSIONDECK_IDLE_SLEEP_MINUTES` | 默认关闭；仅 idle 且超过阈值的运行中会话经既有停止路径休眠，等待输入/审批/异常/Fork 中永不休眠 |
 | P2 | CI 串行且失败无制品 | `.github/workflows/verify.yml` | 拆为 `unit`、`e2e`、`pwa`、`package` 四个并行 job；PWA job 安装 Chromium 与 WebKit，工作台回归使用 Chromium；失败分别上传日志、Playwright 与 PWA 制品 |
@@ -62,6 +63,7 @@
 - [terminal.md](docs/agents/terminal.md)：PTY 生命周期、重连回放、图片与移动端输入。
 - [dsh.md](docs/agents/dsh.md)：DeepSeek Harness 的原生 Web／TUI 路径与限制。
 - [relay.md](docs/agents/relay.md)：邀请码、frp、设备与分享权限。
+- [remote-network.md](docs/agents/remote-network.md)：同网直连、split-horizon DNS、EasyTier/WireGuard P2P 与 FRP 回退、主机网页代理部署。
 - [testing.md](docs/agents/testing.md)：单测、契约测试、浏览器验收与原生烟测的边界。
 - [performance.md](docs/agents/performance.md)：缓存、分页、渲染上限与隐藏页策略。
 - [i18n.md](docs/agents/i18n.md)：消息表、占位符与迁移规则。

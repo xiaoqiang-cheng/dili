@@ -92,7 +92,7 @@ function HelpDialog({ close }: { close: () => void }) {
       <ul className="status-guide"><li><span className="status-badge running">运行中</span><span>后端正在执行任务。</span></li><li><span className="status-badge waiting">等待输入 / 审批</span><span>需要你进入会话回复或决定。</span></li><li><span className="status-badge idle">空闲 / 已停止</span><span>当前没有执行任务；不代表工作已验收。</span></li><li><span className="status-badge unknown">状态未知</span><span>目前没有足够信息确认状态，进入原生会话查看。</span></li></ul>
       <p>标有“估测”的状态来自终端输出。卡片上的提醒、来源说明和原生会话可帮助你判断；断线时保留最后收到的状态。</p>
       <h3>保留你的工作方式</h3><p>置顶联系人始终在最前；然后依次是有红点提醒、正在执行任务、无红点等待输入的会话，其余在后。同层默认按上次输入时间，也可改为创建时间或名称；没有输入时间时排在该层有输入记录的联系人之后。有新提醒的联系人显示红点，打开会话后消失。桌面左侧列表切换联系人，右侧继续会话；手机进入单会话后可返回列表。每个页面独立保存搜索和筛选，刷新后继续使用；Fork 继承上下文，原联系人保留。</p>
-      <h3>统一预览面板</h3><p>文件浏览、文件／Git diff 预览、随手记和网页服务都在右侧预览面板显示。顶部标签可切换或关闭，＋菜单可打开新网页；隐藏面板保留所有标签。文件固定属于打开时的工作目录，切换联系人不会改变来源；随手记继续自动保存同一份笔记。</p><h3>网页服务预览</h3><p>顶栏地球图标可打开本机或局域网服务（如 <code>http://10.11.1.111:5173/</code>）。也可输入 <code>:5173</code>。地址须能从当前浏览器访问；公网主机端口转发尚未接入，localhost 指向当前浏览器所在设备。站点禁止嵌入时可用「新标签打开」。</p>
+      <h3>统一预览面板</h3><p>文件浏览、文件／Git diff 预览、随手记和网页服务都在右侧预览面板显示。顶部标签可切换或关闭，＋菜单可打开新网页；隐藏面板保留所有标签。文件固定属于打开时的工作目录，切换联系人不会改变来源；随手记继续自动保存同一份笔记。</p><h3>网页服务预览</h3><p>顶栏地球图标可打开本机或局域网服务（如 <code>http://10.11.1.111:5173/</code>）。也可输入 <code>:5173</code>。本机访问时浏览器直连；公网访问时由 Dili 主机转发，普通服务需在主机允许列表中，dsh 原生界面自动处理。使用根路径绝对资源的站点可能无法完整嵌入；站点禁止嵌入时可用「新标签打开」。</p>
     </div><div className="modal-footer"><button className="button primary" onClick={close}>知道了</button></div>
   </ModalShell>;
 }
@@ -546,6 +546,9 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   // A dsh chat started without launching dsh-tui owns the same native Web UI;
   // its terminal view is the iframe, not an empty PTY.
   const dshNativeWeb = selected?.backend === 'dsh' && !!selected.nativeUrl && selected.executionTransport === 'web';
+  const [nativeProxy, setNativeProxy] = useState<{ id: string; url: string } | null>(null);
+  const [nativeProxyError, setNativeProxyError] = useState('');
+  const [nativeProxyNonce, setNativeProxyNonce] = useState(0);
   const viewChoice = savedPrivateView(selected);
   // Every backend defaults to its graphical view. The native view is shown only
   // after this contact's own native-interface click (or when it has no graphical
@@ -557,6 +560,20 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
       : selected.backend === 'dsh' && agentChatAvailable
         ? viewChoice === 'terminal' ? 'terminal' : viewChoice === 'conversation' ? 'conversation' : 'chat'
         : viewChoice === 'conversation' ? 'conversation' : 'terminal' : 'terminal';
+  useEffect(() => {
+    if (!auth.remote || !selected || selected.backend !== 'dsh' || !selected.nativeUrl || privateView !== 'terminal') {
+      setNativeProxy(null); setNativeProxyError(''); return;
+    }
+    let active = true;
+    setNativeProxyError('');
+    void api<{ path: string; hash: string }>(`/sessions/${selected.id}/native-proxy`)
+      .then(result => { if (active) setNativeProxy({ id: selected.id, url: `${appUrl(result.path)}${result.hash}` }); })
+      .catch(cause => { if (active) setNativeProxyError(cause instanceof Error ? cause.message : '无法通过主机打开原生界面'); })
+    return () => { active = false; };
+  }, [auth.remote, selected?.id, selected?.nativeUrl, selected?.backend, privateView, nativeProxyNonce]);
+  const nativeHref = auth.remote
+    ? nativeProxy && nativeProxy.id === selected?.id ? nativeProxy.url : undefined
+    : selected?.nativeUrl;
   const switchPrivateView = (mode: 'chat' | 'conversation' | 'terminal') => {
     if (!selected) return;
     // DeepSeek Harness has one native session behind both views; switching is
@@ -711,7 +728,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
           <button className="icon-button" aria-label={fullscreenSessionId === selected.id ? '退出会话全屏' : '全屏会话'} title={fullscreenSessionId === selected.id ? '退出全屏（Esc）' : '全屏会话（Ctrl / ⌘ + Shift + Enter）'} aria-pressed={fullscreenSessionId === selected.id} onClick={() => setFullscreenSessionId(value => value ? null : selected.id)}>{fullscreenSessionId === selected.id ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>
           {selected.running ? <button className="button secondary small-button session-lifecycle" aria-label={stopLabel} title={stopLabel} disabled={!!busy} onClick={() => void run(`stop:${selected.id}`, () => api(`/sessions/${selected.id}/stop`, {}), dshNativeWeb || dshWebOnly ? '已停止当前任务，原生会话历史仍保留' : '已停止进程，原生会话历史仍保留')}><Square size={12} /><span>{stopLabel}</span></button> : <button className="button primary small-button session-lifecycle" aria-label={startLabel} title={startLabel} disabled={!!busy || selected.archived || !selectedBackend?.installed} onClick={() => void startSelected()}>{busy === `start:${selected.id}` ? <LoaderCircle size={13} className="spin" /> : <Play size={13} />}<span>{startLabel}</span></button>}
           {selected.groupId && <button className="icon-button session-extra-action" aria-label="分享结果到群组" title="分享结果到群组" onClick={() => setModal({ type: 'share', session: selected, text: selection })}><Share2 size={15} /></button>}
-          {selected.nativeUrl && <a className="icon-button session-extra-action" aria-label="原生窗口" title="在新窗口打开原生界面" target="_blank" rel="noreferrer" href={selected.nativeUrl}><ExternalLink size={15} /></a>}
+          {nativeHref && <a className="icon-button session-extra-action" aria-label="原生窗口" title="在新窗口打开原生界面" target="_blank" rel="noreferrer" href={nativeHref}><ExternalLink size={15} /></a>}
           <details key={selected.id} className="session-info"><summary title="更多"><Ellipsis size={16} /><span className="sr-only">会话信息</span></summary><div className="session-info-content">
             <button className="text-button compact-session-action" onClick={preview.openNote}><FilePenLine size={13} />随手记</button>
             <button className="text-button" onClick={event => { event.currentTarget.closest('details')?.removeAttribute('open'); setModal({ type: 'directories', session: selected }); }}><Folder size={13} />工作区权限{selected.additionalDirectories?.length ? ` · ${selected.additionalDirectories.length}` : ''}</button>
@@ -727,7 +744,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
             {selectedGroup && <button className="text-button" onClick={() => navigate(`group:${selectedGroup.id}`)}><UsersRound size={13} />{selectedGroup.title}</button>}
             {selectedParent && <button className="text-button" onClick={() => openSession(selectedParent)}><GitFork size={13} />来源：{selectedParent.title}</button>}
             {selected.groupId && <button className="text-button compact-extra-action" onClick={() => setModal({ type: 'share', session: selected, text: selection })}><Share2 size={13} />分享结果到群组</button>}
-            {selected.nativeUrl && <a className="text-button compact-extra-action" aria-label="原生窗口" target="_blank" rel="noreferrer" href={selected.nativeUrl}><ExternalLink size={13} />打开原生窗口</a>}
+            {nativeHref && <a className="text-button compact-extra-action" aria-label="原生窗口" target="_blank" rel="noreferrer" href={nativeHref}><ExternalLink size={13} />打开原生窗口</a>}
             <button className="text-button" disabled={!selectedBackend?.capabilities.fork || !selected.nativeSessionId || selected.forkPending} title={!selected.nativeSessionId || selected.forkPending ? '请先启动来源会话并完成初始化，再进行 Fork' : '分叉当前上下文'} onClick={() => setModal({ type: 'fork', session: selected, groupId: selected.groupId ?? undefined })}><GitFork size={13} />Fork 会话</button>
             <button className="text-button" onClick={() => setModal({ type: 'handoff', session: selected })}><ArrowRightLeft size={13} />转到其他平台</button>
             <button className="text-button" onClick={() => setModal({ type: 'shareLink', session: selected })}><Link2 size={13} />分享给同事</button>
@@ -744,13 +761,13 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
       {nativeSessionBusy && <div role="alert" className="error-banner native-session-busy"><span>这个 Codex 会话正被其他原生客户端占用。关闭原客户端后可重试恢复；也可以 Fork 继承上下文，独立继续。</span><div><button className="button secondary small-button" disabled={!!busy} onClick={() => void startSelected()}>重试恢复</button><button className="button secondary small-button" disabled={!!busy || !selectedBackend?.capabilities.fork || !selected.nativeSessionId || selected.forkPending} onClick={() => { setError(''); setModal({ type: 'fork', session: selected, groupId: selected.groupId ?? undefined }); }}><GitFork size={13} />Fork 后继续</button></div></div>}
       {error && !nativeSessionBusy && <div role="alert" className="error-banner"><span>{error}</span><button className="icon-button" aria-label="关闭会话错误提示" onClick={() => setError('')}><X size={15} /></button></div>}
       <div className="session-conversation">
-      {(dshWebOnly || dshNativeWeb) && privateView === 'terminal' ? selected.nativeUrl ? <div className="native-web"><iframe title="DeepSeek Harness 会话" src={selected.nativeUrl} allow="clipboard-read; clipboard-write" /></div> : <div className="terminal-empty"><BackendAvatar backend="dsh" /><h3>直接使用 Harness 原生界面</h3><p>{busy === `start:${selected.id}` ? '正在启动原生会话…' : '启动会话后，在这里继续这个联系人的上下文。'}</p></div> : privateView === 'chat' ? <Suspense fallback={<div className="loading-state"><LoaderCircle size={22} className="spin" /><p>正在加载对话…</p></div>}><AgentChatPane key={selected.id} session={selected} onTerminal={() => switchPrivateView('terminal')} onSelection={setSelection} /></Suspense> : privateView === 'conversation' ? <ConversationPane key={selected.id} session={selected} allowInput={!state.demo && !dshWebOnly} onTerminal={() => switchPrivateView('terminal')} onSelection={setSelection} /> : selected.backend === 'codex' && agentChatAvailable && selected.running && selected.interactionMode === 'chat' ? <div className="terminal-empty"><Command size={26} /><h3>连接同一个 {BACKEND[selected.backend].short} 会话</h3><button className="button primary" disabled={!!busy} onClick={() => switchPrivateView('terminal')}>连接原生终端</button></div> : <TerminalPane key={selected.id} sessionId={selected.id} running={selected.running} status={selected.status} allowImages={['codex', 'claude', 'dsh'].includes(selected.backend) && !state.demo} onSelection={setSelection} settings={selected.backend === 'claude' && !state.demo && selected.nativeSessionId && !selected.forkPending ? <ClaudeTerminalSettings session={selected} /> : undefined} />}
+      {(dshWebOnly || dshNativeWeb) && privateView === 'terminal' ? !selected.nativeUrl ? <div className="terminal-empty"><BackendAvatar backend="dsh" /><h3>直接使用 Harness 原生界面</h3><p>{busy === `start:${selected.id}` ? '正在启动原生会话…' : '启动会话后，在这里继续这个联系人的上下文。'}</p></div> : auth.remote ? nativeProxy?.id === selected.id ? <div className="native-web"><iframe title="DeepSeek Harness 会话" src={nativeProxy.url} allow="clipboard-read; clipboard-write" /></div> : nativeProxyError ? <div className="terminal-empty"><BackendAvatar backend="dsh" /><h3>原生界面暂时无法打开</h3><p>{nativeProxyError}</p><button className="button secondary" onClick={() => setNativeProxyNonce(value => value + 1)}>重试</button></div> : <div className="terminal-empty"><LoaderCircle size={20} className="spin" /><h3>正在通过主机打开原生界面</h3><p>浏览器只访问 Dili 的域名，原生服务的令牌不会出现在地址栏。</p></div> : <div className="native-web"><iframe title="DeepSeek Harness 会话" src={selected.nativeUrl} allow="clipboard-read; clipboard-write" /></div> : privateView === 'chat' ? <Suspense fallback={<div className="loading-state"><LoaderCircle size={22} className="spin" /><p>正在加载对话…</p></div>}><AgentChatPane key={selected.id} session={selected} onTerminal={() => switchPrivateView('terminal')} onSelection={setSelection} /></Suspense> : privateView === 'conversation' ? <ConversationPane key={selected.id} session={selected} allowInput={!state.demo && !dshWebOnly} onTerminal={() => switchPrivateView('terminal')} onSelection={setSelection} /> : selected.backend === 'codex' && agentChatAvailable && selected.running && selected.interactionMode === 'chat' ? <div className="terminal-empty"><Command size={26} /><h3>连接同一个 {BACKEND[selected.backend].short} 会话</h3><button className="button primary" disabled={!!busy} onClick={() => switchPrivateView('terminal')}>连接原生终端</button></div> : <TerminalPane key={selected.id} sessionId={selected.id} running={selected.running} status={selected.status} allowImages={['codex', 'claude', 'dsh'].includes(selected.backend) && !state.demo} onSelection={setSelection} settings={selected.backend === 'claude' && !state.demo && selected.nativeSessionId && !selected.forkPending ? <ClaudeTerminalSettings session={selected} /> : undefined} />}
       </div>
     </section></SessionChrome>}
     </div>
     {state && <ShellTerminalDock open={terminalPanelOpen} sessionId={terminalSessionId} requestedShellId={setupShellId} onClose={() => setTerminalPanelOpen(false)} inert={!!modal} />}
     </div>
-    <PreviewWorkspace controller={preview} sessions={sessions} currentSession={explorerSession} inert={!!modal} />
+    <PreviewWorkspace controller={preview} sessions={sessions} currentSession={explorerSession} inert={!!modal} remote={auth.remote} />
     </div>
 
     </div>

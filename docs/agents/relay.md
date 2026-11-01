@@ -35,9 +35,17 @@
 - 设备路径必须用 `route`，否则 Caddy 默认排序可能先改写路径再鉴权。
 - frps 与中继服务只监听回环，公网暴露交给 Caddy/DNS。
 
+## A 方案链路（2026-11-01）
+
+浏览器 origin 始终保持公网域名。家用网络通过 split-horizon DNS 让同一域名解析到主机 LAN IP；外网仍走公网 Caddy，主机与服务器之间可用 EasyTier/WireGuard P2P，P2P 不健康时回退 FRP。详细部署、Caddy 片段和验收见 [remote-network.md](remote-network.md)。
+
+- 主机可用 `SESSIONDECK_REMOTE_BIND=0.0.0.0`（配合防火墙）同时服务回环 FRP 和虚拟网卡 P2P；默认仍只监听 `127.0.0.1`。
+- 中继设置 `SESSIONDECK_RELAY_P2P_UPSTREAM` 后，`/internal/route` 先探测 P2P 主机的 `/api/auth/status`，成功才返回虚拟 IP 上游，否则保留原 FRP 上游。探测结果缓存 5 秒，撤销设备仍然立即生效。
+- 公网网页服务由主机侧 `/web-proxy/<token>/` 转发；dsh 原生界面自动使用，普通服务需 `SESSIONDECK_WEB_PROXY_TARGETS` 显式允许。路径代理的绝对资源路径边界见 TODO 23。
+
 ## 常见坑
 
 1. 中继管理页与工作台登录是两套密码：`admin.token` ≠ Dili 所有者密码。
 2. 邀请码默认带域名白名单；新增域名要同时改 DNS、证书、Caddy 与 `SESSIONDECK_RELAY_DOMAINS`。
 3. 设备链接的令牌在 `#` 之后，服务端日志不应出现；发现出现在日志里要当事故处理。
-4. 远程打开工作台不会自动转发主机上的开发端口，见 TODO 23。
+4. 远程网页服务不再默认直连：公网页面会经主机代理，目标必须在 `SESSIONDECK_WEB_PROXY_TARGETS` 中；dsh 原生界面不需要额外配置。绝对根路径的站点仍可能不完整，见 TODO 23。

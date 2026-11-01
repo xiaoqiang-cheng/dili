@@ -47,7 +47,7 @@ function WorkspaceTabContent({ tab, sessions, controller, close }: {
     onSelectFile={selection => controller.selectFile(tab.id, selection)} />;
 }
 
-export default function PreviewWorkspace({ controller, sessions, currentSession, inert }: { controller: PreviewWorkspaceController; sessions: Session[]; currentSession?: Session; inert: boolean }) {
+export default function PreviewWorkspace({ controller, sessions, currentSession, inert, remote = false }: { controller: PreviewWorkspaceController; sessions: Session[]; currentSession?: Session; inert: boolean; remote?: boolean }) {
   const { tabs, activeId, open, select, close, hide } = controller;
   const [fullscreen, setFullscreen] = useState(false);
   useEffect(() => { if (!open) setFullscreen(false); }, [open]);
@@ -127,7 +127,7 @@ export default function PreviewWorkspace({ controller, sessions, currentSession,
       {tabs.filter(tab => tab.kind !== 'note').map(tab => <div key={tab.id} id={contentId(tab)}
         role="tabpanel" aria-labelledby={tabId(tab)} className="preview-tab-content" hidden={activeId !== tab.id} tabIndex={0}>
         {tab.kind === 'web'
-          ? <ServicePreviewPanel open embedded close={() => closeTab(tab.id)} inert={inert}
+          ? <ServicePreviewPanel open embedded close={() => closeTab(tab.id)} inert={inert} remote={remote}
               initialUrl={tab.url} onNavigate={url => controller.navigate(tab.id, url)} />
           : <WorkspaceTabContent tab={tab} sessions={sessions} controller={controller} close={() => closeTab(tab.id)} />}
       </div>)}
