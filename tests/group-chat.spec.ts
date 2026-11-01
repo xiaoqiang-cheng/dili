@@ -407,10 +407,21 @@ test('long group history scrolls independently with a visible scrollbar', async 
 test('group questions can be answered inline and private questions stay private', async ({ page }) => {
   const { group, members } = await createGroup(page.request, '群内提问');
   const member = members[1];
+  // `interactionMode` is written by the server when a contact starts, never by
+  // the fixture: patch the start endpoint so the run follows the real path
+  // instead of forging a state the product would not produce.
+  let started = false;
+  await page.route(`**/api/sessions/${member.id}/start`, route => {
+    started = true;
+    return route.fulfill({ json: { ...member, running: true, status: 'idle', nativeSessionId: 'native-question', interactionMode: 'chat', executionTransport: 'structured' } });
+  });
   await page.route('**/api/state', async route => {
     const response = await route.fetch();
     const state = await response.json();
-    state.sessions.find((item: Session) => item.id === member.id).interactionMode = 'chat';
+    // The group routes a contact to the graphical pane only when the backend
+    // reports it, exactly as an installed Codex does in production.
+    state.backends = state.backends.map((backend: { id: string; capabilities: Record<string, unknown> }) => backend.id === member.backend ? { ...backend, capabilities: { ...backend.capabilities, graphicalChat: true } } : backend);
+    if (started) Object.assign(state.sessions.find((item: Session) => item.id === member.id), { running: true, nativeSessionId: 'native-question', interactionMode: 'chat', executionTransport: 'structured' });
     await route.fulfill({ response, json: state });
   });
   await page.route(`**/api/groups/${group.id}`, async route => {
@@ -422,7 +433,7 @@ test('group questions can be answered inline and private questions stay private'
   let answered = false;
   let privateTurn = false;
   await page.route(`**/api/sessions/${member.id}/chat`, route => route.fulfill({ json: {
-    connected: true, nativeSessionId: 'native', revision: 1, activeTurnId: 'turn', truncated: false,
+    connected: true, nativeSessionId: 'native-question', revision: 1, activeTurnId: 'turn', truncated: false,
     items: [{ id: 'user', turnId: 'turn', type: 'user', text: privateTurn ? '私聊问题' : '【群聊任务】任务编号：T-question', status: 'completed' }],
     requests: answered ? [] : [{ id: 'question', kind: 'question', title: '确认方案', questions: [{ id: 'choice', header: '方案', question: '选择哪种方案？', options: [{ label: '方案 A', description: '先完成核心功能' }] }] }],
   } }));
@@ -431,6 +442,12 @@ test('group questions can be answered inline and private questions stay private'
     answered = true;
     await route.fulfill({ json: { ok: true } });
   });
+  await page.goto(`/#/groups/${group.id}`);
+  // The member only becomes a graphical member after it starts, which is what
+  // the group may expose its native requests through.
+  await page.getByRole('button', { name: '群成员', exact: true }).click();
+  await page.getByRole('dialog', { name: '群成员' }).getByRole('button', { name: '私聊', exact: true }).nth(1).click();
+  await expect.poll(() => started).toBe(true);
   await page.goto(`/#/groups/${group.id}`);
   const question = page.getByRole('region', { name: `${member.title} 提问` });
   await expect(question).toBeVisible();
@@ -442,8 +459,8 @@ test('group questions can be answered inline and private questions stay private'
   await page.reload();
   await expect(page.getByLabel('群组消息')).toBeVisible();
   await expect(question).toHaveCount(0);
+  expect(started).toBe(true);
 });
-
 
 for (const mobile of [false, true]) test(`group workspace bulk grants support partial failure and targeted retry on ${mobile ? 'mobile' : 'desktop'}`, async ({ page }) => {
   if (mobile) await page.setViewportSize({ width: 390, height: 844 });

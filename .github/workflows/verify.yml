@@ -1,7 +1,11 @@
 name: Verify
+# Verify runs where it can still change the outcome: pull requests and tag
+# releases. A plain push to main no longer starts it, because release.yml runs
+# the same checks for a tag and a red main is caught before the tag is cut.
 on:
   push:
-    branches: [main]
+    tags:
+      - 'v*'
   pull_request:
   workflow_dispatch:
 jobs:

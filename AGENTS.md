@@ -10,7 +10,7 @@
 
 ## 验证与版本管理
 
-- `npm run check` 做类型检查，`npm test` 验证服务端、共享层、客户端与脚本的纯逻辑，`npm run test:web` 构建并测试隔离的演示实例；`npm run verify` 串行执行三者，CI 则拆成并行 job。PWA 安装检查单独运行 `npm run test:pwa`，需要 Chromium 与 WebKit。
+- `npm run check` 做类型检查，`npm test` 验证服务端、共享层、客户端与脚本的纯逻辑，`npm run test:web` 构建并测试隔离的演示实例；`npm run verify` 串行执行三者，CI 则拆成并行 job。CI 只在推 tag 和 PR 时运行，普通 push 不触发。PWA 安装检查单独运行 `npm run test:pwa`，需要 Chromium 与 WebKit。
 - 可以使用 `SESSIONDECK_TEST_PORT` 避开占用的测试端口；默认 Web 端口 `4317` 不能用作浏览器测试端口。
 - 本地开发、测试和提交不构成云端操作授权。未获得针对具体操作的明确授权，不创建、删除、推送或修改云端仓库；也不创建 Git tag。
 

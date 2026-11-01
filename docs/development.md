@@ -105,7 +105,7 @@ Codex app-server 只监听本机并使用随机访问令牌。令牌文件仅当
 
 `npm run check` 类型检查，`npm test` 服务端与共享层纯逻辑检查，`npm run test:web` 构建并验证隔离演示实例；`npm run verify` 串行执行三者。不要并行执行会共用测试产物的多轮浏览器检查。
 
-CI 将类型/单测、浏览器回归、PWA 安装检查和打包烟测拆成并行 job；失败时分别上传 `unit.log`、`artifacts/playwright/`、`artifacts/pwa/` 与打包日志，避免串行失败时只剩最后一段输出。
+CI 只在推 tag（`v*`）和 pull request 时运行，普通推送到 `main` 不触发，避免每次提交都跑一轮完整回归。`Release` 与 `Verify` 都在 tag 上运行。CI 将类型/单测、浏览器回归、PWA 安装检查和打包烟测拆成并行 job；失败时分别上传 `unit.log`、`artifacts/playwright/`、`artifacts/pwa/` 与打包日志，避免串行失败时只剩最后一段输出。
 
 当前 CI 配置为 Node.js 24、Linux；工作台回归使用 Chromium，打包烟测不启动浏览器，PWA 入口另在 Chromium 与 iPhone WebKit 设备描述下运行。它不是 macOS / Windows 的发行保证。测试数据、协议 fixture、真实 CLI + loopback provider、真实云端账号、实际部署验收是不同的证据；每次在 WORKLOG 写清版本、命令、范围与未验证项，不把历史测试数量复制为当前承诺。
 
