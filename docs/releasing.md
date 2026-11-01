@@ -1,6 +1,6 @@
 # 正式版发布清单
 
-当前代码版本：0.5.3。通过 GitHub Release 分发安装包；未发布到 npm registry。发布记录不代表下面未勾选的真机或生产环境验收已经完成。
+当前代码版本：0.5.4。通过 GitHub Release 分发安装包；未发布到 npm registry。发布记录不代表下面未勾选的真机或生产环境验收已经完成。
 
 ## 发布范围与承诺
 
@@ -34,7 +34,7 @@ SESSIONDECK_FRP_PLATFORMS=linux_amd64 npm run prepare:relay-clients
 npm run package:release
 ```
 
-本地 `npm pack` 会先原子构建网页；得到 `dili-workbench-0.4.0-dev.0.tgz`。流水线保存 npm tarball、Linux 工作台/中继 tar.gz 和 SHA256SUMS；此阶段不自动发布 npm。
+本地 `npm pack` 会先原子构建网页；得到 `dili-workbench-0.5.4.tgz`。流水线保存 npm tarball、Linux 工作台/中继 tar.gz 和 SHA256SUMS；此阶段不自动发布 npm。
 
 发布脚本不会为你创建 tag 或上传。收到针对目标仓库、版本和 npm 包的具体授权后，再推送版本 tag 触发 GitHub Release；npm 发布单独执行/配置可信发布。正式版的准入条件是制品、真实 Agent 和远程工作流全部通过，而不是仅有一个版本标签。
 

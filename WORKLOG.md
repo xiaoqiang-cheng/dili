@@ -1,5 +1,13 @@
 # Dili 本地迭代记录
 
+## 2026-11-02：0.5.4 发布准备
+
+- 版本号 0.5.3 → 0.5.4（`package.json`、`package-lock.json`、`docs/releasing.md`、`docs/installation.md` 示例包名）。
+- `docs/release-notes.md` 的「未发布」段落按提交逐条核实后归入 0.5.4：DeepSeek Harness 结构化对话（历史/prompt/停止/问题卡片/工具卡片/原生设置/写入者交接）、群聊请求与批量授权、群角标、通知声响与中继设备通知、中继设备管理与限速、主机网页服务代理、用量/导出/诊断/SSE 补发/渲染上限、消息复制与归档停任务，以及本次移除主机 P2P 上游。新增「升级注意」：删除 `SESSIONDECK_RELAY_P2P_UPSTREAM`、重发 `relay.mjs`、可停用 EasyTier（服务已于 2026-11-01 停止）。
+- 验证：`npm run check` 通过；`npm test` 421 项 / 385 通过 / 32 失败 / 4 跳过，32 个失败为既有 forkpty 与 Codex fixture 环境问题；`npm run build`（原子构建）与 `npm run build:relay` 通过。
+- `npm run test:package` 在本机失败，但根因不在制品：直接以 `npm pack` 打出的 tarball 内容完整（840 个文件，含 `bin/dili.mjs`、`dist/client/index.html`、`relay-notice-poller`，无测试或 env 泄漏），隔离前缀安装后 `dili --version` 输出 `0.5.4`、`--help` 正常。失败点是本机「out of pty devices」——`python3 -c "import pty; pty.fork()"`、主仓库 `node-pty` 与安装副本三处都以同样方式失败，源码检出直接 `dili start` 同样报 `forkpty(3) failed`。PTY 能力需要在真机上复验，不能据此宣称包验收通过。
+- 未做：没有创建 tag、没有推送、没有上传 Release 制品；`docs/releasing.md` 中真实 Agent、原生配置、自动启动与远程门槛仍为未勾选状态。
+
 ## 2026-11-02：移除主机 P2P，外网只走按设备的 FRP 端口
 
 - 事故：`SESSIONDECK_RELAY_P2P_UPSTREAM` 的裸地址语义（`p2pTarget` 里的 `?? config.default`）对**所有**设备生效，`/internal/route` 于是把三个不同设备 id 都指到同一台主机；加上健康探测只测 `/api/auth/status`（只能证明「有个 Dili 在线」），Caddy 又把 `Host` 换成目标机自己的域名，三层都没能发现错路由。现场实证：`/connect/d/e1glijjyepxnyd0u/`、`/connect/d/yfawykqkrxcy16ho/` 注入的 `sessiondeck-base` 都是 `90spovilf3vwujqp`。
