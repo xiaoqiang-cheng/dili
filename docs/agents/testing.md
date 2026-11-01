@@ -19,6 +19,13 @@
 - 原生烟测使用临时配置目录；Claude/Codex 的隔离工作流还要求 `unshare` 与可用用户命名空间。
 - 只清理本轮启动且身份可确认的进程；不要按端口杀进程。
 
+## 原生契约夹具
+
+- Codex app-server 在最后一个联系人停止后会被主动停掉，释放原生 writer；真实 Codex 会把 thread 持久化到磁盘。测试夹具也必须把 thread 存到临时目录并在新进程启动时读回，否则“停止再恢复”会得到 `Unknown fixture thread`，把产品回归误报成夹具失败。
+- 停止接口返回时 PTY/native 清理可能仍在进行；`start` 返回“会话正在停止”是诚实的状态，不是竞态漏洞。契约测试应像真实客户端一样短暂重试启动，而不是在 `running=false` 后立即断言 200。
+- 夹具收到 `SIGTERM` 时先记录 socket 关闭再退出，否则 app-server 被停掉后无法证明 TUI/observer 已释放。
+- npm 的 `files` 白名单仍会把 `shared/` 下的 `*.test.ts` 打进包；`shared/.npmignore` 是必要保险。`server/.npmignore` 只排除真正的中继入口（`relay-main`、`relay-service`、`relay-store`、`relay-bandwidth`、`relay-p2p`），不要用 `relay-*.ts` 误伤运行时导入的 `relay-notice-poller.ts`。
+
 ## 写测试的优先级
 
 1. 能写成纯函数吗？能就放 `shared/`、`client/` 或 `server/` 的独立模块，同目录 `*.test.ts`。近期例子：`client/contact-order`、`client/markdown-blocks`、`server/sse-replay`、`server/idle-sleep`、`server/export`。

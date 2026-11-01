@@ -48,6 +48,8 @@ if(args[0]==='app-server'){
  const token=fs.readFileSync(args[args.indexOf('--ws-token-file')+1],'utf8');
  const threads=new Map(),server=http.createServer((req,res)=>{res.end('ready')});
  const sockets=new Set();const wss=new WebSocketServer({noServer:true});
+ try{for(const thread of JSON.parse(fs.readFileSync(dir+'/threads.json','utf8')))threads.set(thread.id,thread)}catch{}
+ const persist=()=>{try{fs.writeFileSync(dir+'/threads.json',JSON.stringify([...threads.values()]))}catch{}};
  server.on('upgrade',(req,socket,head)=>{if(req.headers.authorization!=='Bearer '+token){socket.end('HTTP/1.1 401 Unauthorized\\r\\n\\r\\n');return}wss.handleUpgrade(req,socket,head,ws=>wss.emit('connection',ws,req))});
  const emit=(id,method,params)=>{for(const s of sockets)if(s.threadId===id&&s.readyState===WebSocket.OPEN)s.send(JSON.stringify({method,params}))};
  wss.on('connection',s=>{sockets.add(s);s.on('close',()=>{log({event:'close',threadId:s.threadId||null});sockets.delete(s)});s.on('message',raw=>{
@@ -55,16 +57,16 @@ if(args[0]==='app-server'){
   log({method:m.method,params:p,client:s.clientName});if(m.id===undefined)return;
   let result={},thread;
   if(m.method==='initialize'){s.clientName=p.clientInfo?.name;result={}}
-  else if(m.method==='thread/start'){thread={id:crypto.randomUUID(),cwd:p.cwd,status:{type:'idle'},forkedFromId:null,turns:[]};threads.set(thread.id,thread);s.threadId=thread.id;result={thread};if(fs.existsSync(dir+'/fail-next-pty')){fs.unlinkSync(dir+'/fail-next-pty');fs.unlinkSync(__filename)}}
+  else if(m.method==='thread/start'){thread={id:crypto.randomUUID(),cwd:p.cwd,status:{type:'idle'},forkedFromId:null,turns:[]};threads.set(thread.id,thread);s.threadId=thread.id;persist();result={thread};if(fs.existsSync(dir+'/fail-next-pty')){fs.unlinkSync(dir+'/fail-next-pty');fs.unlinkSync(__filename)}}
   else if(m.method==='thread/read'||m.method==='thread/resume'){thread=threads.get(p.threadId);if(!thread){s.send(JSON.stringify({id:m.id,error:{code:-1,message:'missing thread'}}));return}if(m.method==='thread/resume')s.threadId=thread.id;result={thread}}
   else if(m.method==='thread/name/set'){thread=threads.get(p.threadId);if(thread)thread.name=p.name}
   else if(m.method==='thread/fork'){const parent=threads.get(p.threadId);thread={...parent,id:crypto.randomUUID(),cwd:p.cwd||parent.cwd,forkedFromId:parent.id,status:{type:'idle'},turns:[]};threads.set(thread.id,thread);s.threadId=thread.id;result={thread}}
-  else if(m.method==='fixture/start'){thread=threads.get(p.threadId);thread.status={type:'active',activeFlags:[]};thread.turns=[{id:crypto.randomUUID(),status:'inProgress'}];emit(thread.id,'turn/started',{threadId:thread.id,turn:thread.turns[0]})}
-  else if(m.method==='fixture/complete'){thread=threads.get(p.threadId);thread.status={type:'idle'};thread.turns[0].status=p.status||'completed';emit(thread.id,'turn/completed',{threadId:thread.id,turn:thread.turns[0]})}
+  else if(m.method==='fixture/start'){thread=threads.get(p.threadId);thread.status={type:'active',activeFlags:[]};thread.turns=[{id:crypto.randomUUID(),status:'inProgress'}];persist();emit(thread.id,'turn/started',{threadId:thread.id,turn:thread.turns[0]})}
+  else if(m.method==='fixture/complete'){thread=threads.get(p.threadId);thread.status={type:'idle'};thread.turns[0].status=p.status||'completed';persist();emit(thread.id,'turn/completed',{threadId:thread.id,turn:thread.turns[0]})}
   else if(m.method==='fixture/dropObserver'){for(const observer of sockets)if(observer.threadId===p.threadId&&observer.clientName==='sessiondeck')observer.close()}
-  else if(m.method==='turn/interrupt'){thread=threads.get(p.threadId);if(!thread||thread.turns[0]?.id!==p.turnId){s.send(JSON.stringify({id:m.id,error:{code:-1,message:'wrong turn'}}));return}thread.status={type:'idle'};thread.turns[0].status='interrupted';emit(thread.id,'turn/completed',{threadId:thread.id,turn:thread.turns[0]})}
+  else if(m.method==='turn/interrupt'){thread=threads.get(p.threadId);if(!thread||thread.turns[0]?.id!==p.turnId){s.send(JSON.stringify({id:m.id,error:{code:-1,message:'wrong turn'}}));return}thread.status={type:'idle'};thread.turns[0].status='interrupted';persist();emit(thread.id,'turn/completed',{threadId:thread.id,turn:thread.turns[0]})}
   s.send(JSON.stringify({id:m.id,result}));
- })});server.listen(Number(url.port),'127.0.0.1');process.on('SIGTERM',()=>{for(const s of sockets)s.terminate();server.close(()=>process.exit(0))});
+ })});server.listen(Number(url.port),'127.0.0.1');process.on('SIGTERM',()=>{for(const s of sockets){try{log({event:'close',threadId:s.threadId||null})}catch{};try{s.close()}catch{}};server.close(()=>process.exit(0));setTimeout(()=>process.exit(0),200).unref()});
 }else if(args.includes('--remote')){
  const id=args[args.indexOf('resume')+1],url=args[args.indexOf('--remote')+1];
  log({event:'tui',nativeId:id,authPresent:!!process.env.SESSIONDECK_CODEX_TOKEN,args:args.filter((a,i)=>i!==args.indexOf('--remote')+1)});
@@ -101,11 +103,25 @@ async function launchFixture(t: test.TestContext, legacy = false) {
     const output = { socket, text: '' }; socket.on('message', raw => { const event = JSON.parse(raw.toString()); if (event.type === 'data') output.text += event.data ?? ''; });
     await new Promise<void>((accept, reject) => { socket.once('open', accept); socket.once('error', reject); }); return output;
   };
-  return { dir, file, source, request, calls, terminal };
+  // A PTY exit marks the contact stopped before its native cleanup finishes.
+  // Retrying is the honest client behavior; a bare 409 is expected in between.
+  const start = async (id: string, body: Record<string, unknown> = {}): Promise<Session> => {
+    const deadline = Date.now() + 5000;
+    let last: unknown;
+    while (Date.now() < deadline) {
+      try { return await request<Session>(`/api/sessions/${id}/start`, 'POST', body); }
+      catch (error) {
+        if (!/会话正在停止|会话正在连接/.test(String(error))) throw error;
+        last = error; await delay(50);
+      }
+    }
+    throw last instanceof Error ? last : new Error('会话未能完成启动');
+  };
+  return { dir, file, source, request, calls, terminal, start };
 }
 
 test('Codex HTTP lifecycle retains exact native identity across PTY failure, Fork, stop and resume', { timeout: 30_000 }, async t => {
-  const fixture = await launchFixture(t); const { request, calls } = fixture;
+  const fixture = await launchFixture(t); const { request, calls, start } = fixture;
   const state = () => request<AppState>('/api/state');
   assert.equal((await state()).backends.find(backend => backend.id === 'codex')?.capabilities.nativeControl, true);
   const source = await request<Session>('/api/sessions', 'POST', { backend: 'codex', title: 'Contract source', cwd: fixture.dir }, 201);
@@ -116,7 +132,7 @@ test('Codex HTTP lifecycle retains exact native identity across PTY failure, For
   await until(async () => !(await current()).running, 'Failed PTY did not report its exit');
   const afterFailure = await current(); assert.ok(afterFailure.nativeSessionId); assert.equal(afterFailure.running, false);
   await writeFile(fixture.file, fixture.source, { mode: 0o700 });
-  const restarted = await request<Session>(`/api/sessions/${source.id}/start`, 'POST', {});
+  const restarted = await start(source.id);
   assert.equal(restarted.nativeSessionId, afterFailure.nativeSessionId);
   assert.equal((await calls()).filter(call => call.method === 'thread/start').length, 1);
   await until(async () => (await calls()).some(call => call.event === 'tui' && call.nativeId === restarted.nativeSessionId), 'Native TUI did not resume the exact created ID');
@@ -132,7 +148,7 @@ test('Codex HTTP lifecycle retains exact native identity across PTY failure, For
 });
 
 test('Codex TUI exit interrupts only its native thread and releases the observer before restart', { timeout: 30_000 }, async t => {
-  const fixture = await launchFixture(t); const { request, calls, terminal } = fixture;
+  const fixture = await launchFixture(t); const { request, calls, terminal, start } = fixture;
   const item = await request<Session>('/api/sessions', 'POST', { backend: 'codex', title: 'Exited TUI', cwd: fixture.dir }, 201);
   await request(`/api/sessions/${item.id}/start`, 'POST', {});
   const current = async () => (await request<AppState>('/api/state')).sessions.find(row => row.id === item.id)!;
@@ -145,7 +161,7 @@ test('Codex TUI exit interrupts only its native thread and releases the observer
   await until(async () => (await calls()).filter(call => call.event === 'close' && call.threadId === started.nativeSessionId).length >= 2, 'TUI and observer were not released');
   const interrupted = (await calls()).filter(call => call.method === 'turn/interrupt');
   assert.equal(interrupted.length, 1); assert.equal(interrupted[0].params?.threadId, started.nativeSessionId); assert.match(String(interrupted[0].params?.turnId), /^[a-f\d-]{36}$/i);
-  await request(`/api/sessions/${item.id}/start`, 'POST', {});
+  await start(item.id);
   assert.equal((await current()).nativeSessionId, started.nativeSessionId);
   await request(`/api/sessions/${item.id}/stop`, 'POST', {});
 });

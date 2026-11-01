@@ -27,6 +27,11 @@ if (args[0] !== 'app-server') {
   const server = http.createServer((_req, response) => response.end('ready'));
   const wss = new WebSocketServer({ noServer: true });
   const sockets = new Set(), threads = new Map(), pending = new Map();
+  // The parser parks app-server when the last contact stops. Codex persists
+  // threads on disk; this protocol fixture must do the same so a resumed thread
+  // survives that parking step just like the native CLI.
+  try { for (const thread of JSON.parse(fs.readFileSync(dir + '/threads.json', 'utf8'))) threads.set(thread.id, thread); } catch { /* first boot */ }
+  const persist = () => { try { fs.writeFileSync(dir + '/threads.json', JSON.stringify([...threads.values()])); } catch { /* fixture diagnostics */ } };
   const send = (socket, value) => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value)); };
   const emit = (id, method, params) => { for (const socket of sockets) if (socket.threadId === id) send(socket, { method, params: { threadId: id, ...params } }); };
   const complete = (thread, text = 'Local fixture answer') => {
@@ -39,8 +44,11 @@ if (args[0] !== 'app-server') {
     emit(thread.id, 'item/agentMessage/delta', { turnId: turn.id, itemId: item.id, delta: text });
     emit(thread.id, 'item/completed', { turnId: turn.id, item: { ...item } });
     turn.status = 'completed'; thread.status = { type: 'idle' };
+    persist();
     emit(thread.id, 'turn/completed', { turn });
   };
+  const closeAll = () => { for (const socket of sockets) { try { log({ event: 'close', threadId: socket.threadId || null }); } catch { /* fixture diagnostics */ } try { socket.close(); } catch { /* already gone */ } } };
+  process.on('SIGTERM', () => { closeAll(); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 200).unref(); });
   server.on('upgrade', (request, socket, head) => {
     if (request.headers.authorization !== 'Bearer ' + token) { socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n'); return; }
     wss.handleUpgrade(request, socket, head, ws => wss.emit('connection', ws));
@@ -63,7 +71,7 @@ if (args[0] !== 'app-server') {
       else if (message.method === 'thread/start') {
         thread = { id: crypto.randomUUID(), cwd: params.cwd, status: { type: 'idle' }, turns: [], forkedFromId: null, canAcceptDirectInput: true };
         thread.settings = { model: 'fixture-model', approvalPolicy: params.approvalPolicy || 'on-request', approvalsReviewer: params.approvalsReviewer || 'user', sandbox: { type: 'workspaceWrite', writableRoots: [params.cwd], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: false } };
-        threads.set(thread.id, thread); socket.threadId = thread.id; result = { thread, ...thread.settings };
+        threads.set(thread.id, thread); socket.threadId = thread.id; persist(); result = { thread, ...thread.settings };
       } else if (message.method === 'thread/resume' || message.method === 'thread/read') {
         thread = threads.get(params.threadId);
         if (!thread) { send(socket, { id: message.id, error: { code: -1, message: 'Unknown fixture thread' } }); return; }
@@ -80,9 +88,10 @@ if (args[0] !== 'app-server') {
         if (params.model === 'fixture-denied') { send(socket, { id: message.id, error: { code: -1, message: 'Native policy denied model' } }); return; }
         for (const field of ['model', 'approvalPolicy', 'approvalsReviewer']) if (params[field] !== undefined) thread.settings[field] = params[field];
         if (params.sandboxPolicy) thread.settings.sandbox = params.sandboxPolicy;
+        persist();
         emit(thread.id, 'thread/settings/updated', { threadSettings: thread.settings });
       } else if (message.method === 'thread/name/set') {
-        thread = threads.get(params.threadId); if (thread) thread.name = params.name;
+        thread = threads.get(params.threadId); if (thread) { thread.name = params.name; persist(); }
       } else if (message.method === 'thread/turns/list') {
         thread = threads.get(params.threadId);
         const ordered = params.sortDirection === 'desc' ? [...(thread?.turns ?? [])].reverse() : thread?.turns ?? [];
@@ -91,12 +100,13 @@ if (args[0] !== 'app-server') {
       } else if (message.method === 'thread/fork') {
         const parent = threads.get(params.threadId);
         thread = structuredClone(parent); thread.id = crypto.randomUUID(); thread.cwd = params.cwd || parent.cwd; thread.forkedFromId = parent.id; thread.status = { type: 'idle' };
-        threads.set(thread.id, thread); socket.threadId = thread.id; result = { thread, ...thread.settings };
+        threads.set(thread.id, thread); socket.threadId = thread.id; persist(); result = { thread, ...thread.settings };
       } else if (message.method === 'turn/start') {
         thread = threads.get(params.threadId); socket.threadId = thread.id;
         const input = params.input.filter(item => item.type === 'text').map(item => item.text).join('\n');
         const turn = { id: crypto.randomUUID(), status: 'inProgress', items: [{ id: crypto.randomUUID(), type: 'userMessage', content: [{ type: 'text', text: input, text_elements: [] }] }] };
         thread.turns.push(turn); thread.status = { type: 'active', activeFlags: [] };
+        persist();
         emit(thread.id, 'turn/started', { turn });
         emit(thread.id, 'item/completed', { turnId: turn.id, item: turn.items[0] });
         if (input.includes('DROP_RESPONSE')) { socket.close(); return; }
@@ -126,7 +136,7 @@ if (args[0] !== 'app-server') {
         }
         thread = threads.get(params.threadId); const turn = thread?.turns.at(-1);
         if (!turn || turn.id !== params.turnId) { send(socket, { id: message.id, error: { code: -1, message: 'Wrong turn' } }); return; }
-        turn.status = 'interrupted'; thread.status = { type: 'idle' };
+        turn.status = 'interrupted'; thread.status = { type: 'idle' }; persist();
         for (const [id, request] of pending) if (request.thread === thread) pending.delete(id);
         emit(thread.id, 'turn/completed', { turn });
       }

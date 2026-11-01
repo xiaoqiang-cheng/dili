@@ -1,2 +1,6 @@
 *.test.ts
-relay-*.ts
+relay-main.ts
+relay-service.ts
+relay-store.ts
+relay-bandwidth.ts
+relay-p2p.ts
