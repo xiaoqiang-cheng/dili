@@ -1678,6 +1678,7 @@ function upgrade(req: import('node:http').IncomingMessage, socket: import('node:
     const allowed = remote ? allowedRemoteRequest(req, remoteSettings().publicUrl, remoteSettings().localPort) : allowedRequest(req, port, wildcardHost);
     const decision = authorize(principal, remote, 'GET', url.pathname);
     const item = voiceMatch[1] === 'groups' ? store.group(voiceMatch[2]!) : store.session(voiceMatch[2]!);
+    if (remote && !remoteSourceAllowed(req.socket.remoteAddress, remoteSources)) { socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return; }
     if (!allowed || !decision.allowed || !principal || !validToken(url.searchParams.get('token'), auth.csrf(principal))) { socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return; }
     if (demo || closing || !item || ('archived' in item && item.archived)) { socket.write('HTTP/1.1 409 Conflict\r\n\r\n'); socket.destroy(); return; }
     voiceWss.handleUpgrade(req, socket, head, ws => voiceConnections.attach(ws, device));
