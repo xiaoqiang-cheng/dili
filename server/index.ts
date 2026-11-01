@@ -88,8 +88,8 @@ const LOCAL_OWNER: Principal = { kind: 'owner', local: true };
 // server's loopback and the reverse proxy there terminates TLS.
 const envRemotePort = process.env.SESSIONDECK_REMOTE_PORT ? Number(process.env.SESSIONDECK_REMOTE_PORT) : null;
 if (envRemotePort !== null && (!Number.isInteger(envRemotePort) || envRemotePort < 1024 || envRemotePort > 65535 || envRemotePort === port)) throw new Error('SESSIONDECK_REMOTE_PORT 必须是与 Web 端口不同的 1024–65535 端口');
-// Loopback by default. A fixed private/VPN address lets the relay reach this
-// listener directly over EasyTier/WireGuard while FRP remains the fallback.
+// Loopback by default: FRP and the server's SSH tunnel both arrive there. A
+// fixed private address is still allowed when an operator wants one.
 const envRemoteBind = process.env.SESSIONDECK_REMOTE_BIND?.trim() || '127.0.0.1';
 const remoteSources = parseRemoteSources(process.env.SESSIONDECK_REMOTE_ALLOW?.trim() || '');
 if (!isIP(envRemoteBind)) throw new Error('SESSIONDECK_REMOTE_BIND 必须是 IP 地址，例如 127.0.0.1、10.144.0.2 或 0.0.0.0');

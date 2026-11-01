@@ -8,7 +8,7 @@
 | --- | --- |
 | [安装指南](installation.md) | 如何安装、配置 Agent、启用用户服务和可选 FunASR？ |
 | [使用与运维](operations.md) | 如何使用、备份、恢复、处理故障和安排重启？ |
-| [远程访问](remote-access.md) | 邀请码怎么用，中继怎么配置，管理密码在哪里？同网直连与 P2P 见[远程网络](agents/remote-network.md)。 |
+| [远程访问](remote-access.md) | 邀请码怎么用，中继怎么配置，管理密码在哪里？同网直连与中继链路见[远程网络](agents/remote-network.md)。 |
 | [发布清单](releasing.md) | 发行支持哪些环境，哪些门槛仍未完成？ |
 
 ## 产品与开发

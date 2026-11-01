@@ -1,5 +1,17 @@
 # Dili 本地迭代记录
 
+## 2026-11-02：移除主机 P2P，外网只走按设备的 FRP 端口
+
+- 事故：`SESSIONDECK_RELAY_P2P_UPSTREAM` 的裸地址语义（`p2pTarget` 里的 `?? config.default`）对**所有**设备生效，`/internal/route` 于是把三个不同设备 id 都指到同一台主机；加上健康探测只测 `/api/auth/status`（只能证明「有个 Dili 在线」），Caddy 又把 `Host` 换成目标机自己的域名，三层都没能发现错路由。现场实证：`/connect/d/e1glijjyepxnyd0u/`、`/connect/d/yfawykqkrxcy16ho/` 注入的 `sessiondeck-base` 都是 `90spovilf3vwujqp`。
+- 结论是这套设计本身不成立，不是修一个 `??` 就能安全了事：**可达 ≠ 身份**，只要上游是按地址共享的，就必然在设备之间串台。按要求整体移除：
+  - 删除 `server/relay-p2p.ts` 与 `server/relay-p2p.test.ts`；
+  - `server/relay-main.ts` 去掉 `SESSIONDECK_RELAY_P2P_UPSTREAM` 解析、`probeP2P` 与 `p2p` 选项，中继不再向任何上游做探测；
+  - `server/relay-service.ts` 的 `/internal/route` 固定返回 `127.0.0.1:<该设备端口>`，`RelayOptions` 去掉 `p2p`；
+  - `.npmignore`／`server/.npmignore` 去掉 `relay-p2p` 条目。
+- 保留且未改动的部分：`SESSIONDECK_REMOTE_BIND`／`SESSIONDECK_REMOTE_ALLOW`（远程监听绑定与来源限制，与 P2P 无依赖）、主机网页代理、split-horizon DNS 同网直连。
+- 部署：中继需 `npm run build:relay` 后同步 `relay.mjs` 并重启；旧的 `SESSIONDECK_RELAY_P2P_UPSTREAM` 变量已不被读取，可以从服务配置里删掉。主机 Dili 本轮**没有代码变化**，无需重启。Caddy 配置未改。
+- 验证：`npm run check` 通过；`npm test` 通过数与改动前基线一致（本机 32 项依赖 forkpty/Codex fixture 的既有失败不变）。
+
 ## 2026-11-01：A 方案主机转发与 P2P 回退基础
 
 - 新增所有者专用的主机侧 HTTP/WebSocket 代理（`server/web-proxy.ts`）：浏览器只拿短期内存令牌，上游地址不出现在前端状态；Dili 设备 Cookie 在转发前剔除，上游 `Set-Cookie` 的 Domain 移除、Path 收窄到代理前缀，重定向改写到公网设备前缀内。

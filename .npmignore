@@ -4,7 +4,6 @@ server/relay-main.ts
 server/relay-service.ts
 server/relay-store.ts
 server/relay-bandwidth.ts
-server/relay-p2p.ts
 artifacts/
 .env*
 memory/

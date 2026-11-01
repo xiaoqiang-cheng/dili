@@ -37,10 +37,10 @@
 
 ## A 方案链路（2026-11-01）
 
-浏览器 origin 始终保持公网域名。家用网络通过 split-horizon DNS 让同一域名解析到主机 LAN IP；外网仍走公网 Caddy，主机与服务器之间可用 EasyTier/WireGuard P2P，P2P 不健康时回退 FRP。详细部署、Caddy 片段和验收见 [remote-network.md](remote-network.md)。
+浏览器 origin 始终保持公网域名。家用网络通过 split-horizon DNS 让同一域名解析到主机 LAN IP；外网走公网 Caddy + 中继 + 按设备分配的 FRP 端口。详细部署、Caddy 片段和验收见 [remote-network.md](remote-network.md)。
 
-- 主机可用 `SESSIONDECK_REMOTE_BIND=0.0.0.0`（配合防火墙）同时服务回环 FRP 和虚拟网卡 P2P；默认仍只监听 `127.0.0.1`。
-- 中继设置 `SESSIONDECK_RELAY_P2P_UPSTREAM` 后，`/internal/route` 先探测 P2P 主机的 `/api/auth/status`，成功才返回虚拟 IP 上游，否则保留原 FRP 上游。探测结果缓存 5 秒，撤销设备仍然立即生效。
+- 主机远程监听默认 `127.0.0.1`；需要绑定固定私网地址时用 `SESSIONDECK_REMOTE_BIND`，并用 `SESSIONDECK_REMOTE_ALLOW` 限制来源。
+- `/internal/route` 对每个设备只返回它自己的 `127.0.0.1:<设备端口>`。曾经的主机 P2P 上游已移除：一个裸地址会对所有设备生效，导致三个不同的设备链接打开同一台机器，详见 [remote-network.md](remote-network.md)。
 - 公网网页服务由主机侧 `/web-proxy/<token>/` 转发；dsh 原生界面自动使用，普通服务需 `SESSIONDECK_WEB_PROXY_TARGETS` 显式允许。路径代理的绝对资源路径边界见 TODO 23。
 
 ## 常见坑

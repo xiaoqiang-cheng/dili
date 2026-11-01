@@ -67,7 +67,7 @@ export function readCookie(header: string | undefined, name: string): string | u
 }
 
 /**
- * The remote listener may be bound to a private/P2P interface. Host/Origin
+ * The remote listener may be bound to a private interface. Host/Origin
  * checks alone would then expose it to every device on that interface, so the
  * socket source is restricted independently: loopback (FRP/local Caddy/SSH
  * forwards) plus the explicitly configured peer addresses.

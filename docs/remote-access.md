@@ -60,7 +60,7 @@ SESSIONDECK_RELAY_DATA_DIR=/path/to/private-relay-data npm run relay
 3. 电脑：确认可以免密 `ssh 用户@服务器` 登录（隧道使用 BatchMode，不会弹出密码输入）。
 4. 填写公开地址、服务器地址、SSH 用户，点「启用远程访问」，状态变为「已连接」即可。
 
-- 远程请求使用独立的监听端口（默认 Web 端口 + 1，可用 `SESSIONDECK_REMOTE_PORT` 指定），默认只绑定 `127.0.0.1`；可用 `SESSIONDECK_REMOTE_BIND` 绑定固定私网/P2P 地址，并用 `SESSIONDECK_REMOTE_ALLOW` 限制来源 IP/CIDR；还必须用防火墙限制来源。隧道只转发这个端口，因此"来自 127.0.0.1"不会被当作本机所有者。
+- 远程请求使用独立的监听端口（默认 Web 端口 + 1，可用 `SESSIONDECK_REMOTE_PORT` 指定），默认只绑定 `127.0.0.1`；可用 `SESSIONDECK_REMOTE_BIND` 绑定固定私网地址，并用 `SESSIONDECK_REMOTE_ALLOW` 限制来源 IP/CIDR；还必须用防火墙限制来源。隧道只转发这个端口，因此"来自 127.0.0.1"不会被当作本机所有者。
 - 服务器端隧道只绑定 `127.0.0.1`，外网只能经过 Caddy 的 HTTPS 访问；TLS 在你的服务器上解密。
 - 公网访问 dsh 原生网页界面时，Dili 会经主机侧 `/web-proxy/` 转发并隐藏启动令牌；本地仍直连。普通网页服务需在主机设置 `SESSIONDECK_WEB_PROXY_TARGETS`。链路部署见 [remote-network.md](agents/remote-network.md)。
 

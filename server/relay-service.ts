@@ -8,7 +8,7 @@ import { validToken } from './security.ts';
 import { relayUrl } from './invite.ts';
 import { FRP_ARCHIVE_HASHES, frpArchive } from '../shared/frp.ts';
 
-export interface RelayOptions { serverUrl: string; domains?: string[]; adminToken: string; pluginToken: string; adminHtml: string; clientsDir?: string; bandwidth?: RelayBandwidth; notices?: RelayNotices; noticeWaitMs?: number; p2p?: { upstream(deviceId: string): Promise<string | undefined> } }
+export interface RelayOptions { serverUrl: string; domains?: string[]; adminToken: string; pluginToken: string; adminHtml: string; clientsDir?: string; bandwidth?: RelayBandwidth; notices?: RelayNotices; noticeWaitMs?: number }
 export function createRelayApp(store: RelayStore, options: RelayOptions) {
   const app = express(), serverUrl = relayUrl(options.serverUrl);
   const notices = options.notices ?? new RelayNotices(), noticeWaitMs = options.noticeWaitMs ?? 25_000;
@@ -138,12 +138,12 @@ export function createRelayApp(store: RelayStore, options: RelayOptions) {
     const device = match && store.device(match[1]!);
     if (!device || device.revokedAt) return res.status(410).send('远程设备不存在或已撤销');
     const deviceOrigin = new URL(device.serverUrl || serverUrl);
-    // Prefer a direct private/VPN path when it is healthy; otherwise keep the
-    // existing FRP upstream. The device prefix has already been authenticated.
-    const p2p = await options.p2p?.upstream(device.id).catch(() => undefined);
+    // Every device has its own FRP port; nothing else may stand in for it.
+    // (A shared P2P upstream here once sent three different device links to one
+    // machine: reachability proves a host answers, not which device it is.)
     res.setHeader('X-Dili-Device-Host', deviceOrigin.host);
     res.setHeader('X-Dili-Device-Origin', deviceOrigin.origin);
-    res.setHeader('X-SessionDeck-Upstream', p2p ?? `127.0.0.1:${device.port}`);
+    res.setHeader('X-SessionDeck-Upstream', `127.0.0.1:${device.port}`);
     res.setHeader('X-SessionDeck-Prefix', `/connect/d/${device.id}`);
     res.sendStatus(200);
   });
