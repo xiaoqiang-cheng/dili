@@ -7,8 +7,10 @@
 - 远程网页服务面板改为自动经主机代理，普通目标必须在 `SESSIONDECK_WEB_PROXY_TARGETS` 中；本地仍为浏览器直连。路径代理不重写 HTML/JS，使用根路径绝对资源的站点明确提示可能不完整，不承诺任意站点可嵌入。
 - 远程监听新增 `SESSIONDECK_REMOTE_BIND`（默认 `127.0.0.1`），可绑定 EasyTier/WireGuard 私网地址；中继新增 `SESSIONDECK_RELAY_P2P_UPSTREAM`，通过 `/api/auth/status` 探活，健康才返回 P2P 上游，否则保留 FRP。探活缓存 5 秒，设备撤销语义不变。
 - 三个问题的回答：1）代理是平台中立的网络能力，没有 Codex 专属类型进入公共契约；dsh 的 Cookie/令牌处理只在其原生 Web 适配器路径中。2）普通网页服务对所有后端一视同仁；dsh 只代理其真实原生界面，本地仍可回退直连，无法嵌入或连接失败时显示错误而不是伪造成功。3）没有只做界面：代理真实转发 HTTP/WS，P2P 有真实探活与 FRP 回退；本轮未声称已经在用户家庭网络或公网服务器完成部署验收。
-- 新增 `server/web-proxy.test.ts`（HTTP、重定向、Cookie、启动令牌、WebSocket）、`server/web-proxy-api.test.ts`（所有者与允许列表契约）、`server/relay-p2p.test.ts`（解析、缓存、失败回退、中继路由）与访问登记测试。`npm test`：427 项，419 通过、4 跳过、4 个既有 Codex fixture 失败（与基线相同）；`npm run test:web`：254 通过（5.7 分钟）；`npm run build` 隔离目录构建通过。`npm run test:pwa`：32 通过，16 个 iPhone/WebKit 用例因本机未安装 WebKit 可执行文件失败，不是应用断言失败。
+- 新增 `server/web-proxy.test.ts`（HTTP、重定向、Cookie、启动令牌、WebSocket）、`server/web-proxy-api.test.ts`（所有者与允许列表契约）、`server/relay-p2p.test.ts`（解析、缓存、失败回退、中继路由）与访问登记测试。`npm test`：428 项，420 通过、4 跳过、4 个既有 Codex fixture 失败（与基线相同）；`npm run test:web`：254 通过（5.7 分钟）；`npm run build` 隔离目录构建通过。`npm run test:pwa`：32 通过，16 个 iPhone/WebKit 用例因本机未安装 WebKit 可执行文件失败，不是应用断言失败。
 - 文档新增 `docs/agents/remote-network.md`，同步 relay／dsh／security／remote-access／预览工作区／TODO／AGENTS。活动服务未重启；正式实例仍运行旧后端，需在安全窗口重启后生效。
+- 部署进展（2026-11-01 晚间）：公网服务器与主机已安装 EasyTier 2.6.4；因云安全组只开放 443，WSS 经现有 Caddy 的 `/dili-p2p*` 反代到服务器本机 `ws://127.0.0.1:11011`，两端虚拟地址为 `10.144.0.1`／`10.144.0.2`，systemd 服务 `easytier-dili.service` 均已启用，双向 ping 约 8–11 ms。中继已换用含 P2P 探测的 `relay.mjs` 并设置 `SESSIONDECK_RELAY_P2P_UPSTREAM`；Dili 未重启前探活失败，仍返回原 FRP 上游，远程入口 200。
+- 主机 Dili 已通过 drop-in 暂存 `SESSIONDECK_REMOTE_BIND=0.0.0.0` 与 `SESSIONDECK_REMOTE_ALLOW=10.144.0.1`，live 前端已构建；**但 Dili 重启会终止当前承载本会话的 dsh 进程**，所以没有从会话内部重启。剩余动作是在 Dili 之外的 WSL/PowerShell 终端执行 `systemctl --user restart dili.service`，然后验证 new backend、P2P 路由与 FRP fallback。家庭 split-horizon DNS／主机 TLS 尚未配置，同网直连仍未验收。
 
 ## 2026-10-23：文档结构整理与 README 改版
 
