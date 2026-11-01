@@ -183,6 +183,9 @@ test('late history responses stay with their own session and mobile records do n
   await expect.poll(() => received).toBe(true);
   await page.evaluate(id => { location.hash = `#/contacts?session=${id}`; }, second.id);
   await expect(page.getByRole('dialog', { name: `${second.title} 的私聊` })).toBeVisible();
+  // The second contact has no saved view, so it opens in its graphical chat;
+  // this test needs its record view to exercise the late response.
+  await page.getByRole('button', { name: '对话记录', exact: true }).click();
   await expect(page.locator('.conversation-text')).toContainText('第二个会话的记录');
   const response = page.waitForResponse(`**/api/sessions/${first.id}/conversation`);
   release(); await response;
@@ -239,7 +242,7 @@ test('staging a group task overrides the read-only preference and opens the exis
   await page.goto(`/#/groups/${group.id}?session=${session.id}`);
   await page.getByRole('button', { name: '对话记录', exact: true }).click();
   await expect(page.getByRole('region', { name: '原生对话记录', exact: true })).toBeVisible();
-  expect(await page.evaluate(() => localStorage.getItem('sessiondeck.private-view.codex'))).toBe('conversation');
+  expect(await page.evaluate((id) => localStorage.getItem(`sessiondeck.private-view.${id}`), session.id)).toBe('conversation');
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
   await page.locator('.group-message').filter({ hasText: prompt }).getByRole('button', { name: '填入会话', exact: true }).click();
   await expect(page.getByRole('dialog', { name: `${session.title} 的私聊` })).toBeVisible();

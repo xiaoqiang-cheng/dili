@@ -681,3 +681,11 @@
 - dsh-tui 非零退出时，状态详情会带上原生输出的最后一条可操作错误（去掉 ANSI），不再只有退出码，便于群聊和联系人卡片直接看到原因。
 - 三问自查：`dshWebTransport` 和 Auto 归一都是通用契约，不引入 Codex/Claude 分支；三个后端的 Auto 能力都按原生报告，dsh 明确不支持而不是假装可用；会话 ID、传输方式、Auto 状态都有原生创建/启动/权限目录依据，失败时保留原始错误与可读原因。
 - 验证：`npm run check` 通过；`npm test` 415 项、407 通过、4 跳过、4 个既有 Codex fixture 失败（无新增）；真实实例把群成员「开发3」从 `session-0a83ac60-…` 修复为裸 UUID `ea3d9d82-…`，`POST /start {mode:'chat'}` 返回 `executionTransport: web`；对群聊发送验证任务后，成员在群内回复（消息序号 290）：「开发3 已恢复，可以继续接任务。」
+
+## 2026-11-01：默认进入图形界面，原生视图按联系人记忆
+
+- 用户要求所有平台的新会话和默认进入都走图形界面，只有主动点原生界面才操作终端。原实现把视图偏好按后端存成 `sessiondeck.private-view.<backend>`，一次原生点击会让同后端所有联系人（包括新建）都默认原生终端；Claude 的默认值甚至直接落到终端。
+- 现在视图偏好按联系人 ID 存在 `sessiondeck.private-view.<Session.id>`：没有偏好的新联系人和默认进入一律 `chat`；只有该联系人自己点过原生视图才记住，刷新后仍保留。旧的后端级键被忽略，不再影响新会话；`openSessionForInput` 对停止成员按图形打开，与群投递自动 `mode: 'chat'` 启动对齐，运行中的终端成员仍显示原生终端。
+- 没有 `graphicalChat`（演示模式、旧 CLI、dsh 无结构化支持）仍诚实回退记录页／原生终端；HTTP `/api/sessions/:id/start` 的默认仍是 `terminal`，Web UI 始终显式传 mode，不改 API 契约。
+- 三问自查：视图偏好键只依赖联系人 ID，不引入 Codex/Claude 专属公共类型；三个后端都只在原生能力 `graphicalChat` 成立时默认图形，能力不足或演示模式走原生回退，不假装成功；切换视图只是本地挂载变化，不伪造启动／发送结果，Claude 交接仍要求显式确认。
+- 验证：`npm run check` 通过；`npm test` 417 项、409 通过、4 跳过、4 个既有 Codex fixture 失败（无新增）；`npm run test:web` 254 项全部通过，新增「新联系人默认图形、原生点击只留在本联系人」回归。构建后刷新前端即可生效，后端未改，无需重启服务。

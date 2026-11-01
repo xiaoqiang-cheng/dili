@@ -28,6 +28,14 @@
 - 群投递先写 `Delivery`（`pending/sending/sent/unknown`）再调用原生接口；`unknown` 只能由用户核对后解决，禁止自动重发。
 - `DeliveryNotAcceptedError` 表示原生明确拒绝；超时或断线是 `unknown`。
 
+## 默认视图与原生界面
+
+- 新联系人、以及没有显式视图偏好的联系人，一律先进入图形视图（`chat`）；只有联系人自己点过「原生界面／原生终端」才记住原生视图。
+- 视图偏好按 `Session.id` 存在 `sessiondeck.private-view.<id>`，不按后端全局保存。旧的后端级键（`sessiondeck.private-view.codex` 等）会被忽略，避免一次原生点击让以后所有同后端联系人都变成终端。`docs` 和测试只认联系人键。
+- 只有后端报告 `capabilities.graphicalChat` 才默认图形；演示模式、旧版 CLI、没有结构化会话的 dsh 回退记录页或原生终端。`/api/sessions/:id/start` 的 HTTP 默认仍是 `terminal`，Web UI 始终显式传 `mode`。
+- 群聊投递打开停止的成员时，如果后端支持 `graphicalChat`，按图形视图打开，与自动 `mode: 'chat'` 启动一致；已在运行的终端成员仍显示原生终端，避免把输入送进看不见的 PTY。
+- 切换视图只改变当前联系人的本地挂载，不重启原生进程；Claude 的图形／终端交接仍走显式确认和 `handoff`。
+
 ## Fork 与交接
 
 - Fork 只调用后端原生能力；没有原生 Fork 时禁用并解释（`capabilities.fork`）。

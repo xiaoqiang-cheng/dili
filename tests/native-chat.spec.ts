@@ -6,13 +6,13 @@ async function fixture(page: Page, backend: 'claude' | 'dsh', messages: Conversa
   const contact: Session = {...seed.sessions[0], id:'native-chat-' + backend,backend,title:backend+' 图形发送',running:true,status:'running',statusSource:'native',nativeSessionId:'test-thread',forkPending:false};
   const state: AppState = {...seed,demo:false,sessions:[contact],groups:[],activities:[],backends:seed.backends.map(item=>item.id===backend?{...item,installed:true,capabilities:{...item.capabilities,terminal:true,graphicalChat:backend==='claude'}}:item)};
   const result = {directSubmit:true,status:'accepted',reject:false,posts:[] as Record<string,unknown>[],wait:undefined as Promise<void>|undefined};
-  await page.addInitScript(backend=>{
-    localStorage.setItem('sessiondeck.private-view.'+backend,'conversation');
+  await page.addInitScript(({id})=>{
+    localStorage.setItem('sessiondeck.private-view.'+id,'conversation');
     const sources: EventTarget[] = [];
     Object.assign(window, { nativeChatSources: sources });
     class Source extends EventTarget {onopen: (()=>void)|null=null;onerror:(()=>void)|null=null;constructor(){super();sources.push(this);queueMicrotask(()=>this.onopen?.());}close(){sources.splice(sources.indexOf(this),1);}}
     Object.defineProperty(window,'EventSource',{value:Source});
-  },backend);
+  },{backend,id:contact.id});
   await page.route('**/api/state',route=>route.fulfill({json:state}));
   await page.route('**/api/config',route=>route.fulfill({json:{csrfToken:'test-token'}}));
   await page.route('**/api/sessions/'+contact.id+'/read',route=>route.fulfill({json:contact}));

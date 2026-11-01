@@ -145,18 +145,22 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   // (Desktop / other native clients); resume stays on the lifecycle button.
   // Route restores, reloads and history keep today's no-launch rule.
   const autoStartRef = useRef<{ id: string; mode?: 'terminal' | 'chat' } | null>(null);
-  const [privateViews, setPrivateViews] = useState<Record<string, string>>(() => Object.fromEntries(
-    ['claude', 'codex', 'dsh'].map(backend => {
-      const saved = readLocalPreference(`sessiondeck.private-view.${backend}`);
-      return [backend, saved === 'terminal' || saved === 'conversation' || saved === 'chat' ? saved : 'chat'];
-    }),
-  ));
+  // View choice is per contact: a new contact always opens in its graphical
+  // view, and only an explicit native-interface click is remembered for that
+  // contact. A previous native click must not turn every later contact native.
+  const privateViewKey = (id: string) => `sessiondeck.private-view.${id}`;
+  const [privateViews, setPrivateViews] = useState<Record<string, 'conversation' | 'terminal' | 'chat'>>({});
   const [terminalPanelOpen, setTerminalPanelOpen] = useState(false);
   const [setupShellId, setSetupShellId] = useState<string>();
   const [terminalSessionId, setTerminalSessionId] = useState<string | undefined>();
-  const selectPrivateView = (backend: Backend, mode: 'conversation' | 'terminal' | 'chat') => {
-    setPrivateViews(current => ({ ...current, [backend]: mode }));
-    writeLocalPreference(`sessiondeck.private-view.${backend}`, mode);
+  const savedPrivateView = (session: Session | null | undefined): 'conversation' | 'terminal' | 'chat' | undefined => {
+    if (!session) return undefined;
+    const saved = privateViews[session.id] ?? readLocalPreference(privateViewKey(session.id));
+    return saved === 'terminal' || saved === 'conversation' || saved === 'chat' ? saved : undefined;
+  };
+  const selectPrivateView = (sessionId: string, mode: 'conversation' | 'terminal' | 'chat') => {
+    setPrivateViews(current => ({ ...current, [sessionId]: mode }));
+    writeLocalPreference(privateViewKey(sessionId), mode);
     setSelection('');
   };
   const [connected, setConnected] = useState(false);
@@ -489,8 +493,12 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     }).catch(cause => setError(cause instanceof Error ? cause.message : '无法标记群聊已读'));
   }, [groupId]);
   const openSessionForInput = (session: Session) => {
-    const mode = ['codex', 'claude'].includes(session.backend) && session.interactionMode === 'chat' && !state?.demo ? 'chat' : 'terminal';
-    if (session.backend !== 'dsh' || state?.demo || state?.backends.find(item => item.id === 'dsh')?.capabilities.terminal) selectPrivateView(session.backend, mode);
+    const graphical = !state?.demo && !!state?.backends.find(item => item.id === session.backend)?.capabilities.graphicalChat;
+    // A group delivery auto-starts stopped members in chat, so opening the
+    // native terminal for them would show an empty PTY. Only an already-running
+    // terminal session keeps the native view; everything else opens graphical.
+    const mode = session.running && session.interactionMode === 'terminal' ? 'terminal' : graphical ? 'chat' : 'terminal';
+    selectPrivateView(session.id, mode);
     openSession(session, undefined, mode);
   };
   const copyText = async (value: string, label: string) => {
@@ -538,23 +546,27 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   // A dsh chat started without launching dsh-tui owns the same native Web UI;
   // its terminal view is the iframe, not an empty PTY.
   const dshNativeWeb = selected?.backend === 'dsh' && !!selected.nativeUrl && selected.executionTransport === 'web';
+  const viewChoice = savedPrivateView(selected);
+  // Every backend defaults to its graphical view. The native view is shown only
+  // after this contact's own native-interface click (or when it has no graphical
+  // mode at all).
   const privateView = selected ? selected.backend === 'codex' && agentChatAvailable
-    ? privateViews.codex === 'terminal' ? 'terminal' : 'chat'
+    ? viewChoice === 'terminal' ? 'terminal' : 'chat'
     : selected.backend === 'claude' && agentChatAvailable
-      ? privateViews.claude === 'chat' ? 'chat' : privateViews.claude === 'conversation' ? selected.running && selected.executionTransport !== 'structured' ? 'conversation' : 'chat' : 'terminal'
+      ? viewChoice === 'terminal' ? 'terminal' : viewChoice === 'conversation' ? selected.running && selected.executionTransport !== 'structured' ? 'conversation' : 'chat' : 'chat'
       : selected.backend === 'dsh' && agentChatAvailable
-        ? privateViews.dsh === 'terminal' ? 'terminal' : privateViews.dsh === 'conversation' ? 'conversation' : 'chat'
-        : privateViews[selected.backend] === 'conversation' ? 'conversation' : 'terminal' : 'terminal';
+        ? viewChoice === 'terminal' ? 'terminal' : viewChoice === 'conversation' ? 'conversation' : 'chat'
+        : viewChoice === 'conversation' ? 'conversation' : 'terminal' : 'terminal';
   const switchPrivateView = (mode: 'chat' | 'conversation' | 'terminal') => {
     if (!selected) return;
     // DeepSeek Harness has one native session behind both views; switching is
     // just a local attachment change and must not launch a second writer.
-    if (selected.backend === 'dsh') { selectPrivateView(selected.backend, mode); return; }
+    if (selected.backend === 'dsh') { selectPrivateView(selected.id, mode); return; }
     const executionView = selected.backend === 'claude' && agentChatAvailable && mode === 'conversation' ? 'chat' : mode;
     if ((executionView === 'terminal' || executionView === 'chat') && agentChatAvailable && selected.running && selected.interactionMode !== executionView) {
       if (selected.backend === 'claude' && !window.confirm('切换将退出当前 Claude 进程，并从同一份已保存会话恢复。当前任务和审批必须先处理完成。继续切换？')) return;
-      void run(`attach:${selected.id}`, async () => { await api(`/sessions/${selected.id}/start`, { mode: executionView, handoff: selected.backend === 'claude' }); selectPrivateView(selected.backend, mode); });
-    } else selectPrivateView(selected.backend, mode);
+      void run(`attach:${selected.id}`, async () => { await api(`/sessions/${selected.id}/start`, { mode: executionView, handoff: selected.backend === 'claude' }); selectPrivateView(selected.id, mode); });
+    } else selectPrivateView(selected.id, mode);
   };
   const startMode = (mode = privateView) => agentChatAvailable && (mode === 'chat' || selected?.backend === 'claude' && mode === 'conversation') ? 'chat' : 'terminal';
   const startSelected = (mode?: 'terminal' | 'chat') => {

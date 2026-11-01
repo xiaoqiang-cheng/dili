@@ -5,10 +5,11 @@ import type { AgentChatSnapshot } from '../shared/chat';
 const id = 'dsh-chat-contact';
 const native = 'session-22222222-2222-4222-8222-222222222222';
 
-async function fixture(page: Page, initial?: Partial<AgentChatSnapshot>, contactOverrides: Partial<Session> = {}) {
+async function fixture(page: Page, initial?: Partial<AgentChatSnapshot>, contactOverrides: Partial<Session> = {}, extraTitles: string[] = []) {
   const seed = await (await page.request.get('/api/state')).json() as AppState;
   const contact: Session = { ...seed.sessions[0], id, backend: 'dsh', title: 'DeepSeek 图形对话', cwd: '/workspace/demo', running: true, status: 'idle', statusSource: 'native', nativeSessionId: native, forkPending: false, interactionMode: 'terminal', executionTransport: 'web', ...contactOverrides };
-  const state: AppState = { ...seed, demo: false, sessions: [contact], groups: [], activities: [], backends: seed.backends.map(item => item.id === 'dsh' ? { ...item, installed: true, version: '0.2.0-rc.2', capabilities: { ...item.capabilities, terminal: true, graphicalChat: true } } : item) };
+  const extras: Session[] = extraTitles.map((title, index) => ({ ...contact, id: `dsh-chat-extra-${index}`, title, nativeSessionId: `session-3333333${index}-3333-4333-8333-333333333333` }));
+  const state: AppState = { ...seed, demo: false, sessions: [contact, ...extras], groups: [], activities: [], backends: seed.backends.map(item => item.id === 'dsh' ? { ...item, installed: true, version: '0.2.0-rc.2', capabilities: { ...item.capabilities, terminal: true, graphicalChat: true } } : item) };
   let snapshot: AgentChatSnapshot = {
     instanceId: 'fixture-instance', nativeSessionId: native, revision: 1, connected: true, activeTurnId: null,
     items: [{ id: 'u1', type: 'user', text: '检查登录', status: 'completed' }, { id: 'a1', type: 'assistant', text: '登录流程已经检查。', status: 'completed' }],
@@ -16,7 +17,6 @@ async function fixture(page: Page, initial?: Partial<AgentChatSnapshot>, contact
   };
   const starts: Record<string, unknown>[] = [], sends: Record<string, unknown>[] = [], answers: Record<string, unknown>[] = [], settingUpdates: Record<string, unknown>[] = [];
   await page.addInitScript(() => {
-    localStorage.setItem('sessiondeck.private-view.dsh', 'chat');
     const sources: EventTarget[] = [];
     Object.assign(window, { dshChatSources: sources });
     class Source extends EventTarget { onopen: (() => void) | null = null; onerror: (() => void) | null = null; constructor() { super(); sources.push(this); queueMicrotask(() => this.onopen?.()); } close() { sources.splice(sources.indexOf(this), 1); } }
@@ -47,9 +47,14 @@ async function fixture(page: Page, initial?: Partial<AgentChatSnapshot>, contact
     return route.fulfill({ json: { ok: true } });
   });
   await page.route('**/api/sessions/' + id + '/chat', route => route.fulfill({ json: snapshot }));
+  for (const extra of extras) {
+    await page.route('**/api/sessions/' + extra.id + '/read', route => route.fulfill({ json: extra }));
+    await page.route('**/api/sessions/' + extra.id + '/chat', route => route.fulfill({ json: { ...snapshot, nativeSessionId: extra.nativeSessionId } }));
+    await page.route('**/api/sessions/' + extra.id + '/chat/settings', route => route.fulfill({ json: { ...nativeSettings, nativeSessionId: extra.nativeSessionId } }));
+  }
   await page.goto('/#/contacts?session=' + id);
   await expect(page.getByRole('region', { name: 'DeepSeek 图形会话' })).toBeVisible();
-  return { contact, snapshot: () => snapshot, starts, sends, answers, settingUpdates };
+  return { contact, extras, snapshot: () => snapshot, starts, sends, answers, settingUpdates };
 }
 
 test('dsh opens the shared structured chat with native history and no fake native composer', async ({ page }) => {
@@ -119,4 +124,23 @@ test('dsh takeover stays disabled while the TUI task is running', async ({ page 
   const button = page.getByRole('button', { name: '任务结束后可接管' });
   await expect(button).toBeDisabled();
   await expect(page.getByRole('button', { name: '接管图形对话' })).toHaveCount(0);
+});
+
+test('a new contact opens in the graphical view while a native click stays with that contact', async ({ page }) => {
+  const app = await fixture(page, undefined, {}, ['第二个 DeepSeek']);
+  const second = app.extras[0]!;
+  const graphical = page.getByRole('button', { name: '图形对话', exact: true });
+  // This fixture has no nativeUrl, so the native view is labelled as the terminal.
+  const nativeView = page.getByRole('button', { name: '原生终端', exact: true });
+  await expect(graphical).toHaveAttribute('aria-pressed', 'true');
+  await nativeView.click();
+  await expect(nativeView).toHaveAttribute('aria-pressed', 'true');
+  // The explicit choice belongs to this contact and survives a reload.
+  await page.reload();
+  await expect(nativeView).toHaveAttribute('aria-pressed', 'true');
+  // A different contact on the same backend still starts graphical.
+  await page.evaluate(id => { location.hash = `#/contacts?session=${id}`; }, second.id);
+  await expect(page.getByRole('heading', { name: '第二个 DeepSeek', exact: true }).last()).toBeVisible();
+  await expect(page.getByRole('button', { name: '图形对话', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: '原生终端', exact: true })).toHaveAttribute('aria-pressed', 'false');
 });

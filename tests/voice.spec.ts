@@ -5,8 +5,8 @@ async function fixture(page: Page, backend: 'codex' | 'claude' | 'dsh', options:
   const seed = await (await page.request.get('/api/state')).json() as AppState;
   const contact: Session = { ...seed.sessions[0], id: 'voice-' + backend, backend, title: backend + ' 语音测试', running: true, status: 'waiting_input', statusSource: 'native', interactionMode: backend === 'dsh' ? 'terminal' : 'chat', executionTransport: backend === 'dsh' ? 'pty' : 'structured', nativeSessionId: 'voice-thread', forkPending: false };
   const snapshot = { nativeSessionId: contact.nativeSessionId, connected: true, activeTurnId: null, revision: 1, items: [], requests: [], truncated: false };
-  await page.addInitScript(({ backend, snapshot, deny }) => {
-    localStorage.setItem('sessiondeck.private-view.' + backend, backend === 'dsh' ? 'conversation' : 'chat');
+  await page.addInitScript(({ backend, id, snapshot, deny }) => {
+    localStorage.setItem('sessiondeck.private-view.' + id, backend === 'dsh' ? 'conversation' : 'chat');
     class Source extends EventTarget {
       onopen: (() => void) | null = null; onerror: (() => void) | null = null;
       constructor(url: string) { super(); setTimeout(() => { this.onopen?.(); if (url.includes('/chat/events')) this.dispatchEvent(new MessageEvent('state', { data: JSON.stringify(snapshot) })); }, 0); }
@@ -29,7 +29,7 @@ async function fixture(page: Page, backend: 'codex' | 'claude' | 'dsh', options:
       stop() { this.state = 'inactive'; this.ondataavailable?.({ data: new Blob(['last opus chunk']) }); const done = this.onstop; setTimeout(() => done?.(), 0); }
     }
     Object.defineProperty(window, 'MediaRecorder', { value: Recorder });
-  }, { backend, snapshot, deny: options.deny });
+  }, { backend, id: contact.id, snapshot, deny: options.deny });
   const group = { ...seed.groups[0], id: 'voice-group', title: '群语音测试' };
   if (options.group) contact.groupId = group.id;
   await page.route('**/api/groups/' + group.id, route => route.fulfill({ json: { group, messages: [], deliveries: [] } }));
