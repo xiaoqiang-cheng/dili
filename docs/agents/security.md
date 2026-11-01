@@ -48,6 +48,7 @@
 - 只有所有者可登记和访问 `/api/web-proxy`；普通网页目标还必须在 `SESSIONDECK_WEB_PROXY_TARGETS` 中，避免把远程入口变成任意私网地址的开放代理。
 - 代理令牌随机、短期、只存在内存；浏览器 URL 不携带 dsh 启动令牌。上游地址只允许回环/私网，拒绝账号密码、非 HTTP(S) 和公网目标。
 - 转发前剔除 Dili 的设备 Cookie；上游 `Set-Cookie` 的 `Domain` 被移除、`Path` 收窄到代理前缀。`/web-proxy` 不经过 API 路由表，因此单独执行所有者检查，并依赖现有 Host/Origin 校验拒绝跨站请求。
+- 远程监听在用 `SESSIONDECK_REMOTE_BIND` 绑定非回环地址时，另用 `SESSIONDECK_REMOTE_ALLOW`（IP/CIDR）限制 socket 来源；只默认信任回环。Host/Origin 与来源地址是两道独立检查，不能互相替代。
 - 代理保留上游的 `X-Frame-Options`/CSP；站点自行禁止嵌入时不能假装成功。路径代理不重写 HTML/JS，绝对根路径资源可能失效。
 - **路径代理与 Dili 同源**：被允许的网页可以携带 Dili 的设备 Cookie 调用同源 API，因此它只应加入可信服务，不能把 `SESSIONDECK_WEB_PROXY_TARGETS` 当成隔离边界。独立预览子域名（每服务独立 origin）实现前，不要宣称已解决该风险。dsh 原生界面是 Dili 自己管理的目标，仍按可信原生路径处理。
 

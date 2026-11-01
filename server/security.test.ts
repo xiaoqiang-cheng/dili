@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { IncomingHttpHeaders } from 'node:http';
-import { allowedRequest, validToken } from './security.ts';
+import { allowedRequest, parseRemoteSources, remoteSourceAllowed, validToken } from './security.ts';
 
 const port = 4317;
 const allowed = (headers: IncomingHttpHeaders) => allowedRequest({ headers }, port);
@@ -73,4 +73,19 @@ test('token validation compares equal-length bytes and safely rejects malformed 
   assert.equal(validToken('é', 'ab'), false);
   assert.equal(validToken('é', 'é'), true);
   assert.equal(validToken('𝌆', 'abcd'), false);
+});
+
+
+test('remote listener source restriction allows loopback and explicit peers only', () => {
+  const allow = parseRemoteSources('10.144.0.1,10.145.0.0/24,fd00::/64');
+  assert.equal(remoteSourceAllowed('127.0.0.1', allow), true);
+  assert.equal(remoteSourceAllowed('::1', allow), true);
+  assert.equal(remoteSourceAllowed('10.144.0.1', allow), true);
+  assert.equal(remoteSourceAllowed('10.145.0.9', allow), true);
+  assert.equal(remoteSourceAllowed('fd00::2', allow), true);
+  assert.equal(remoteSourceAllowed('192.168.1.20', allow), false);
+  assert.equal(remoteSourceAllowed('127.0.0.2', allow), true);
+  assert.equal(remoteSourceAllowed(undefined, allow), false);
+  assert.throws(() => parseRemoteSources('10.0.0.0/99'), /前缀无效/);
+  assert.throws(() => parseRemoteSources('not-an-ip'), /无效来源/);
 });

@@ -81,22 +81,47 @@ curl -I https://discoverpaw.com/connect/d/<id>/
 
 ### 主机
 
-安装 EasyTier 后加入同一个网络，给主机一个稳定虚拟 IP，例如 `10.144.0.2`。示例配置（按实际网络替换）：
+安装 EasyTier 后加入同一个网络，给主机一个稳定虚拟 IP，例如 `10.144.0.2`。如果云安全组只开放 443，不要让 EasyTier 直接监听 11010；用 Caddy 把一条 WebSocket 路径反代到 EasyTier 的本机 WS 监听（本仓库实测 `wss` 可用）。主机示例配置（按实际网络替换）：
 
 ```toml
-instance_name = "dili"
+instance_name = "dili-host"
 hostname = "dili-host"
-network_name = "dili-private"
-network_secret = "<与服务器相同的密钥>"
 ipv4 = "10.144.0.2/24"
-peers = ["tcp://<公网服务器地址>:11010"]
+
+[[peer]]
+uri = "wss://<公网域名>/dili-p2p"
+
+[network_identity]
+network_name = "<随机网络名>"
+network_secret = "<与服务器相同的随机密钥>"
 ```
 
-启动后确认：
+主机只做客户端，用 `--no-listener` 启动；启动后确认 `ping -c 3 10.144.0.1`。不要把 `network_secret` 放进仓库、URL 或可被普通用户读取的文件。
 
-```bash
-ping -c 1 10.144.0.1
+### 公网服务器的 Caddy 与 EasyTier
+
+EasyTier 只监听回环 WS，不新增公网端口：
+
+```toml
+instance_name = "dili-relay"
+hostname = "dili-relay"
+ipv4 = "10.144.0.1/24"
+listeners = ["ws://127.0.0.1:11011"]
+
+[network_identity]
+network_name = "<随机网络名>"
+network_secret = "<同一随机密钥>"
 ```
+
+在已有 TLS 站点的 Caddyfile 中加入（`/dili-p2p*` 不需要登录，靠 EasyTier 网络密钥鉴别）：
+
+```caddyfile
+handle /dili-p2p* {
+  reverse_proxy 127.0.0.1:11011
+}
+```
+
+然后 `caddy validate`、`systemctl reload caddy`。如果安全组允许额外的 TCP/UDP 端口，也可以让 EasyTier 直接监听 `tcp://0.0.0.0:11010` 并让主机用 `tcp://<公网地址>:11010`；但必须真正限制该端口，不能把 EasyTier 控制面暴露成开放中继。
 
 ### 主机 Dili
 
@@ -104,15 +129,12 @@ FRP 仍从回环连 4318，P2P 从虚拟网卡连 4318，所以监听地址要�
 
 ```bash
 SESSIONDECK_REMOTE_BIND=0.0.0.0
+SESSIONDECK_REMOTE_ALLOW=10.144.0.1
 ```
 
-然后用主机防火墙只允许：
+`SESSIONDECK_REMOTE_ALLOW` 是**来源地址**限制，不是 Host/Origin 的替代：默认只允许回环（FRP、本机 Caddy、SSH 转发）；绑定 `0.0.0.0` 时必须把 P2P 服务器地址加入，否则来自虚拟网卡的请求会被 403。主机没有额外防火墙时，这一层仍会拒绝同一网段的其他设备。若主机有 nftables/Windows 防火墙，再只放行 `127.0.0.1`、EasyTier 虚拟网段和管理网段。
 
-- `127.0.0.1` / FRP 本机
-- EasyTier 虚拟网段（例如 `10.144.0.0/24`）
-- **不要**把 4318 暴露到公网网卡。
-
-`SESSIONDECK_REMOTE_BIND` 只接受 IP；默认 `127.0.0.1` 保持原行为。
+`SESSIONDECK_REMOTE_BIND` 与 `SESSIONDECK_REMOTE_ALLOW` 都只接受 IP/CIDR；默认 `127.0.0.1` 且无额外来源，保持原行为。
 
 ### 公网中继
 
@@ -121,6 +143,8 @@ SESSIONDECK_REMOTE_BIND=0.0.0.0
 ```bash
 SESSIONDECK_RELAY_P2P_UPSTREAM=10.144.0.2:4318
 ```
+
+中继服务是独立的打包进程（`/opt/sessiondeck-relay/relay.mjs`），要先把包含 P2P 探测的 `npm run build:relay` 产物同步过去再重启；只改环境变量而用旧 relay.mjs 不会生效。
 
 重启中继后，`/internal/route` 会先探测 `http://10.144.0.2:4318/api/auth/status`（Host 为公网域名），成功才返回 P2P 上游；探测失败或超时自动返回原来的 `127.0.0.1:<frp 端口>`。探测结果缓存 5 秒，不会给每个请求增加一次握手。
 

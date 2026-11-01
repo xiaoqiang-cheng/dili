@@ -23,7 +23,7 @@ import { ShellTerminals } from './shell-terminals.ts';
 import { dshWebTransport, executionMode } from '../shared/execution.ts';
 import { AgentSetup } from './agent-setup.ts';
 import { StartupService } from './startup.ts';
-import { allowedRemoteRequest, allowedRequest, readCookie, validToken } from './security.ts';
+import { allowedRemoteRequest, allowedRequest, parseRemoteSources, readCookie, remoteSourceAllowed, validToken } from './security.ts';
 import { AuthStore, type Principal } from './auth.ts';
 import { authorize } from './access.ts';
 import { FrpTunnel } from './frp.ts';
@@ -91,6 +91,7 @@ if (envRemotePort !== null && (!Number.isInteger(envRemotePort) || envRemotePort
 // Loopback by default. A fixed private/VPN address lets the relay reach this
 // listener directly over EasyTier/WireGuard while FRP remains the fallback.
 const envRemoteBind = process.env.SESSIONDECK_REMOTE_BIND?.trim() || '127.0.0.1';
+const remoteSources = parseRemoteSources(process.env.SESSIONDECK_REMOTE_ALLOW?.trim() || '');
 if (!isIP(envRemoteBind)) throw new Error('SESSIONDECK_REMOTE_BIND 必须是 IP 地址，例如 127.0.0.1、10.144.0.2 或 0.0.0.0');
 // A random key file beside the database seals the saved SSH password.
 const secretKeyFile = join(dataDir, 'secret.key');
@@ -362,6 +363,7 @@ function observeNative(item: Session) {
 app.disable('x-powered-by');
 app.use((req, res, next) => {
   const remote = isRemote(req);
+  if (remote && !remoteSourceAllowed(req.socket.remoteAddress, remoteSources)) return res.status(403).json({ error: '请求来源不被允许' });
   if (remote ? !allowedRemoteRequest(req, remoteSettings().publicUrl, remoteSettings().localPort) : !allowedRequest(req, port, wildcardHost)) return res.status(403).json({ error: '请求来源不被允许' });
   const device = remote ? readCookie(req.headers.cookie, DEVICE_COOKIE) : undefined;
   res.locals.remote = remote;
@@ -1687,7 +1689,7 @@ function upgrade(req: import('node:http').IncomingMessage, socket: import('node:
     const device = remote ? readCookie(req.headers.cookie, DEVICE_COOKIE) : undefined;
     const principal = remote ? auth.principal(device) : LOCAL_OWNER;
     const allowed = remote ? allowedRemoteRequest(req, remoteSettings().publicUrl, remoteSettings().localPort) : allowedRequest(req, port, wildcardHost);
-    if (!allowed || !principal || principal.kind !== 'owner') { socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return; }
+    if (!remoteSourceAllowed(req.socket.remoteAddress, remoteSources) || !allowed || !principal || principal.kind !== 'owner') { socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return; }
     const suffix = proxyMatch[2]?.replace(/^\//, '') ?? '';
     if (!webProxy.handleUpgrade(req, socket, head, { token: proxyMatch[1]!, suffix, search: url.search, stripCookies: [DEVICE_COOKIE] })) {
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
@@ -1705,6 +1707,7 @@ function upgrade(req: import('node:http').IncomingMessage, socket: import('node:
   const scope = shellMatch ? 'owner' : 'session';
   const sessionTarget = shellMatch ? null : decodeURIComponent(url.pathname.slice('/api/terminal/'.length));
   const permitted = !!principal && (principal.kind === 'owner' || (scope === 'session' && principal.sessionId === sessionTarget));
+  if (remote && !remoteSourceAllowed(req.socket.remoteAddress, remoteSources)) { socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return; }
   if (!allowed || !principal || !permitted || !validToken(url.searchParams.get('token'), auth.csrf(principal))) { socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return; }
   const viewer: Viewer = { principal, device };
   // Read-only shares watch the same PTY stream; their keystrokes are discarded.

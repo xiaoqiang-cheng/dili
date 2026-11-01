@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
+import { BlockList, isIP } from 'node:net';
 
 export function allowedRequest(req: Pick<IncomingMessage, 'headers'>, port: number, allowAnyHost = false): boolean {
   const requestHost = req.headers.host;
@@ -63,4 +64,39 @@ export function readCookie(header: string | undefined, name: string): string | u
     }
   }
   return undefined;
+}
+
+/**
+ * The remote listener may be bound to a private/P2P interface. Host/Origin
+ * checks alone would then expose it to every device on that interface, so the
+ * socket source is restricted independently: loopback (FRP/local Caddy/SSH
+ * forwards) plus the explicitly configured peer addresses.
+ */
+const loopbackSources = new BlockList();
+loopbackSources.addSubnet('127.0.0.0', 8, 'ipv4');
+loopbackSources.addAddress('::1', 'ipv6');
+
+export function parseRemoteSources(value: string): BlockList {
+  const list = new BlockList();
+  for (const raw of value.split(',').map(item => item.trim()).filter(Boolean)) {
+    const [address, prefix, extra] = raw.split('/');
+    const family = isIP(address ?? '');
+    if (!family || extra !== undefined || prefix !== undefined && !/^\d{1,3}$/.test(prefix)) throw new Error(`SESSIONDECK_REMOTE_ALLOW 包含无效来源：${raw}`);
+    if (prefix === undefined) list.addAddress(address!, family === 4 ? 'ipv4' : 'ipv6');
+    else {
+      const bits = Number(prefix);
+      if (bits < 0 || bits > (family === 4 ? 32 : 128)) throw new Error(`SESSIONDECK_REMOTE_ALLOW 前缀无效：${raw}`);
+      list.addSubnet(address!, bits, family === 4 ? 'ipv4' : 'ipv6');
+    }
+  }
+  return list;
+}
+
+export function remoteSourceAllowed(address: string | undefined, allow: BlockList): boolean {
+  if (!address) return false;
+  const normalized = address.split('%', 1)[0]!;
+  const mapped = normalized.startsWith('::ffff:') && isIP(normalized.slice(7)) === 4 ? normalized.slice(7) : normalized;
+  const family = isIP(mapped);
+  if (!family) return false;
+  return loopbackSources.check(mapped, family === 4 ? 'ipv4' : 'ipv6') || allow.check(mapped, family === 4 ? 'ipv4' : 'ipv6');
 }
