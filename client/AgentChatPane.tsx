@@ -72,11 +72,11 @@ const MessageItem = memo(function MessageItem({ item, highlighted = false, agent
 });
 
 
-export default function AgentChatPane(props: { session: Session; onTerminal: () => void; onSelection?: (text: string) => void }) {
+export default function AgentChatPane(props: { session: Session; allowTerminal?: boolean; onTerminal: () => void; onSelection?: (text: string) => void }) {
   return <ChatSession key={props.session.id} {...props} />;
 }
 
-function ChatSession({ session, onTerminal, onSelection }: { session: Session; onTerminal: () => void; onSelection?: (text: string) => void }) {
+function ChatSession({ session, allowTerminal = true, onTerminal, onSelection }: { session: Session; allowTerminal?: boolean; onTerminal: () => void; onSelection?: (text: string) => void }) {
   const chrome = useSessionChrome();
   const agentName = session.backend === 'claude' ? 'Claude' : session.backend === 'dsh' ? 'DeepSeek' : 'Codex';
   const nativeLabel = session.backend === 'dsh' ? '原生界面' : '原生终端';
@@ -264,7 +264,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
       if (refreshJob) { refreshAgain ||= required; return refreshJob; }
       const before = sequence;
       refreshJob = (async () => {
-        try { const result = await api<AgentChatSnapshot>(`/sessions/${session.id}/chat`); if (sequence === before) install(result); }
+        try { const result = await api<AgentChatSnapshot>(`/sessions/${session.id}/chat?preferSnapshot=1`); if (sequence === before) install(result); }
         catch (cause) { if (!disposed && sequence === before) { setError(errorText(cause)); setLoading(false); } }
         finally { refreshJob = undefined; if (refreshAgain && !disposed) { refreshAgain = false; void refresh(); } }
       })();
@@ -442,7 +442,7 @@ function ChatSession({ session, onTerminal, onSelection }: { session: Session; o
   return <section ref={pane} className="codex-chat-pane" aria-label={`${agentName} 图形会话`} onKeyDown={event => {
     if (outlineOpen && event.key === 'Escape' && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); closeOutline(); }
   }}>
-    <SessionToolbar className="codex-chat-toolbar"><span className="pane-connection" title="图形会话连接状态"><i className={transport && nativeAvailable ? 'online' : ''} /><span className="pane-connection-label">{!transport ? '连接中' : snapshot?.requests.length ? '需要你回复' : hasTurn ? '正在处理' : session.running ? nativeAvailable ? '已连接' : '原生未连接' : '尚未启动'}</span></span><div><button ref={outlineButton} className="icon-button" type="button" aria-label="对话目录" title="对话目录" aria-expanded={outlineOpen} aria-controls={outlineOpen ? outlineId : undefined} onClick={() => outlineOpen ? closeOutline() : setOutlineOpen(true)}><List size={15} /></button><PaneToolOverflow><button type="button" className="icon-button" aria-label="会话设置" title="会话设置" onClick={() => { setSettingsField(undefined); setSettingsOpen(true); }}><Settings2 size={14} /><span>会话设置</span></button><button className="icon-button" type="button" aria-label="刷新对话" title="刷新对话" onClick={() => void readSnapshot.current()}><RefreshCw size={14} /><span>刷新对话</span></button>{!chrome && <button type="button" className="icon-button" aria-label={nativeLabel} title={nativeLabel} onClick={onTerminal}><TerminalSquare size={14} /><span>{nativeLabel}</span></button>}</PaneToolOverflow></div></SessionToolbar>
+    <SessionToolbar className="codex-chat-toolbar"><span className="pane-connection" title="图形会话连接状态"><i className={transport && nativeAvailable ? 'online' : ''} /><span className="pane-connection-label">{!transport ? '连接中' : snapshot?.requests.length ? '需要你回复' : hasTurn ? '正在处理' : session.running ? nativeAvailable ? '已连接' : '原生未连接' : '尚未启动'}</span></span><div><button ref={outlineButton} className="icon-button" type="button" aria-label="对话目录" title="对话目录" aria-expanded={outlineOpen} aria-controls={outlineOpen ? outlineId : undefined} onClick={() => outlineOpen ? closeOutline() : setOutlineOpen(true)}><List size={15} /></button><PaneToolOverflow><button type="button" className="icon-button" aria-label="会话设置" title="会话设置" onClick={() => { setSettingsField(undefined); setSettingsOpen(true); }}><Settings2 size={14} /><span>会话设置</span></button><button className="icon-button" type="button" aria-label="刷新对话" title="刷新对话" onClick={() => void readSnapshot.current()}><RefreshCw size={14} /><span>刷新对话</span></button>{allowTerminal && !chrome && <button type="button" className="icon-button" aria-label={nativeLabel} title={nativeLabel} onClick={onTerminal}><TerminalSquare size={14} /><span>{nativeLabel}</span></button>}</PaneToolOverflow></div></SessionToolbar>
     {!!snapshot?.requests.length && <div className="codex-request-alert" role="alert"><CircleAlert size={15} /><span>{snapshot.requests.length === 1 ? snapshot.requests[0].title : `${snapshot.requests.length} 项请求需要处理`}</span><button type="button" className="text-button" onClick={() => jumpToRequest(snapshot.requests[0].id)}>定位到请求</button></div>}
     {loading && snapshot && <div className="codex-chat-banner" role="status"><LoaderCircle size={13} className="spin" />正在同步最新对话…</div>}
     {!transport && !loading && <div className="codex-chat-banner" role="status">与本地服务的连接已中断，正在重连。草稿已保留。</div>}

@@ -6,8 +6,8 @@ import DiffView, { DiffStats, type DiffMode } from './DiffView';
 import { readLocalPreference, writeLocalPreference } from './ui';
 import { workspaceBase, EntryIcon, htmlPath, markdownPath, mediaKind, workspaceRawUrl, type DiffResult, type FileResult, type HtmlMode, type Preview } from './workspace-files';
 
-export function WorkspacePreviewContent({ preview, sessionId, root, selectedPath, loading, clearPreview, setPreview }: {
-  preview: Preview | null; sessionId: string; root?: string; selectedPath: string; loading: boolean;
+export function WorkspacePreviewContent({ preview, sessionId, root, groupId, selectedPath, loading, clearPreview, setPreview }: {
+  preview: Preview | null; sessionId: string; root?: string; groupId?: string; selectedPath: string; loading: boolean;
   clearPreview: () => void; setPreview: (update: (current: Preview | null) => Preview | null) => void;
 }) {
   const [diffMode, setDiffMode] = useState<DiffMode>(() => readLocalPreference('sessiondeck.diff-mode') === 'inline' ? 'inline' : 'split');
@@ -19,7 +19,7 @@ export function WorkspacePreviewContent({ preview, sessionId, root, selectedPath
   const chooseDiffMode = (mode: DiffMode) => { setDiffMode(mode); writeLocalPreference('sessiondeck.diff-mode', mode); };
   const setHtmlMode = (mode: HtmlMode) => setPreview(current => current?.kind === 'html' ? { ...current, mode } : current);
   const refreshHtml = () => setPreview(current => current?.kind === 'html' ? { ...current, generation: current.generation + 1 } : current);
-  const rawUrl = (path: string) => workspaceRawUrl(sessionId, path, root);
+  const rawUrl = (path: string) => workspaceRawUrl(sessionId, path, root, groupId);
   return <>
       {file && <section className="workspace-preview"><header><EntryIcon entry={{ name: file.path, path: file.path, kind: 'file' }} /><strong title={file.path}><bdi>{file.path}</bdi></strong><button className="icon-button" aria-label="关闭文件预览" onClick={clearPreview}><X size={14} /></button></header>{file.binary ? <p className="workspace-note">二进制文件不支持预览。</p> : markdownPath(file.path) ? <Markdown text={file.content} /> : <pre>{file.content}</pre>}{file.truncated && <p className="workspace-note">文件过大，预览已截断。</p>}</section>}
       {html && <section className="workspace-preview workspace-html-preview"><header><EntryIcon entry={{ name: html.result.path, path: html.result.path, kind: 'file' }} /><strong title={html.result.path}><bdi>{html.result.path}</bdi></strong><div className="diff-mode-switch" role="group" aria-label="网页显示方式"><button className="icon-button" aria-label="预览网页" title="预览" aria-pressed={html.mode === 'preview'} onClick={() => setHtmlMode('preview')}><Eye size={14} /></button><button className="icon-button" aria-label="查看源码" title="源码" aria-pressed={html.mode === 'source'} onClick={() => setHtmlMode('source')}><Code2 size={14} /></button></div>{html.mode === 'preview' && <button className="icon-button" aria-label="刷新网页预览" title="刷新预览" onClick={refreshHtml}><RefreshCw size={14} /></button>}<button className="icon-button" aria-label="关闭文件预览" onClick={clearPreview}><X size={14} /></button></header>{html.mode === 'preview' ? <iframe key={html.generation} className="workspace-html-frame" title={`预览 ${html.result.path}`} src={rawUrl(html.result.path)} sandbox="allow-scripts allow-forms" referrerPolicy="no-referrer" /> : <pre>{html.result.content}</pre>}{html.result.truncated && html.mode === 'source' && <p className="workspace-note">文件过大，预览已截断。</p>}</section>}
@@ -29,7 +29,7 @@ export function WorkspacePreviewContent({ preview, sessionId, root, selectedPath
   </>;
 }
 
-export default function WorkspaceFilePreview({ sessionId, root, path, kind, close, compact }: { compact?: boolean; sessionId: string; root?: string; path: string; kind: 'file' | 'diff'; close: () => void }) {
+export default function WorkspaceFilePreview({ sessionId, root, groupId, path, kind, close, compact }: { compact?: boolean; sessionId: string; root?: string; groupId?: string; path: string; kind: 'file' | 'diff'; close: () => void }) {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
@@ -37,7 +37,7 @@ export default function WorkspaceFilePreview({ sessionId, root, path, kind, clos
   useEffect(() => {
     let live = true;
     setLoading(true); setError(''); setPreview(null);
-    const base = workspaceBase(sessionId, root);
+    const base = workspaceBase(sessionId, root, groupId);
     const media = kind === 'file' ? mediaKind(path) : null;
     if (media) { setPreview({ kind: 'media', path, media }); setLoading(false); return; }
     const load = async () => {
@@ -58,6 +58,6 @@ export default function WorkspaceFilePreview({ sessionId, root, path, kind, clos
   return <div className="workspace-file-tab">
     {!compact && <div className="preview-file-actions"><span title={path}><bdi>{path}</bdi></span><button className="icon-button" aria-label="重新读取文件" title="重新读取文件" onClick={() => setAttempt(value => value + 1)}><RefreshCw size={14} /></button></div>}
     {error && <div className="workspace-error" role="alert">{error}<button className="text-button" onClick={() => setAttempt(value => value + 1)}>重试</button></div>}
-    <WorkspacePreviewContent preview={preview} sessionId={sessionId} root={root} selectedPath={path} loading={loading} clearPreview={close} setPreview={setPreview} />
+    <WorkspacePreviewContent preview={preview} sessionId={sessionId} root={root} groupId={groupId} selectedPath={path} loading={loading} clearPreview={close} setPreview={setPreview} />
   </div>;
 }

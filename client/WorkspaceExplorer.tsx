@@ -67,7 +67,7 @@ export function Splitter({ label, value, min, max, onChange, onCommit, direction
     onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={finish} onPointerCancel={finish} onLostPointerCapture={finish} onKeyDown={keyDown}><span /></div>;
 }
 
-type ExplorerProps = { session: Session; close: () => void; picker?: ReactNode; root?: string; embedded?: boolean; selection?: FileSelection; treeCollapsed?: boolean; onTreeCollapsed?: (value: boolean) => void; onSelectFile?: (selection?: FileSelection) => void };
+type ExplorerProps = { groupId?: string; session: Session; close: () => void; picker?: ReactNode; root?: string; embedded?: boolean; selection?: FileSelection; treeCollapsed?: boolean; onTreeCollapsed?: (value: boolean) => void; onSelectFile?: (selection?: FileSelection) => void };
 
 export default function WorkspaceExplorer(props: ExplorerProps) {
   // Remount immediately when switching workspaces; pending responses from the
@@ -75,7 +75,7 @@ export default function WorkspaceExplorer(props: ExplorerProps) {
   return <WorkspaceExplorerPanel key={`${props.session.id}:${props.root ?? props.session.cwd}`} {...props} />;
 }
 
-function WorkspaceExplorerPanel({ session, close, picker, root, embedded, selection, treeCollapsed = false, onTreeCollapsed, onSelectFile }: ExplorerProps) {
+function WorkspaceExplorerPanel({ groupId, session, close, picker, root, embedded, selection, treeCollapsed = false, onTreeCollapsed, onSelectFile }: ExplorerProps) {
   const [tab, setTab] = useState<'files' | 'git'>(() => selection?.kind === 'diff' ? 'git' : 'files');
   const [trees, setTrees] = useState<Record<string, Tree>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']));
@@ -104,7 +104,7 @@ function WorkspaceExplorerPanel({ session, close, picker, root, embedded, select
   const live = useRef(true);
   const sequence = useRef(0);
   const requests = useRef(new Map<string, number>());
-  const base = workspaceBase(session.id, root);
+  const base = workspaceBase(session.id, root, groupId);
 
   // Each tree, Git status and the single preview have their own request scope.
   // An older completion cannot clear a newer request's loading/error state.
@@ -239,11 +239,11 @@ function WorkspaceExplorerPanel({ session, close, picker, root, embedded, select
     </div>
     {(!embedded || !treeCollapsed) && <Splitter label="调整文件树宽度" value={shownTree} min={treeMin} max={treeMax} onChange={setTreeWidth} onCommit={value => writeLocalPreference(treeKey, String(value))} />}
     {embedded && <div className="workspace-combined-preview">
-      {selection ? <WorkspaceFilePreview compact key={`${selection.kind}:${selection.path}:${previewRevision}`} sessionId={session.id} root={root} path={selection.path} kind={selection.kind} close={clearPreview} /> : <div className="preview-unavailable"><FileText size={28} /><p>选择文件以预览内容</p>{treeCollapsed && <button className="text-button" onClick={() => onTreeCollapsed?.(false)}>展开目录</button>}</div>}
+      {selection ? <WorkspaceFilePreview compact key={`${selection.kind}:${selection.path}:${previewRevision}`} sessionId={session.id} root={root} groupId={groupId} path={selection.path} kind={selection.kind} close={clearPreview} /> : <div className="preview-unavailable"><FileText size={28} /><p>选择文件以预览内容</p>{treeCollapsed && <button className="text-button" onClick={() => onTreeCollapsed?.(false)}>展开目录</button>}</div>}
     </div>}
     {previewOpen && <><div className="workspace-preview-pane">
       {visibleErrors.filter(([scope]) => scope === 'preview').map(([scope, message]) => <div key={scope} className="workspace-error" role="alert">{message}</div>)}
-      <WorkspacePreviewContent preview={preview} sessionId={session.id} root={root} selectedPath={selectedPath} loading={pending.has('preview')} clearPreview={clearPreview} setPreview={setPreview} />
+      <WorkspacePreviewContent preview={preview} sessionId={session.id} root={root} groupId={groupId} selectedPath={selectedPath} loading={pending.has('preview')} clearPreview={clearPreview} setPreview={setPreview} />
     </div>
     <Splitter label="调整预览宽度" value={shownPreview} min={PREVIEW.min} max={previewMax} onChange={setPreviewWidth} onCommit={value => writeLocalPreference(PREVIEW.key, String(value))} /></>}
     </div>

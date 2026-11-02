@@ -33,14 +33,14 @@ test('shares are scoped to one session and owner-only routes stay closed', () =>
   const write = { ...read, mode: 'write' } as const;
   assert.equal(authorize(null, true, 'GET', '/api/state').allowed, false);
   assert.equal(authorize(null, true, 'POST', '/api/auth/login').allowed, true);
-  assert.equal(authorize(read, true, 'GET', '/api/sessions/mine/workspace/git/diff').allowed, true);
+  assert.equal(authorize(read, true, 'GET', '/api/sessions/mine/workspace/git/diff').allowed, false);
   for (const path of ['tree', 'file', 'raw/site/index.html', 'git/status', 'git/diff']) {
     const url = `/api/workspaces/%2Ftmp/workspace/${path}`;
     assert.equal(authorize(read, true, 'GET', url).allowed, false);
     assert.equal(authorize(write, true, 'GET', url).allowed, false);
     assert.equal(authorize({ kind: 'owner', local: true }, false, 'GET', url).allowed, true);
   }
-  assert.equal(authorize(read, true, 'GET', '/api/sessions/mine/workspace/raw/site/index.html').allowed, true);
+  assert.equal(authorize(read, true, 'GET', '/api/sessions/mine/workspace/raw/site/index.html').allowed, false);
   assert.equal(authorize(read, true, 'GET', '/api/sessions/other/workspace/raw/site/index.html').allowed, false);
   assert.equal(authorize(read, true, 'GET', '/api/sessions/other/workspace/file').allowed, false);
   assert.equal(authorize(read, true, 'GET', '/api/sessions/mine/chat/history').allowed, true);
@@ -59,7 +59,7 @@ test('shares are scoped to one session and owner-only routes stay closed', () =>
   assert.equal(authorize(read, true, 'POST', '/api/sessions/mine/chat/connect').allowed, false);
   assert.equal(authorize(write, true, 'POST', '/api/sessions/mine/chat/connect').allowed, true);
   assert.equal(authorize(write, true, 'POST', '/api/sessions/other/chat/connect').allowed, false);
-  for (const path of ['/api/sessions/mine/attachments','/api/sessions/mine/input']) {
+  for (const path of ['/api/sessions/mine/attachments']) {
     assert.equal(authorize(read,true,'POST',path).allowed,false);
     assert.equal(authorize(write,true,'POST',path).allowed,true);
     assert.equal(authorize(write,true,'POST',path.replace('/mine/','/other/')).allowed,false);
@@ -184,7 +184,7 @@ function client(base: string) {
   };
 }
 
-test('remote listener requires login, shares see one session and read-only terminals drop input', { timeout: 60_000 }, async t => {
+test('remote listener requires login, shares enforce terminal tiers and revocation', { timeout: 60_000 }, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'sessiondeck-auth-test-'));
   const port = await freePort();
   const remotePort = await freePort();
@@ -243,7 +243,7 @@ test('remote listener requires login, shares see one session and read-only termi
   assert.deepEqual(shared.groups, []);
   assert.equal(shared.defaultCwd, '');
   assert.ok(shared.activities.every(activity => activity.sessionId === target.id));
-  assert.equal((await colleague.call(`/api/sessions/${target.id}/workspace/git/status`)).status, 200);
+  assert.equal((await colleague.call(`/api/sessions/${target.id}/workspace/git/status`)).status, 403);
   assert.equal((await colleague.call(`/api/sessions/${other.id}/workspace/tree`)).status, 404);
   assert.equal((await colleague.call(`/api/sessions/${target.id}/stop`, { body: {} })).status, 403, 'read shares cannot act');
   for (const [path, body] of [['/api/shells', {}], ['/api/directories/list', { path: '/' }], ['/api/sessions', {}], [`/api/sessions/${target.id}/shares`, { mode: 'write', ttlDays: 1 }]] as const) {
@@ -252,18 +252,10 @@ test('remote listener requires login, shares see one session and read-only termi
   // A share device's CSRF token does not unlock the owner's loopback token.
   assert.notEqual(colleague.csrf, owner.csrf);
 
-  // The shared terminal streams output but discards the viewer's keystrokes.
-  const frames: string[] = [];
-  const socket = new WebSocket(`${remote.replace('http:', 'ws:')}/api/terminal/${target.id}?token=${colleague.csrf}`, { origin: remote, headers: { cookie: colleague.cookie } });
-  sockets.push(socket);
-  socket.on('message', raw => { const message = JSON.parse(String(raw)); if (message.type === 'data') frames.push(message.data); if (message.type === 'ready') frames.push(`READY:${message.readOnly}`); });
-  await until(() => frames.some(frame => frame === 'READY:true'), 'read-only terminal connects');
-  socket.send(JSON.stringify({ type: 'input', data: 'READ-ONLY-SHOULD-NOT-ARRIVE\r' }));
-  const denied = new WebSocket(`${remote.replace('http:', 'ws:')}/api/terminal/${other.id}?token=${colleague.csrf}`, { origin: remote, headers: { cookie: colleague.cookie } });
+  // Neither read nor collaboration grants terminal access.
+  const denied = new WebSocket(`${remote.replace('http:', 'ws:')}/api/terminal/${target.id}?token=${colleague.csrf}`, { origin: remote, headers: { cookie: colleague.cookie } });
   sockets.push(denied);
   await new Promise<void>(accept => { denied.once('error', () => accept()); denied.once('close', () => accept()); });
-  await delay(600);
-  assert.ok(!frames.join('').includes('READ-ONLY-SHOULD-NOT-ARRIVE'), 'demo PTY never echoed the read-only input');
 
   // Writable shares act on their session and every action is attributed.
   const writeLink = (await owner.call(`/api/sessions/${target.id}/shares`, { body: { mode: 'write', ttlDays: null } })).json as { share: Share; url: string };
@@ -306,10 +298,19 @@ test('remote listener requires login, shares see one session and read-only termi
   await owner.call(`/api/shares/${groupLink.share.id}`, { method: 'DELETE', body: {} });
   assert.equal((await guest.call('/api/state')).status, 401);
 
-  // Revocation ends the session for the device, including its live terminal.
+  // Full shares retain the native terminal; revocation closes it immediately.
+  const fullLink = (await owner.call(`/api/sessions/${target.id}/shares`, { body: { mode: 'full', ttlDays: 1 } })).json;
+  const fullGuest = client(remote);
+  await fullGuest.call('/api/auth/redeem', { body: { token: fullLink.url.split('/#/share/')[1], name: '终端协作者' } });
+  await fullGuest.refreshCsrf();
+  assert.equal((await fullGuest.call('/api/auth/status')).json.mode, 'full');
+  const socket = new WebSocket(`${remote.replace('http:', 'ws:')}/api/terminal/${target.id}?token=${fullGuest.csrf}`, { origin: remote, headers: { cookie: fullGuest.cookie } });
+  sockets.push(socket);
+  await new Promise<void>((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
   const closed = new Promise<number>(accept => socket.once('close', code => accept(code)));
-  assert.equal((await owner.call(`/api/shares/${created.share.id}`, { method: 'DELETE', body: {} })).status, 200);
+  assert.equal((await owner.call(`/api/shares/${fullLink.share.id}`, { method: 'DELETE', body: {} })).status, 200);
   assert.equal(await closed, 4401);
+  assert.equal((await owner.call(`/api/shares/${created.share.id}`, { method: 'DELETE', body: {} })).status, 200);
   assert.equal((await colleague.call('/api/state')).status, 401);
   assert.equal((await collaborator.call('/api/state')).status, 200, 'other shares keep working');
 });

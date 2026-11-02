@@ -15,6 +15,15 @@ export type Access = 'public' | 'owner' | 'read' | 'write' | 'local';
 export type Route = { method: 'GET' | 'POST' | 'PATCH' | 'DELETE'; path: string; access: Access };
 
 export const ROUTES: Route[] = [
+  { method: 'GET', path: '/api/groups/:id/web-previews', access: 'write' },
+  { method: 'POST', path: '/api/groups/:id/web-previews', access: 'write' },
+  { method: 'GET', path: '/api/sessions/:id/web-previews', access: 'write' },
+  { method: 'POST', path: '/api/sessions/:id/web-previews', access: 'write' },
+  { method: 'GET', path: '/api/groups/:id/workspace/tree', access: 'write' },
+  { method: 'GET', path: '/api/groups/:id/workspace/file', access: 'write' },
+  { method: 'GET', path: '/api/groups/:id/workspace/raw/*path', access: 'write' },
+  { method: 'GET', path: '/api/groups/:id/workspace/git/status', access: 'write' },
+  { method: 'GET', path: '/api/groups/:id/workspace/git/diff', access: 'write' },
   { method: 'GET', path: '/api/workspaces/:root/workspace/tree', access: 'owner' },
   { method: 'GET', path: '/api/workspaces/:root/workspace/file', access: 'owner' },
   { method: 'GET', path: '/api/workspaces/:root/workspace/raw/*path', access: 'owner' },
@@ -152,7 +161,9 @@ export function authorize(principal: Principal | null, remote: boolean, method: 
   if (!principal) return { allowed: false, status: 401, error: '请先登录' };
   if (principal.kind === 'owner') return { allowed: true };
   if (route.access === 'owner') return { allowed: false, status: 403, error: '分享链接无权执行此操作' };
-  if (route.access === 'write' && principal.mode !== 'write') return { allowed: false, status: 403, error: '这是只读分享' };
+  if (route.access === 'write' && principal.mode === 'read') return { allowed: false, status: 403, error: '这是只读分享' };
+  if (principal.mode === 'read' && params.id === principal.sessionId && !principal.groupId && path.includes('/workspace/')) return { allowed: false, status: 403, error: '这是只读分享' };
+  if (principal.mode !== 'full' && (/\/terminal\/image$/.test(path) || /\/input$/.test(path) && method === 'POST')) return { allowed: false, status: 403, error: '仅全部权限可以使用原生终端' };
   if (principal.groupId) {
     const groupRoute = path.startsWith('/api/groups/');
     const globalRead = ['/api/config', '/api/state', '/api/events'].includes(path);

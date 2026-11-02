@@ -38,7 +38,7 @@ async function fixture(page: Page, backend: 'codex' | 'claude' | 'dsh', options:
   await page.route('**/api/config', route => route.fulfill({ json: { csrfToken: 'test-token' } }));
   await page.route('**/api/sessions/' + contact.id + '/read', route => route.fulfill({ json: contact }));
   await page.route('**/api/sessions/' + contact.id + '/conversation', route => route.fulfill({ json: { messages: [], truncated: false } }));
-  await page.route('**/api/sessions/' + contact.id + '/chat', route => route.fulfill({ json: snapshot }));
+  await page.route('**/api/sessions/' + contact.id + '/chat{,?*}', route => route.fulfill({ json: snapshot }));
   await page.route('**/api/sessions/' + contact.id + '/voice', route => route.fulfill({ json: { installed: options.installed !== false, enabled: options.installed !== false, phase: 'ready', maxSeconds: 120, message: '' } }));
   await page.route('**/api/groups/' + group.id + '/voice', route => route.fulfill({ json: { installed: true, enabled: true, phase: 'ready', maxSeconds: 120, message: '' } }));
   const traffic: { controls: string[]; audio: string[]; send?: (message: object) => void; disconnected: boolean } = { controls: [], audio: [], disconnected: false };

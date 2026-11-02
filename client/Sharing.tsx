@@ -1,3 +1,4 @@
+import { t } from '../shared/i18n';
 import DeviceQr from './DeviceQr';
 import { publicMachineUrl } from './machine-links';
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
@@ -44,11 +45,10 @@ export function ShareDialog({ session, group, close, notify }: { session?: Sessi
   return <ModalShell title={group ? "分享群聊" : "分享会话"} subtitle={`把「${target.title}」分享给同事。对方打开链接、留下名字即可进入。`} close={close}>
     <form onSubmit={submit}><div className="modal-fields">
       <div className="segmented-control" role="group" aria-label="分享权限">
-        <button type="button" aria-pressed={mode === 'read'} className={mode === 'read' ? 'selected' : ''} onClick={() => setMode('read')}>只读</button>
-        <button type="button" aria-pressed={mode === 'write'} className={mode === 'write' ? 'selected' : ''} onClick={() => setMode('write')}>可协作</button>
+        {(['read', 'write', 'full'] as const).map(value => <button key={value} type="button" aria-pressed={mode === value} className={mode === value ? 'selected' : ''} onClick={() => setMode(value)}>{t(`share.${value}`)}</button>)}
       </div>
-      <p className="form-note">{group ? (mode === 'read' ? '可以查看群消息和成员状态。' : '可以发送群消息、选择成员分派任务；任务可能启动 Agent 并在本机执行命令。只分享给信任的人。') : mode === 'read' ? '可以查看终端输出、对话记录、文件和改动，不能输入或操作。' : '和你一样操作这个会话：输入、处理审批、启动和停止。Agent 能在你的电脑上执行命令，只分享给完全信任的人。'}</p>
-      {mode === 'write' && session && broadDirectory(session.cwd) && <p className="form-error"><CircleAlert size={14} />工作目录是 {session.cwd}，范围过大。建议先把会话放到具体项目目录再分享。</p>}
+      <p className="form-note">{t(mode === 'read' ? 'share.readNote' : mode === 'write' ? 'share.writeNote' : 'share.fullNote')}</p>
+      {mode !== 'read' && session && broadDirectory(session.cwd) && <p className="form-error"><CircleAlert size={14} />工作目录是 {session.cwd}，范围过大。建议先把会话放到具体项目目录再分享。</p>}
       <div className="share-form-row">
         <label className="form-label">有效期<select value={ttl} onChange={event => setTtl(event.target.value)}><option value="1">1 天</option><option value="7">7 天</option><option value="30">30 天</option><option value="never">永久</option></select></label>
         <label className="form-label">备注（可选）<input maxLength={80} placeholder="例如：给前端同事" value={label} onChange={event => setLabel(event.target.value)} /></label>
@@ -58,7 +58,7 @@ export function ShareDialog({ session, group, close, notify }: { session?: Sessi
       {error && <p role="alert" className="form-error">{error}</p>}
       <h3 className="share-list-title">已有分享</h3>
       {shares === null ? <LoaderCircle size={16} className="spin" /> : !shares.length ? <p className="form-note">还没有有效的分享链接。</p> : <ul className="share-list">{shares.map(share => <li key={share.id}>
-        <div><strong>{share.mode === 'write' ? '可协作' : '只读'}{share.label && ` · ${share.label}`}</strong><small>创建于 {when(share.createdAt)} · 到期 {when(share.expiresAt)}</small>
+        <div><strong>{t(`share.${share.mode}`)}{share.label && ` · ${share.label}`}</strong><small>创建于 {when(share.createdAt)} · 到期 {when(share.expiresAt)}</small>
           <small>{share.devices.length ? share.devices.map(item => `${item.name}（${device(item.userAgent)}，${when(item.lastSeenAt)}）`).join('、') : '尚未有人打开'}</small></div>
         <button type="button" className="button secondary small-button" disabled={busy} onClick={() => void revoke(share)}><Trash2 size={13} />撤销</button>
       </li>)}</ul>}

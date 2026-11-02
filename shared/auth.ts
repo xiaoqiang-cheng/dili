@@ -1,4 +1,4 @@
-export type ShareMode = 'read' | 'write';
+export type ShareMode = 'read' | 'write' | 'full';
 
 export interface AuthDevice {
   id: string;

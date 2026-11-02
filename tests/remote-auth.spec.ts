@@ -194,9 +194,9 @@ test('remote owner logs in, shares a session read-only, and revocation closes th
   await expect(colleague).toHaveURL(`${remote}/#/`);
   await expect(colleague.getByRole('button', { name: /启动|恢复|停止/ })).toHaveCount(0);
   await expect(colleague.getByRole('navigation', { name: '工作空间导航' })).toHaveCount(0);
-  await expect(colleague.locator('.terminal-readonly')).toHaveText('只读查看');
-  await colleague.getByRole('button', { name: '打开资源管理器', exact: true }).click();
-  await expect(colleague.getByRole('complementary', { name: '资源管理器' })).toBeVisible();
+  await expect(colleague.getByRole('button', { name: '原生终端', exact: true })).toHaveCount(0);
+  await expect(colleague.getByRole('button', { name: '打开资源管理器', exact: true })).toHaveCount(0);
+  expect((await colleague.request.get(`${remote}/api/sessions/${target.id}/workspace/tree`)).status()).toBe(403);
   const scoped = await (await colleague.request.get(`${remote}/api/state`)).json() as AppState;
   expect(scoped.sessions.map(item => item.id)).toEqual([target.id]);
   await colleague.screenshot({ path: 'artifacts/share-readonly.png' });

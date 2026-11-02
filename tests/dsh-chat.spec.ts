@@ -46,10 +46,10 @@ async function fixture(page: Page, initial?: Partial<AgentChatSnapshot>, contact
     snapshot = { ...snapshot, revision: snapshot.revision + 1, requests: [] };
     return route.fulfill({ json: { ok: true } });
   });
-  await page.route('**/api/sessions/' + id + '/chat', route => route.fulfill({ json: snapshot }));
+  await page.route('**/api/sessions/' + id + '/chat{,?*}', route => route.fulfill({ json: snapshot }));
   for (const extra of extras) {
     await page.route('**/api/sessions/' + extra.id + '/read', route => route.fulfill({ json: extra }));
-    await page.route('**/api/sessions/' + extra.id + '/chat', route => route.fulfill({ json: { ...snapshot, nativeSessionId: extra.nativeSessionId } }));
+    await page.route('**/api/sessions/' + extra.id + '/chat{,?*}', route => route.fulfill({ json: { ...snapshot, nativeSessionId: extra.nativeSessionId } }));
     await page.route('**/api/sessions/' + extra.id + '/chat/settings', route => route.fulfill({ json: { ...nativeSettings, nativeSessionId: extra.nativeSessionId } }));
   }
   await page.goto('/#/contacts?session=' + id);

@@ -1,3 +1,5 @@
+import { t } from '../shared/i18n';
+import SharePreview from './SharePreview';
 import GroupShareApp from './GroupShareApp';
 import { appUrl } from './urls';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
@@ -8,7 +10,7 @@ import { api } from './api';
 import { BACKEND, BrandMark, StatusBadge } from './App';
 import TerminalPane from './TerminalPane';
 import ConversationPane from './ConversationPane';
-import WorkspaceExplorer from './WorkspaceExplorer';
+
 import { readLocalPreference, writeLocalPreference } from './ui';
 
 const AgentChatPane = lazy(() => import('./AgentChatPane'));
@@ -29,10 +31,12 @@ function SessionShareApp({ status }: { status: ShareStatus }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [explorer, setExplorer] = useState(() => readLocalPreference('sessiondeck.share-explorer') === 'on');
-  const [view, setView] = useState<'chat' | 'conversation' | 'terminal'>('terminal');
+  const [view, setView] = useState<'chat' | 'conversation' | 'terminal'>('conversation');
   const revisionRef = useRef(-1);
-  const writable = status.mode === 'write';
+  const instanceRef = useRef<string | undefined>(undefined);
+  const writable = status.mode !== 'read';
   const accept = useCallback((next: AppState) => {
+    if (next.instanceId !== instanceRef.current) { instanceRef.current = next.instanceId; revisionRef.current = -1; }
     if (typeof next.revision === 'number' && next.revision < revisionRef.current) return;
     revisionRef.current = next.revision ?? revisionRef.current;
     setState(next);
@@ -41,7 +45,7 @@ function SessionShareApp({ status }: { status: ShareStatus }) {
     void api<AppState>('/state').then(accept).catch(cause => setError(cause.message));
     const stream = new EventSource(appUrl('/api/events'));
     stream.onopen = () => setConnected(true);
-    stream.onerror = () => setConnected(false);
+    stream.onerror = () => { setConnected(false); void api('/auth/status').then(value => { if ((value as { kind?: string }).kind !== 'share') window.dispatchEvent(new Event('sessiondeck:auth-required')); }).catch(() => {}); };
     // Shares always receive filtered full snapshots, never workspace patches.
     stream.addEventListener('state', event => { try { accept(JSON.parse((event as MessageEvent).data)); } catch { /* next snapshot recovers */ } });
     return () => stream.close();
@@ -50,17 +54,17 @@ function SessionShareApp({ status }: { status: ShareStatus }) {
 
   const session: Session | undefined = state?.sessions.find(item => item.id === status.sessionId);
   const backend = session ? state?.backends.find(item => item.id === session.backend) : undefined;
-  const chatAvailable = !!session && ['codex', 'claude'].includes(session.backend) && !state?.demo && !!backend?.capabilities.graphicalChat;
-  const dshWebOnly = session?.backend === 'dsh' && !state?.demo && !backend?.capabilities.terminal;
+  const chatAvailable = !!session && ['codex', 'claude', 'dsh'].includes(session.backend) && !state?.demo && !!backend?.capabilities.graphicalChat;
+  const dshWebOnly = !chatAvailable && session?.backend === 'dsh' && !state?.demo && !backend?.capabilities.terminal;
   // Pick a sensible first view per backend; a read-only viewer cannot type into chat.
   useEffect(() => {
     if (!session) return;
-    setView(current => current !== 'terminal' ? current : chatAvailable && writable && session.interactionMode === 'chat' ? 'chat' : 'terminal');
+    setView(chatAvailable && writable ? 'chat' : 'conversation');
   }, [session?.id, chatAvailable, writable]);
   useEffect(() => { document.title = `${session?.title ?? '共享会话'} · Dili`; }, [session?.title]);
 
   const switchView = async (mode: 'chat' | 'conversation' | 'terminal') => {
-    if (!session || busy) return;
+    if (!session || busy || mode === 'terminal' && status.mode !== 'full') return;
     setBusy(true); setError('');
     try {
       const executionMode = mode;
@@ -75,7 +79,7 @@ function SessionShareApp({ status }: { status: ShareStatus }) {
   const act = async (path: 'start' | 'stop') => {
     if (!session) return;
     setBusy(true); setError('');
-    try { await api(`/sessions/${session.id}/${path}`, path === 'start' ? { mode: view === 'chat' || session.backend === 'claude' && view === 'conversation' ? 'chat' : 'terminal' } : {}); }
+    try { await api(`/sessions/${session.id}/${path}`, path === 'start' ? { mode: view !== 'terminal' ? 'chat' : 'terminal' } : {}); }
     catch (cause) { setError(cause instanceof Error ? cause.message : '操作失败'); }
     finally { setBusy(false); }
   };
@@ -85,21 +89,20 @@ function SessionShareApp({ status }: { status: ShareStatus }) {
   if (!session) return <div className="auth-page"><main className="auth-card"><h1>会话不可用</h1><p className="auth-subtitle">这个会话已被归档或删除。请联系分享者。</p><button className="button secondary" onClick={() => void logout()}><LogOut size={14} />退出</button></main></div>;
 
   const conversationLabel = chatAvailable && writable ? '图形对话' : '对话记录';
-  return <div className="app-shell share-shell">
+  return <div className={`app-shell share-shell ${status.mode !== 'full' ? 'share-no-terminal' : ''}`}>
     <header className="share-topbar">
       <span className="brand-mark"><BrandMark size={17} /></span>
       <div className="share-heading"><div className="drawer-title"><h1 title={session.title}>{session.title}</h1><StatusBadge session={session} /></div>
         <p className="session-meta"><span>{BACKEND[session.backend].short}</span><span className="session-cwd" title={session.cwd}><Folder size={12} /><span><bdi>{session.cwd}</bdi></span></span></p></div>
-      <span className={`share-role ${writable ? 'write' : ''}`} title={writable ? '你可以在这个会话中输入、审批、启动和停止' : '你只能查看这个会话'}>{writable ? '可协作' : '只读'} · {status.name}</span>
+      <span className={`share-role ${writable ? 'write' : ''}`} title={writable ? '你可以在这个会话中输入、审批、启动和停止' : '你只能查看这个会话'}>{t(`share.${status.mode}`)} · {status.name}</span>
       <span className="connection-indicator" title={connected ? '已连接' : '正在重连'}><span className={`connection-dot ${connected ? 'online' : ''}`} /></span>
-      <button className={`icon-button ${explorer ? 'active' : ''}`} aria-label="打开资源管理器" title="文件与改动" onClick={() => setExplorer(value => !value)}><Folder size={16} /></button>
+      {writable && <button className={`icon-button ${explorer ? 'active' : ''}`} aria-label="打开资源管理器" title="文件与改动" onClick={() => setExplorer(value => !value)}><Folder size={16} /></button>}
       <button className="icon-button" aria-label="退出共享" title="退出" onClick={() => void logout()}><LogOut size={16} /></button>
     </header>
     <div className="app-body">
-      {explorer && <WorkspaceExplorer session={session} close={() => setExplorer(false)} />}
       <div className="app-main"><section className="session-drawer" aria-label={`${session.title} 的共享会话`}>
         <header className="drawer-header">
-          {!dshWebOnly && <div className="private-view-switch" role="group" aria-label="会话显示方式"><button aria-pressed={view !== 'terminal'} onClick={() => void switchView(chatAvailable && writable ? 'chat' : 'conversation')}><MessageSquare size={13} />{conversationLabel}</button><button aria-pressed={view === 'terminal'} onClick={() => void switchView('terminal')}><TerminalSquare size={13} />原生终端</button></div>}
+          {!dshWebOnly && <div className="private-view-switch" role="group" aria-label="会话显示方式"><button aria-pressed={view !== 'terminal'} onClick={() => void switchView(chatAvailable && writable ? 'chat' : 'conversation')}><MessageSquare size={13} />{conversationLabel}</button>{status.mode === 'full' && <button aria-pressed={view === 'terminal'} onClick={() => void switchView('terminal')}><TerminalSquare size={13} />原生终端</button>}</div>}
           <span className="share-spacer" />
           {writable && (session.running ? <button className="button secondary small-button" disabled={busy} onClick={() => void act('stop')}><Square size={11} />停止</button>
             : <button className="button primary small-button" disabled={busy || session.archived || !backend?.installed} onClick={() => void act('start')}>{busy ? <LoaderCircle size={13} className="spin" /> : <Play size={13} />}{session.nativeSessionId ? '恢复会话' : '启动会话'}</button>)}
@@ -107,12 +110,13 @@ function SessionShareApp({ status }: { status: ShareStatus }) {
         {error && <div role="alert" className="error-banner"><span>{error}</span></div>}
         <div className="session-conversation">
           {dshWebOnly ? <div className="terminal-empty"><h3>DeepSeek Harness 暂不支持远程查看</h3><p>它的原生界面只在分享者的电脑上可用。</p></div>
-            : view === 'chat' && chatAvailable ? <Suspense fallback={<div className="loading-state"><LoaderCircle size={22} className="spin" /></div>}><AgentChatPane key={session.id} session={session} onTerminal={() => void switchView('terminal')} onSelection={ignoreSelection} /></Suspense>
-            : view === 'conversation' ? <ConversationPane key={session.id} session={session} allowInput={writable && !state.demo} onTerminal={() => void switchView('terminal')} onSelection={ignoreSelection} />
+            : view === 'chat' && chatAvailable ? <Suspense fallback={<div className="loading-state"><LoaderCircle size={22} className="spin" /></div>}><AgentChatPane key={session.id} session={session} allowTerminal={status.mode === 'full'} onTerminal={() => void switchView('terminal')} onSelection={ignoreSelection} /></Suspense>
+            : view === 'conversation' ? <ConversationPane key={session.id} session={session} allowTerminal={status.mode === 'full'} allowInput={false} onTerminal={() => void switchView('terminal')} onSelection={ignoreSelection} />
             : session.backend === 'codex' && chatAvailable && session.running && session.interactionMode === 'chat' ? <div className="terminal-empty"><h3>会话正在图形对话中运行</h3><p>{writable ? '切换到图形对话继续。' : '切换到对话记录查看进展。'}</p></div>
             : <TerminalPane key={session.id} sessionId={session.id} running={session.running} status={session.status} allowImages={writable && ['codex','claude','dsh'].includes(session.backend) && !state.demo} readOnly={!writable} onSelection={ignoreSelection} />}
         </div>
       </section></div>
+      {explorer && writable && <SharePreview key={session.id} session={session} close={() => setExplorer(false)} />}
     </div>
   </div>;
 }

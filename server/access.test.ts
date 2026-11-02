@@ -81,3 +81,20 @@ test('anonymous visitors only reach public or read bootstrap routes', () => {
   assert.deepEqual(allowed(null, 'GET', '/api/state'), { allowed: false, status: 401, error: '请先登录' });
   assert.deepEqual(allowed(null, 'GET', '/api/debug'), { allowed: false, status: 401, error: '请先登录' });
 });
+
+test('three share tiers isolate previews, terminal input and unrelated resources', () => {
+  for (const mode of ['read', 'write', 'full'] as const) {
+    const guest = share({ mode });
+    assert.equal(allowed(guest, 'GET', '/api/sessions/s1/workspace/tree').allowed, mode !== 'read');
+    assert.equal(allowed(guest, 'GET', '/api/sessions/s1/web-previews').allowed, mode !== 'read');
+    assert.equal(allowed(guest, 'POST', '/api/sessions/s1/input').allowed, mode === 'full');
+    assert.equal(allowed(guest, 'POST', '/api/sessions/s1/terminal/image').allowed, mode === 'full');
+    assert.equal(allowed(guest, 'GET', '/api/sessions/other/workspace/tree').allowed, false);
+    assert.equal(allowed(guest, 'POST', '/api/shells').allowed, false);
+    const group = share({ mode, groupId: 'g1', sessionId: '' });
+    assert.equal(allowed(group, 'GET', '/api/groups/g1/workspace/tree').allowed, mode !== 'read');
+    assert.equal(allowed(group, 'POST', '/api/groups/g1/web-previews').allowed, mode !== 'read');
+    assert.equal(allowed(group, 'GET', '/api/groups/other/workspace/tree').allowed, false);
+    assert.equal(allowed(group, 'GET', '/api/sessions/s1/workspace/tree').allowed, false);
+  }
+});

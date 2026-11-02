@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Store } from './store.ts';
 import { renderConversationHtml, exportFileName } from './export.ts';
-import { WebProxy, parseProxyTarget } from './web-proxy.ts';
+import { canAccessWebProxy, WebProxy, parseProxyTarget } from './web-proxy.ts';
 import { parseServicePreviewUrl } from '../shared/service-preview.ts';
 import { SseReplayBuffer } from './sse-replay.ts';
 import { shellQuote } from './shell-quote.ts';
@@ -250,6 +250,8 @@ function terminalEvent(id: string, event: unknown, channel: 'sessionId' | 'shell
   const message = JSON.stringify(event);
   for (const socket of wss.clients) {
     if ((socket as WebSocket & { sessionId?: string; shellId?: string })[channel] !== id || socket.readyState !== WebSocket.OPEN) continue;
+    const viewer = viewers.get(socket);
+    if (viewer?.principal.kind === 'share' && viewer.principal.groupId && store.session(id)?.groupId !== viewer.principal.groupId) { socket.close(4403); continue; }
     // Reconnection reconstructs the terminal snapshot; dropping a stalled viewer
     // is safer than dropping arbitrary ANSI chunks or accumulating unlimited output.
     if (socket.bufferedAmount > 2_097_152) socket.terminate();
@@ -629,11 +631,11 @@ app.get('/api/sessions/:id/shares', (req, res) => { session(String(req.params.id
 app.post('/api/sessions/:id/shares', (req, res) => {
   const item = session(String(req.params.id));
   const mode = req.body.mode as ShareMode;
-  if (mode !== 'read' && mode !== 'write') fail('分享权限无效');
+  if (mode !== 'read' && mode !== 'write' && mode !== 'full') fail('分享权限无效');
   const ttl = req.body.ttlDays === null ? null : Number(req.body.ttlDays);
   if (ttl !== null && (!Number.isInteger(ttl) || ttl < 1 || ttl > 365)) fail('有效期无效');
   const { token: secret, share } = auth.createShare(item.id, mode, ttl, text(req.body.label ?? '', '备注', 80, false));
-  store.activity(item.id, 'share', `创建了${mode === 'write' ? '可协作' : '只读'}分享链接`); broadcast();
+  store.activity(item.id, 'share', `创建了${mode === 'full' ? '全部权限' : mode === 'write' ? '协作' : '只读'}分享链接`); broadcast();
   res.status(201).json({ share, url: shareUrl(secret), remoteReady: !!remoteSettings().publicUrl && remoteSettings().enabled });
 });
 app.get('/api/groups/:id/shares', (req, res) => {
@@ -645,7 +647,7 @@ app.post('/api/groups/:id/shares', (req, res) => {
   const id = String(req.params.id);
   if (!store.group(id)) fail('群聊不存在', 404);
   const mode = req.body.mode as ShareMode;
-  if (mode !== 'read' && mode !== 'write') fail('分享权限无效');
+  if (mode !== 'read' && mode !== 'write' && mode !== 'full') fail('分享权限无效');
   const ttl = req.body.ttlDays === null ? null : Number(req.body.ttlDays);
   if (ttl !== null && (!Number.isInteger(ttl) || ttl < 1 || ttl > 365)) fail('有效期无效');
   const { token, share } = auth.createShare('', mode, ttl, text(req.body.label ?? '', '备注', 80, false), id);
@@ -812,22 +814,22 @@ app.get('/api/sessions/:id/export', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.send(html);
 });
-app.get(['/api/sessions/:id/workspace/tree', '/api/workspaces/:root/workspace/tree'], async (req, res) => {
+app.get(['/api/groups/:id/workspace/tree', '/api/sessions/:id/workspace/tree', '/api/workspaces/:root/workspace/tree'], async (req, res) => {
   const cwd = req.params.root !== undefined
     ? (principalOf(res).kind === 'owner' ? directory(String(req.params.root)) : fail('仅所有者可以打开目录', 403))
-    : session(String(req.params.id)).cwd;
+    : req.path.startsWith('/api/groups/') ? (store.group(String(req.params.id))?.workspace || fail('群工作区尚未设置', 409)) : session(String(req.params.id)).cwd;
   res.json(await listWorkspace(cwd, req.query.path));
 });
-app.get(['/api/sessions/:id/workspace/file', '/api/workspaces/:root/workspace/file'], async (req, res) => {
+app.get(['/api/groups/:id/workspace/file', '/api/sessions/:id/workspace/file', '/api/workspaces/:root/workspace/file'], async (req, res) => {
   const cwd = req.params.root !== undefined
     ? (principalOf(res).kind === 'owner' ? directory(String(req.params.root)) : fail('仅所有者可以打开目录', 403))
-    : session(String(req.params.id)).cwd;
+    : req.path.startsWith('/api/groups/') ? (store.group(String(req.params.id))?.workspace || fail('群工作区尚未设置', 409)) : session(String(req.params.id)).cwd;
   res.json(await readWorkspaceFile(cwd, req.query.path));
 });
-app.get(['/api/sessions/:id/workspace/raw/*path', '/api/workspaces/:root/workspace/raw/*path'], async (req, res) => {
+app.get(['/api/groups/:id/workspace/raw/*path', '/api/sessions/:id/workspace/raw/*path', '/api/workspaces/:root/workspace/raw/*path'], async (req, res) => {
   const cwd = req.params.root !== undefined
     ? (principalOf(res).kind === 'owner' ? directory(String(req.params.root)) : fail('仅所有者可以打开目录', 403))
-    : session(String(req.params.id)).cwd;
+    : req.path.startsWith('/api/groups/') ? (store.group(String(req.params.id))?.workspace || fail('群工作区尚未设置', 409)) : session(String(req.params.id)).cwd;
   // Express 5 exposes `*path` as a segment array; join it back for workspace paths.
   const rawPath = req.params.path;
   const relative = (Array.isArray(rawPath) ? rawPath.join('/') : String(rawPath ?? '')).replace(/^\/+/, '');
@@ -867,16 +869,16 @@ app.get(['/api/sessions/:id/workspace/raw/*path', '/api/workspaces/:root/workspa
   req.on('close', () => stream.destroy());
   stream.pipe(res);
 });
-app.get(['/api/sessions/:id/workspace/git/status', '/api/workspaces/:root/workspace/git/status'], async (req, res) => {
+app.get(['/api/groups/:id/workspace/git/status', '/api/sessions/:id/workspace/git/status', '/api/workspaces/:root/workspace/git/status'], async (req, res) => {
   const cwd = req.params.root !== undefined
     ? (principalOf(res).kind === 'owner' ? directory(String(req.params.root)) : fail('仅所有者可以打开目录', 403))
-    : session(String(req.params.id)).cwd;
+    : req.path.startsWith('/api/groups/') ? (store.group(String(req.params.id))?.workspace || fail('群工作区尚未设置', 409)) : session(String(req.params.id)).cwd;
   res.json(await gitStatus(cwd));
 });
-app.get(['/api/sessions/:id/workspace/git/diff', '/api/workspaces/:root/workspace/git/diff'], async (req, res) => {
+app.get(['/api/groups/:id/workspace/git/diff', '/api/sessions/:id/workspace/git/diff', '/api/workspaces/:root/workspace/git/diff'], async (req, res) => {
   const cwd = req.params.root !== undefined
     ? (principalOf(res).kind === 'owner' ? directory(String(req.params.root)) : fail('仅所有者可以打开目录', 403))
-    : session(String(req.params.id)).cwd;
+    : req.path.startsWith('/api/groups/') ? (store.group(String(req.params.id))?.workspace || fail('群工作区尚未设置', 409)) : session(String(req.params.id)).cwd;
   res.json(await gitDiff(cwd, req.query.path));
 });
 app.get('/api/events', (req, res) => {
@@ -1350,7 +1352,11 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
     throw error;
   } finally { starting.delete(item.id); }
 }
-app.post('/api/sessions/:id/start', async (req, res) => { res.json(await startSession(String(req.params.id), req.body ?? {})); });
+app.post('/api/sessions/:id/start', async (req, res) => {
+  const principal = principalOf(res);
+  if (principal.kind === 'share' && principal.mode !== 'full' && req.body?.mode !== 'chat') fail('仅全部权限可以启动原生终端', 403);
+  res.json(await startSession(String(req.params.id), req.body ?? {}));
+});
 
 async function stopSession(id: string, afterStop?: () => Session): Promise<Session> {
   const item = session(id);
@@ -1690,7 +1696,7 @@ function upgrade(req: import('node:http').IncomingMessage, socket: import('node:
     const device = remote ? readCookie(req.headers.cookie, DEVICE_COOKIE) : undefined;
     const principal = remote ? auth.principal(device) : LOCAL_OWNER;
     const allowed = remote ? allowedRemoteRequest(req, remoteSettings().publicUrl, remoteSettings().localPort) : allowedRequest(req, port, wildcardHost);
-    if (!remoteSourceAllowed(req.socket.remoteAddress, remoteSources) || !allowed || !principal || principal.kind !== 'owner') { socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return; }
+    if (!remoteSourceAllowed(req.socket.remoteAddress, remoteSources) || !allowed || !canUseWebProxy(principal, proxyMatch[1]!)) { socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return; }
     const suffix = proxyMatch[2]?.replace(/^\//, '') ?? '';
     if (!webProxy.handleUpgrade(req, socket, head, { token: proxyMatch[1]!, suffix, search: url.search, stripCookies: [DEVICE_COOKIE] })) {
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
@@ -1707,17 +1713,17 @@ function upgrade(req: import('node:http').IncomingMessage, socket: import('node:
   // Shells are owner-only; a session terminal needs at least read access to it.
   const scope = shellMatch ? 'owner' : 'session';
   const sessionTarget = shellMatch ? null : decodeURIComponent(url.pathname.slice('/api/terminal/'.length));
-  const permitted = !!principal && (principal.kind === 'owner' || (scope === 'session' && principal.sessionId === sessionTarget));
+  const permitted = !!principal && (principal.kind === 'owner' || (scope === 'session' && principal.mode === 'full' && (principal.groupId ? store.session(sessionTarget ?? '')?.groupId === principal.groupId : principal.sessionId === sessionTarget)));
   if (remote && !remoteSourceAllowed(req.socket.remoteAddress, remoteSources)) { socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return; }
   if (!allowed || !principal || !permitted || !validToken(url.searchParams.get('token'), auth.csrf(principal))) { socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return; }
   const viewer: Viewer = { principal, device };
-  // Read-only shares watch the same PTY stream; their keystrokes are discarded.
-  const canInput = principal.kind === 'owner' || principal.mode === 'write';
+  // Terminal viewing and input both require the full share tier.
+  const canInput = principal.kind === 'owner' || principal.mode === 'full';
   let announced = false;
   const attribute = () => {
     if (announced || principal.kind !== 'share') return;
     announced = true;
-    store.activity(principal.sessionId, 'share', `${principal.name}（分享）在终端输入`); scheduleBroadcast();
+    store.activity(sessionTarget!, 'share', `${principal.name}（分享）在终端输入`); scheduleBroadcast();
   };
   if (shellMatch) {
     const id = shellMatch[1]!;
@@ -1752,6 +1758,7 @@ function upgrade(req: import('node:http').IncomingMessage, socket: import('node:
     ws.send(JSON.stringify({ type: 'ready', terminalId: terminals.generation(id), readOnly: !canInput }));
     ws.on('message', raw => {
       try {
+        if (principal.kind === 'share' && principal.groupId && store.session(id)?.groupId !== principal.groupId) { ws.close(4403); return; }
         const message = JSON.parse(raw.toString());
         if (message.type === 'input' && typeof message.data === 'string' && message.data.length <= 32768) {
           if (!canInput) return;
@@ -1850,6 +1857,26 @@ const previewPoll = setInterval(() => { void pollPreviews(); }, 5000);
 previewPoll.unref();
 void pollPreviews();
 
+function canUseWebProxy(principal: Principal | null, token: string) {
+  return canAccessWebProxy(principal, webProxy.get(token));
+}
+app.get(['/api/sessions/:id/web-previews', '/api/groups/:id/web-previews'], (req, res) => {
+  if (req.path.startsWith('/api/groups/')) { if (!store.group(String(req.params.id))) fail('群聊不存在', 404); }
+  else session(String(req.params.id));
+  res.json(webProxyAllowlist.map(origin => ({ url: origin, label: new URL(origin).host })));
+});
+app.post(['/api/sessions/:id/web-previews', '/api/groups/:id/web-previews'], (req, res) => {
+  if (req.path.startsWith('/api/groups/')) { if (!store.group(String(req.params.id))) fail('群聊不存在', 404); }
+  else session(String(req.params.id));
+  const parsed = parseServicePreviewUrl(typeof req.body?.url === 'string' ? req.body.url : '');
+  if (!parsed.ok) fail(parsed.error);
+  const url = new URL(parsed.url);
+  if (!proxyTargetAllowed(url)) fail('网页服务未在主机允许列表中', 403);
+  const principal = principalOf(res);
+  const target = webProxy.register(url, { shareId: principal.kind === 'share' ? principal.shareId : undefined, initialQuery: url.search, hash: url.hash });
+  res.status(201).json({ path: `/web-proxy/${target.token}/`, hash: target.hash });
+});
+
 app.post('/api/web-proxy', (req, res) => {
   if (principalOf(res).kind !== 'owner') fail('仅所有者可以打开主机网页服务', 403);
   const raw = typeof req.body?.url === 'string' ? req.body.url : '';
@@ -1880,9 +1907,9 @@ app.get('/api/sessions/:id/native-proxy', (req, res) => {
 // request, so the browser-facing path is /web-proxy/<token>/; proxy Location and
 // cookie paths add remoteBase back so they still work behind the relay.
 app.use('/web-proxy', (req, res) => {
-  if (principalOf(res).kind !== 'owner') { res.status(403).type('text/plain').send('仅所有者可以打开主机网页服务'); return; }
   const match = /^\/web-proxy\/([A-Za-z0-9_-]+)(\/.*)?$/.exec(req.originalUrl);
   if (!match) { res.status(404).type('text/plain').send('网页服务不存在或已过期'); return; }
+  if (!canUseWebProxy(principalOf(res), match[1]!)) { res.status(403).end(); return; }
   const suffix = match[2]?.replace(/^\//, '') ?? '';
   const parsed = new URL(req.originalUrl, 'http://127.0.0.1');
   const base = isRemote(req) ? remoteBase(remoteSettings()) : '';

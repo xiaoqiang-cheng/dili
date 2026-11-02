@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { after, before, test } from 'node:test';
 import { WebSocket, WebSocketServer } from 'ws';
-import { WebProxy, parseProxyTarget } from './web-proxy.ts';
+import { canAccessWebProxy, WebProxy, parseProxyTarget } from './web-proxy.ts';
 
 const upstream = createServer((req, res) => {
   if (req.url === '/redirect') { res.writeHead(302, { location: '/login?next=1' }); res.end(); return; }
@@ -90,4 +90,16 @@ test('proxy tunnels WebSocket upgrades without exposing the target origin', asyn
   assert.equal(reply, 'echo:hello');
   client.close();
   socketServer.close();
+});
+
+test('preview capability is bound to its share and collaboration tier', () => {
+  const scoped = proxy.register(new URL('http://127.0.0.1:1234'), { shareId: 'one' });
+  const guest = { kind: 'share', deviceId: 'device', sessionId: 'session', shareId: 'one', name: 'guest', mode: 'write' } as const;
+  assert.equal(canAccessWebProxy(guest, scoped), true);
+  assert.equal(canAccessWebProxy({ ...guest, mode: 'full' }, scoped), true);
+  assert.equal(canAccessWebProxy({ ...guest, mode: 'read' }, scoped), false);
+  assert.equal(canAccessWebProxy({ ...guest, shareId: 'two' }, scoped), false);
+  assert.equal(canAccessWebProxy(guest, target), false);
+  assert.equal(canAccessWebProxy(null, scoped), false);
+  assert.equal(canAccessWebProxy(guest, undefined), false);
 });

@@ -432,7 +432,7 @@ test('group questions can be answered inline and private questions stay private'
   });
   let answered = false;
   let privateTurn = false;
-  await page.route(`**/api/sessions/${member.id}/chat`, route => route.fulfill({ json: {
+  await page.route(`**/api/sessions/${member.id}/chat{,?*}`, route => route.fulfill({ json: {
     connected: true, nativeSessionId: 'native-question', revision: 1, activeTurnId: 'turn', truncated: false,
     items: [{ id: 'user', turnId: 'turn', type: 'user', text: privateTurn ? '私聊问题' : '【群聊任务】任务编号：T-question', status: 'completed' }],
     requests: answered ? [] : [{ id: 'question', kind: 'question', title: '确认方案', questions: [{ id: 'choice', header: '方案', question: '选择哪种方案？', options: [{ label: '方案 A', description: '先完成核心功能' }] }] }],

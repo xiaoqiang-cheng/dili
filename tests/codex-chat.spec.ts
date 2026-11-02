@@ -218,7 +218,7 @@ async function fixture(page: Page, agent: 'codex' | 'claude' = 'codex') {
     Object.defineProperty(window, 'EventSource', { configurable: true, value: FakeSource });
   });
   await page.route('**/api/state', route => route.fulfill({ json: state }));
-  await page.route(`**/api/sessions/${contact.id}/chat`, route => { reads++; return route.fulfill({ json: current.snapshot }); });
+  await page.route(`**/api/sessions/${contact.id}/chat{,?*}`, route => { reads++; return route.fulfill({ json: current.snapshot }); });
   await page.route(`**/api/sessions/${contact.id}/start`, async route => {
     requests.push({ path: 'start', body: route.request().postDataJSON() });
     Object.assign(contact, { running: true, nativeSessionId: 'exact-native-thread', interactionMode: 'chat', executionTransport: 'structured' });
@@ -1162,7 +1162,7 @@ for (const agent of ['codex', 'claude'] as const) test(`${agent} reopens recent 
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
-  await page.route(`**/api/sessions/${app.contact.id}/chat`, async route => {
+  await page.route(`**/api/sessions/${app.contact.id}/chat{,?*}`, async route => {
     await gate;
     await route.fulfill({ json: { ...app.current.snapshot, revision: 2, items: [{ id: 'new-answer', type: 'assistant', text: '刚刚同步的最新回答', status: 'completed' }] } });
   });

@@ -11,7 +11,7 @@ test('group share entry, live collaboration, read-only access and revocation', a
   await page.goto(`/#/groups/${group.id}`);
   await page.getByRole('button', { name: '分享群聊', exact: true }).click();
   await expect(page.getByRole('dialog', { name: '分享群聊', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '可协作', exact: true }).click();
+  await page.getByRole('button', { name: '协作', exact: true }).click();
   await page.getByRole('button', { name: '生成并复制链接' }).click();
   const url = await page.locator('.share-created code').textContent();
   const remote = new URL(baseURL!); remote.port = String(Number(remote.port) + 1);
@@ -22,6 +22,14 @@ test('group share entry, live collaboration, read-only access and revocation', a
     await guest.getByLabel('你的名字').fill('协作访客');
     await guest.getByRole('button', { name: '进入会话' }).click();
     await expect(guest.getByRole('heading', { name: '群分享验收' })).toBeVisible();
+    await expect(guest.getByLabel('原生终端', { exact: true })).toHaveCount(0);
+    await guest.getByTitle('当前工作区', { exact: true }).click();
+    await expect(guest.getByRole('complementary', { name: '资源管理器' })).toBeVisible();
+    await guest.getByText('README.MD', { exact: true }).click();
+    await expect(guest.locator('.workspace-combined-preview')).toContainText('Dili');
+    await guest.getByTitle('网页预览', { exact: true }).click();
+    await expect(guest.getByText('尚未配置允许预览的网页服务。')).toBeVisible();
+    await guest.locator('.share-preview').getByRole('button', { name: '关闭', exact: true }).click();
     await guest.getByLabel('群消息内容').fill('访客协作消息');
     await guest.getByRole('button', { name: '发送', exact: true }).click();
     await expect(guest.getByLabel('群消息', { exact: true })).toContainText('访客协作消息');
@@ -52,5 +60,29 @@ test('group share entry, live collaboration, read-only access and revocation', a
     await expect(guest.getByRole('button', { name: '语音输入', exact: true })).toHaveCount(0);
     await request.delete(`/api/shares/${readLink.share.id}`, { headers, data: {} });
     await expect(guest.getByRole('heading', { name: '群分享验收' })).toHaveCount(0);
+  } finally { await context.close(); }
+});
+
+test('full group share exposes member terminals while file previews stay scoped on mobile', async ({ request, browser, baseURL }) => {
+  const headers = await mutationHeaders(request);
+  const group = await (await request.post('/api/groups', { headers, data: { title: '全部权限验收', goal: '终端与预览', workspace: process.cwd() } })).json();
+  const member = await (await request.post('/api/sessions', { headers, data: { backend: 'codex', title: '全部权限成员', cwd: process.cwd(), groupId: group.id, briefing: 'silent' } })).json();
+  const shared = await (await request.post(`/api/groups/${group.id}/shares`, { headers, data: { mode: 'full', ttlDays: 1 } })).json();
+  const remote = new URL(baseURL!); remote.port = String(Number(remote.port) + 1);
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  try {
+    await page.goto(`${remote.origin}/#/share/${shared.url.split('/#/share/')[1]}`);
+    await page.getByLabel('你的名字').fill('全部访客');
+    await page.getByRole('button', { name: '进入会话' }).click();
+    await page.getByLabel('原生终端', { exact: true }).selectOption(member.id);
+    await expect(page.locator('.share-group-terminal .xterm')).toBeVisible();
+    await page.getByTitle('当前工作区', { exact: true }).click();
+    await expect(page.getByRole('complementary', { name: '资源管理器' })).toBeVisible();
+    expect((await page.request.get(`${remote.origin}/api/groups/${group.id}/workspace/tree?path=..`)).status()).toBe(400);
+    expect((await page.request.get(`${remote.origin}/api/workspaces/${encodeURIComponent(process.cwd())}/workspace/tree`)).status()).toBe(403);
+    await page.locator('.share-preview').getByRole('button', { name: '关闭', exact: true }).click();
+    await expect(page.locator('.share-group-terminal .xterm')).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   } finally { await context.close(); }
 });

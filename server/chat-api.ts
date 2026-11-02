@@ -157,7 +157,18 @@ export function registerAgentChat(app: express.Express, options: Dependencies) {
   }));
   const offStore = store.onChange(change => { if (change.table === 'sessions' && !!options.adapters[change.data.backend]) queue(change.data.id); });
 
-  app.get('/api/sessions/:id/chat', async (req, res) => res.json(await read(String(req.params.id))));
+  app.get('/api/sessions/:id/chat', async (req, res) => {
+    const id = String(req.params.id), item = session(id);
+    const native = item.nativeSessionId && !item.forkPending ? bridgeFor(item).chatSnapshot(item.nativeSessionId) : undefined;
+    // A live adapter snapshot already contains current requests and writer state.
+    // Do not put disk/RPC history hydration on the first-paint critical path.
+    if (req.query.preferSnapshot === '1' && native?.items.length && native.nativeSessionId === item.nativeSessionId) {
+      res.json(nativeView(item, native));
+      void read(id).then(snapshot => emit(id, snapshot)).catch(() => {});
+      return;
+    }
+    res.json(await read(id));
+  });
   app.get('/api/sessions/:id/chat/settings', async (req, res) => {
     const item = settingsTarget(String(req.params.id)), identity = item.nativeSessionId!;
     const settings = await bridgeFor(item).readChatSettings(identity);

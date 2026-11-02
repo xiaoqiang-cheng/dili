@@ -147,3 +147,19 @@
 .group-chat .group-timeline::-webkit-scrollbar-track { background: var(--subtle); }
 .group-chat .group-timeline::-webkit-scrollbar-thumb { background: var(--line-strong); border: 2px solid var(--subtle); border-radius: 999px; }
 .group-chat .message-composer { flex-shrink: 0; }
+
+/* Shared workspaces keep the conversation central and previews adjacent. */
+.share-group-body { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.share-group-main { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.share-preview { display: flex; flex-direction: column; flex: 0 0 42%; min-width: 320px; max-width: 65%; min-height: 0; border-left: 1px solid var(--border); overflow: hidden; }
+.share-preview > .workspace-explorer { flex: 1; min-height: 0; }
+.share-web-preview { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.share-web-preview > .drawer-header { flex-wrap: wrap; }
+.share-web-preview iframe { flex: 1; width: 100%; border: 0; background: white; }
+.share-group-terminal { height: 280px; min-height: 120px; border-top: 1px solid var(--border); }
+.share-no-terminal [aria-label="进入原生终端"], .share-no-terminal [aria-label="原生终端"] { display: none; }
+@media (max-width: 760px) {
+  .share-preview { position: fixed; inset: 0; z-index: 70; max-width: none; min-width: 0; background: var(--bg); }
+  .share-topbar { flex-wrap: wrap; gap: 6px; }
+  .share-role { font-size: 12px; }
+}

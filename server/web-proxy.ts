@@ -1,3 +1,4 @@
+import type { Principal } from './auth.ts';
 import { randomBytes } from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
@@ -15,6 +16,7 @@ import type { Duplex } from 'node:stream';
  */
 export type WebProxyTarget = {
   token: string;
+  shareId?: string;
   origin: string;
   basePath: string;
   initialQuery: string;
@@ -26,6 +28,7 @@ export type WebProxyTarget = {
 };
 
 type RegisterOptions = {
+  shareId?: string;
   label?: string;
   initialQuery?: string;
   initialCookie?: string;
@@ -119,6 +122,7 @@ export class WebProxy {
     const token = randomBytes(24).toString('base64url');
     const target: WebProxyTarget = {
       token,
+      shareId: options.shareId,
       origin: url.origin,
       basePath: normalizedBasePath(url.pathname),
       initialQuery: options.initialQuery ?? '',
@@ -252,4 +256,10 @@ export function parseProxyTarget(value: string): URL {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('只支持 http 或 https 服务');
   if (url.username || url.password) throw new Error('服务地址不能包含账号密码');
   return url;
+}
+
+/** Proxy registrations belong to one share, even when the origin is identical. */
+export function canAccessWebProxy(principal: Principal | null, target: WebProxyTarget | undefined): boolean {
+  if (!principal || !target) return false;
+  return principal.kind === 'owner' || (principal.mode !== 'read' && target.shareId === principal.shareId);
 }

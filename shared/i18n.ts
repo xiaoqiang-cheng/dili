@@ -5,6 +5,15 @@
  * `{name}` substitutions and never HTML.
  */
 export const zh = {
+  'share.read': '只读',
+  'share.write': '协作',
+  'share.full': '全部',
+  'share.readNote': '查看消息和状态，不能操作。',
+  'share.writeNote': '发送消息、指派任务、处理审批，预览当前工作区和允许的网页服务。Agent 可以执行命令，请仅分享给可信的人。',
+  'share.fullNote': '包含协作全部能力，并允许使用原生终端。',
+  'share.web': '网页预览',
+  'share.webEmpty': '尚未配置允许预览的网页服务。',
+  'share.files': '当前工作区',
   'common.copy': '复制',
   'common.copied': '已复制',
   'common.close': '关闭',
