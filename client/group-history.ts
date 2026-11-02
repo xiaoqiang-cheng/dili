@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GroupDetail, GroupMessage } from '../shared/types';
 import { api } from './api';
+import { HistoryCache, historyRefresh } from './history-refresh';
 
 function merge(previous: GroupDetail, page: GroupDetail, older = false): GroupDetail {
   const messages = new Map(previous.messages.map(message => [message.id, message]));
@@ -29,30 +30,36 @@ export function useGroupHistory(id: string | null, revision: string | undefined,
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [refreshRound, setRefreshRound] = useState(0);
   const current = useRef<GroupDetail | null>(null);
+  const cache = useRef(new HistoryCache<GroupDetail>());
+  const refresh = useRef<ReturnType<typeof historyRefresh> | null>(null);
   const generation = useRef(0);
   const olderRequest = useRef(false);
   const commit = useCallback((value: GroupDetail) => { current.current = value; setDetail(value); }, []);
   useEffect(() => {
-    generation.current++;
-    current.current = null; setDetail(null); setError(''); setLoadingOlder(false); olderRequest.current = false;
-  }, [id, instanceId]);
-  useEffect(() => {
-    if (!id || !revision) return;
-    const version = generation.current;
-    let live = true;
-    void (async () => {
+    const version = ++generation.current;
+    const key = instanceId && id ? JSON.stringify([instanceId, id]) : null;
+    const saved = key ? cache.current.get(key) : null;
+    current.current = saved; setDetail(saved); setError(''); setLoadingOlder(false); olderRequest.current = false;
+    if (!id || !instanceId) return;
+    const worker = historyRefresh(async () => {
       let since = current.current?.group.id === id ? current.current.revision : undefined;
       do {
         const page = await api<GroupDetail>(`/groups/${id}${since ? `?since=${encodeURIComponent(since)}` : ''}`);
-        if (!live || version !== generation.current) return;
+        if (version !== generation.current) return;
         const previous = current.current;
-        commit(previous && previous.group.id === id && since ? merge(previous, page) : page);
+        const next = previous && previous.group.id === id && since ? merge(previous, page) : page;
+        commit(next);
+        cache.current.put(key!, next);
         setError('');
         since = page.nextSince ?? undefined;
       } while (since);
-    })().catch(cause => { if (live && version === generation.current) setError(cause.message); });
-    return () => { live = false; };
-  }, [id, revision, reconnect, refreshRound, instanceId, commit]);
+    }, cause => { if (version === generation.current) setError(cause instanceof Error ? cause.message : String(cause)); });
+    refresh.current = worker;
+    return () => { worker.stop(); refresh.current = null; generation.current++; };
+  }, [id, instanceId, commit]);
+  useEffect(() => {
+    if (id && revision) refresh.current?.request();
+  }, [id, revision, reconnect, refreshRound, instanceId]);
   const loadOlder = useCallback(async () => {
     const previous = current.current;
     if (!id || previous?.group.id !== id || !previous.page?.before || olderRequest.current) return;

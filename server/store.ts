@@ -113,11 +113,13 @@ export class Store {
     if (!group) throw new Error('群组不存在');
     if (options.before !== undefined && (!Number.isSafeInteger(options.before) || options.before < 1)) throw new Error('历史游标无效');
     if (options.since !== undefined && !Number.isFinite(Date.parse(options.since))) throw new Error('历史版本无效');
+    // Small recent first page; explicit older pages and deltas keep the existing 200-row batch.
+    const limit = options.before === undefined && options.since === undefined ? 40 : 200;
     const rows = options.since !== undefined
       ? this.db.prepare("SELECT rowid, data FROM messages WHERE json_extract(data, '$.groupId') = ? AND json_extract(data, '$.revision') > ? ORDER BY json_extract(data, '$.revision'), rowid LIMIT 201").all(id, Date.parse(options.since))
-      : this.db.prepare("SELECT rowid, data FROM messages WHERE json_extract(data, '$.groupId') = ? AND rowid < ? ORDER BY rowid DESC LIMIT 201").all(id, options.before ?? Number.MAX_SAFE_INTEGER);
-    const hasMore = rows.length > 200;
-    const messages = rows.slice(0, 200).map(row => ({ ...JSON.parse(String(row.data)) as GroupMessage, sequence: Number(row.rowid) }));
+      : this.db.prepare("SELECT rowid, data FROM messages WHERE json_extract(data, '$.groupId') = ? AND rowid < ? ORDER BY rowid DESC LIMIT ?").all(id, options.before ?? Number.MAX_SAFE_INTEGER, limit + 1);
+    const hasMore = rows.length > limit;
+    const messages = rows.slice(0, limit).map(row => ({ ...JSON.parse(String(row.data)) as GroupMessage, sequence: Number(row.rowid) }));
     const nextSince = options.since !== undefined && hasMore ? new Date(messages.at(-1)!.revision!).toISOString() : null;
     messages.sort((a, b) => a.sequence! - b.sequence!);
     // Bound both tables to this page and probe the expression index directly.

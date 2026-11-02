@@ -516,3 +516,26 @@ for (const mobile of [false, true]) test(`group workspace bulk grants support pa
     await expect(dialog).toHaveCount(0);
   } finally { await rm(extra, { recursive: true, force: true }); }
 });
+
+test('returning to a group displays its cached history while remote refresh is blocked', async ({ page }) => {
+  const { group } = await createGroup(page.request, '历史快照');
+  const { group: other } = await createGroup(page.request, '另一个群');
+  await page.goto(`/#/groups/${group.id}`);
+  await expect(page.locator('.group-message').filter({ hasText: '方案成员的结论' })).toBeVisible();
+  await page.evaluate(id => { location.hash = `/groups/${id}`; }, other.id);
+  await expect(page.getByLabel('群组消息')).toBeVisible();
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  let requested = false;
+  await page.route(`**/api/groups/${group.id}?*`, async route => {
+    requested = true;
+    await blocked;
+    await route.continue();
+  });
+  try {
+    await page.evaluate(id => { location.hash = `/groups/${id}`; }, group.id);
+    await expect.poll(() => requested).toBe(true);
+    await expect(page.locator('.group-message').filter({ hasText: '方案成员的结论' })).toBeVisible();
+    await expect(page.getByText('正在读取群组动态…', { exact: true })).toBeHidden();
+  } finally { release(); }
+});

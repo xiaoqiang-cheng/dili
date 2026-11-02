@@ -36,6 +36,8 @@ export function registerAgentChat(app: express.Express, options: Dependencies) {
   const viewers = new Map<string, Set<Viewer>>();
   const scheduled = new Map<string, NodeJS.Timeout>();
   const snapshots = new Map<string, AgentChatSnapshot>();
+  const snapshotIdentity = new Map<string, { key: string; at: number }>();
+  const readingIdentity = (item: Session) => JSON.stringify([item.backend, item.nativeSessionId, item.forkPending, item.cwd]);
   let revision = 0;
   function session(id: string): Session {
     const item = store.session(id) ?? fail('会话不存在', 404);
@@ -61,6 +63,8 @@ export function registerAgentChat(app: express.Express, options: Dependencies) {
   }
   function remember(id: string, snapshot: AgentChatSnapshot) {
     const previous = snapshots.get(id);
+    const item = store.session(id);
+    if (item) snapshotIdentity.set(id, { key: readingIdentity(item), at: Date.now() });
     const comparable = { ...snapshot, instanceId: options.instanceId, revision: 0 };
     if (previous && JSON.stringify({ ...previous, revision: 0 }) === JSON.stringify(comparable)) return previous;
     const next = { ...comparable, revision: ++revision };
@@ -68,7 +72,7 @@ export function registerAgentChat(app: express.Express, options: Dependencies) {
     // Only visible or recently accessed contacts need an HTTP view cache.
     for (const key of snapshots.keys()) {
       if (snapshots.size <= 100) break;
-      if (!viewers.has(key)) snapshots.delete(key);
+      if (!viewers.has(key)) { snapshots.delete(key); snapshotIdentity.delete(key); }
     }
     return next;
   }
@@ -164,6 +168,15 @@ export function registerAgentChat(app: express.Express, options: Dependencies) {
     // Do not put disk/RPC history hydration on the first-paint critical path.
     if (req.query.preferSnapshot === '1' && native?.items.length && native.nativeSessionId === item.nativeSessionId) {
       res.json(nativeView(item, native));
+      void read(id).then(snapshot => emit(id, snapshot)).catch(() => {});
+      return;
+    }
+    const stored = snapshots.get(id), stamp = snapshotIdentity.get(id);
+    if (req.query.preferSnapshot === '1' && !item.forkPending && stored?.items.length &&
+        stored.nativeSessionId === item.nativeSessionId && stamp?.key === readingIdentity(item) && Date.now() - stamp.at < 600_000) {
+      // Reading material only: native reconnection must confirm every actionable state.
+      res.json(remember(id, { ...stored, connected: false, activeTurnId: null, requests: [] }));
+      snapshotIdentity.set(id, stamp); // Viewing old text must not extend its freshness.
       void read(id).then(snapshot => emit(id, snapshot)).catch(() => {});
       return;
     }

@@ -215,3 +215,19 @@ test('group archive survives reopening and preserves members and messages', t =>
   store.updateGroup(group.id, { archived: false });
   assert.equal(store.group(group.id)?.archived, false);
 });
+
+test('group first paint is small and older pages retain every message and delivery', t => {
+  const { store, group, message } = groupFixture(t);
+  const ids = Array.from({ length: 85 }, (_, index) => store.addMessage({ ...message, text: `message ${index}` }).id);
+  const first = store.groupDetail(group.id);
+  assert.equal(first.messages.length, 40);
+  assert.equal(first.page?.total, 85);
+  assert.deepEqual(first.messages.map(item => item.id), ids.slice(-40));
+  assert.equal(first.deliveries.length, 40);
+  const older = store.groupDetail(group.id, { before: first.page!.before! });
+  assert.deepEqual(older.messages.map(item => item.id), ids.slice(0, 45));
+  assert.equal(older.page?.before, null);
+  const added = store.addMessage(message);
+  const delta = store.groupDetail(group.id, { since: first.revision });
+  assert.ok(delta.messages.some(item => item.id === added.id));
+});

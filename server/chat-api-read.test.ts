@@ -77,3 +77,33 @@ test('live snapshot makes first HTTP paint independent of slow history hydration
   assert.equal(reads, 1);
   assert.ok(finish);
 });
+
+test('stored reading snapshot returns before hydration without stale approval or writer state', async t => {
+  const contact = { id: 'contact', backend: 'claude', nativeSessionId: 'native', running: true, cwd: '/work' } as Session;
+  const snapshot: AgentChatSnapshot = { nativeSessionId: 'native', connected: true, revision: 1, activeTurnId: 'old-turn', items: [{ id: 'u1', type: 'user', text: 'saved history', status: 'completed' }], requests: [], truncated: false };
+  let slow = false, finish!: (value: AgentChatSnapshot) => void;
+  const app = express();
+  const api = registerAgentChat(app, {
+    store: { session: () => contact, onChange: () => () => {} },
+    adapters: { claude: { readChat: () => slow ? new Promise<AgentChatSnapshot>(resolve => { finish = resolve; }) : Promise.resolve(snapshot), chatSnapshot: () => undefined, onChat: () => () => {} } },
+    instanceId: 'stored-paint', demo: false, closing: () => false, ready: () => true, sessions: () => [contact],
+  } as unknown as Parameters<typeof registerAgentChat>[1]);
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  t.after(async () => { finish?.(snapshot); api.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  const url = `http://127.0.0.1:${address.port}/api/sessions/contact/chat`;
+  assert.equal((await fetch(url)).status, 200);
+  slow = true;
+  const response = await fetch(url + '?preferSnapshot=1', { signal: AbortSignal.timeout(2000) });
+  const view = await response.json();
+  assert.equal(view.items[0].text, 'saved history');
+  assert.equal(view.connected, false); assert.equal(view.activeTurnId, null); assert.deepEqual(view.requests, []);
+  assert.ok(finish);
+  finish(snapshot);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  slow = false;
+  const restored = await (await fetch(url)).json();
+  assert.equal(restored.connected, true);
+  assert.ok(restored.revision > view.revision, 'live readiness must advance beyond the reading-only response');
+});

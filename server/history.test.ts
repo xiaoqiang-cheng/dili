@@ -10,11 +10,11 @@ test('history pages are bounded and continuous; delivery changes use a resumable
   const ids = Array.from({ length: 451 }, (_, i) => store.addMessage({ groupId: group.id, senderId: null, senderName: 'user', kind: 'task', text: `${i}:` + 'x'.repeat(2048), recipientIds: [member.id] }).id);
   let page = store.groupDetail(group.id);
   const revision = page.revision!;
-  assert.equal(page.messages.length, 200);
+  assert.equal(page.messages.length, 40);
   assert.equal(page.page!.total, 451);
-  assert.equal(page.deliveries.length, 200);
+  assert.equal(page.deliveries.length, 40);
   assert.equal('text' in page.deliveries[0], false);
-  assert.ok(Buffer.byteLength(JSON.stringify(page)) < 600_000);
+  assert.ok(Buffer.byteLength(JSON.stringify(page)) < 120_000);
   const history = [...page.messages];
   while (page.page!.before) { page = store.groupDetail(group.id, { before: page.page!.before }); history.unshift(...page.messages); }
   assert.deepEqual(history.map(message => message.id), ids);
