@@ -153,6 +153,29 @@ test('legacy sessiondeck.service migrates to dili.service by disabling it, never
   } finally { await f.clean(); }
 });
 
+test('a unit pinning the pre-rename data directory still matches after the migration', async () => {
+  const f = await fixture();
+  const runner = async (file: string, args: string[]) => {
+    if (file === 'loginctl') return { stdout: 'no\n', code: 0 };
+    if (args.includes('is-enabled')) return { stdout: 'enabled\n', code: 0 };
+    if (args.includes('is-active')) return { stdout: 'active\n', code: 0 };
+    return { stdout: '', code: 0 };
+  };
+  try {
+    const share = join(f.home, '.local/share');
+    const legacy = join(share, 'sessiondeck'), canonical = join(share, 'dili');
+    await mkdir(canonical, { recursive: true });
+    // What migrateDataDir leaves behind: the old path is a link to the new one.
+    await symlink(canonical, legacy, 'dir');
+    const path = join(f.home, 'systemd/user/dili.service');
+    await mkdir(join(path, '..'), { recursive: true });
+    await writeFile(path, `[Service]\nWorkingDirectory="/my project"\nEnvironment="SESSIONDECK_DATA_DIR=${legacy}"\nEnvironment="SESSIONDECK_PORT=4567"\nExecStart="/usr/bin/node" ${unitQuote('/npm prefix/dili/bin/dili.mjs', true)}\n`);
+    const service = new StartupService({ root: '/npm prefix/dili', configDir: f.home, dataDir: canonical, cwd: '/my project', port: 4567, platform: 'linux', wsl: false, runner });
+    const status = await service.status();
+    assert.deepEqual([status.conflict, status.enabled, status.active], [false, true, true]);
+  } finally { await f.clean(); }
+});
+
 test('startup refuses another installation and reports WSL without systemd accurately', async () => {
   const f = await fixture(); let changes = 0;
   try {

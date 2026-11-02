@@ -1,6 +1,5 @@
 import { access, mkdir, unlink, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { homedir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
@@ -8,6 +7,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import WebSocket from 'ws';
 import type { ExecutionMode } from '../shared/execution.ts';
+import { resolveDataDir } from './data-dir.ts';
 import type { SessionStatus } from '../shared/types.js';
 import { validateNativeId } from './adapters.js';
 import { OwnedProcess } from './owned-process.ts';
@@ -440,7 +440,7 @@ export class CodexBridge {
     if (!executable) throw new Error('未找到 Codex，请安装 codex CLI 并加入 PATH');
     this.port = await availablePort(this.options.port ?? Number(this.env.SESSIONDECK_CODEX_PORT ?? DEFAULT_PORT));
     assertActive();
-    const dataDir = resolve(this.options.dataDir ?? this.env.SESSIONDECK_DATA_DIR ?? join(homedir(), '.local/share', 'sessiondeck'));
+    const dataDir = resolve(this.options.dataDir ?? resolveDataDir(this.env));
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     assertActive();
     // Codex refuses to start when CODEX_HOME is explicitly pointed at a path

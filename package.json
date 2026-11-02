@@ -32,6 +32,7 @@
     "test:smoke:claude-chat": "tsx scripts/claude-chat-smoke.ts",
     "test:smoke:workspace": "tsx scripts/workspace-workflow-smoke.ts",
     "backup": "tsx scripts/backup.ts",
+    "repair:workspaces": "tsx scripts/repair-workspaces.ts",
     "prepack": "npm run build",
     "test:package": "npm run build && node scripts/package-smoke.mjs",
     "test:pwa": "playwright test --config playwright.pwa.config.ts",
@@ -81,6 +82,7 @@
     "scripts/check-pty.ts",
     "scripts/prepare-pty.mjs",
     "scripts/doctor.ts",
+    "scripts/repair-workspaces.ts",
     "dist/client/",
     "README.MD",
     "docs/"

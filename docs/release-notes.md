@@ -71,6 +71,8 @@
 
 - 中继不再读取 `SESSIONDECK_RELAY_P2P_UPSTREAM`：从服务配置中删除它，并按 `npm run build:relay` 更新 `relay.mjs` 后重启。若曾在云服务器上部署 EasyTier／WireGuard 主机隧道，现在已无代码使用，可停用并回收。
 - 设备链接仍是每设备独立端口；FRP、邀请码、设备撤销语义不变，不需要重新配对。
+- 数据目录默认改为 `~/.local/share/dili`：下次启动时把旧版 `~/.local/share/sessiondeck` 整体改名迁移，旧路径保留为兼容链接，旧单元和脚本继续可用；旧实例仍在运行时推迟到再下一次启动，不会出现两个空库。
+- checkout 改名后，启动时会按记录自动把该目录下的联系人／群组工作目录改写到当前目录；`dili.service` 也只改写含旧目录的行，保留自定义 `Environment=`。无法安全判断时用 `npm run repair:workspaces -- --from … --to …` 预览后写入。
 
 ### 当前限制
 

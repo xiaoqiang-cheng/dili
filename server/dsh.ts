@@ -1,13 +1,13 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { pathToFileURL } from 'node:url';
 import WebSocket from 'ws';
 import { setTimeout as delay } from 'node:timers/promises';
 import { findExecutable, isLegacyDshId, validateNativeId } from './adapters.ts';
+import { resolveDataDir } from './data-dir.ts';
 import type { SessionStatus } from '../shared/types.js';
 import { OwnedProcess } from './owned-process.ts';
 import { sameDirectory } from './paths.ts';
@@ -200,7 +200,7 @@ export class DshBridge {
       probe.listen(port, '127.0.0.1', () => probe.close(() => resolveCheck()));
     });
     assertActive();
-    const dataDir = resolve(this.options.dataDir ?? process.env.SESSIONDECK_DATA_DIR ?? join(homedir(), '.sessiondeck'));
+    const dataDir = resolve(this.options.dataDir ?? resolveDataDir());
     const launchToken = randomUUID();
     const { directory, loaderPath, patchPath } = await prepareLaunch(dataDir, launchToken);
     try { assertActive(); }

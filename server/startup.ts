@@ -1,9 +1,11 @@
 import { execFile } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { homedir, release } from 'node:os';
 import { join, resolve } from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import type { StartupStatus } from '../shared/setup.ts';
+import { defaultDataDir, legacyDataDir, resolveDataDir } from './data-dir.ts';
 
 const exec = promisify(execFile);
 type Result = { stdout: string; code: number };
@@ -23,6 +25,22 @@ export function unitQuote(value: string, expandDollars = false): string {
 export function unitPath(value: string): string {
   if (/[\x00-\x1f\x7f]/.test(value)) throw new Error('启动设置包含无效控制字符');
   return value.replace(/%/g, '%%');
+}
+
+/** Compares directory identity, so a renamed default and its symlink match. */
+export function sameDirectory(a: string, b: string): boolean {
+  if (a === b) return true;
+  try { return realpathSync(a) === realpathSync(b); } catch { return false; }
+}
+
+/** Reads one `Environment=KEY=value` line, undoing systemd quoting for paths. */
+function environmentValue(line: string, key: string): string {
+  const raw = line.slice('Environment='.length);
+  const unquoted = raw.startsWith('"') && raw.endsWith('"')
+    ? raw.slice(1, -1).replace(/\\(["\\])/g, '$1').replace(/\$\$/g, '$').replace(/%%/g, '%')
+    : raw;
+  const prefix = `${key}=`;
+  return unquoted.startsWith(prefix) ? unquoted.slice(prefix.length) : '';
 }
 
 export const SERVICE_UNIT = 'dili.service';
@@ -48,7 +66,7 @@ export class StartupService {
     this.runner = options.runner ?? run;
     this.platform = options.platform ?? process.platform;
     this.wsl = options.wsl ?? /microsoft/i.test(release());
-    this.dataDir = resolve(options.dataDir ?? process.env.SESSIONDECK_DATA_DIR ?? join(homedir(), '.local/share/sessiondeck'));
+    this.dataDir = resolve(options.dataDir ?? resolveDataDir());
   }
   private async unit(path = this.unitPath): Promise<string | null> {
     try { return await readFile(path, 'utf8'); }
@@ -65,10 +83,24 @@ export class StartupService {
       SESSIONDECK_PORT: String(this.options.port ?? Number(process.env.PORT || process.env.SESSIONDECK_PORT || 4317)),
       SESSIONDECK_HOST: this.options.host ?? process.env.HOST ?? process.env.SESSIONDECK_HOST ?? '127.0.0.1',
     };
+    const demo = process.env.SESSIONDECK_DEMO === '1';
+    const defaultData = defaultDataDir({ demo });
+    const legacyData = legacyDataDir({ demo });
     for (const [key, value] of Object.entries(wanted)) {
       const lines = environment.filter(line => line.includes(`${key}=`));
-      if (lines.length && (lines.length !== 1 || ![`Environment=${unitQuote(`${key}=${value}`)}`, `Environment=${key}=${value}`].includes(lines[0]))) return false;
-      if (!lines.length && value !== (key === 'SESSIONDECK_DATA_DIR' ? resolve(join(homedir(), '.local/share/sessiondeck')) : key === 'SESSIONDECK_PORT' ? '4317' : '127.0.0.1')) return false;
+      if (lines.length > 1) return false;
+      if (!lines.length) {
+        // The unit pins nothing, so the binary's default applies.
+        if (key === 'SESSIONDECK_DATA_DIR') { if (!sameDirectory(value, defaultData)) return false; }
+        else if (value !== (key === 'SESSIONDECK_PORT' ? '4317' : '127.0.0.1')) return false;
+        continue;
+      }
+      if (lines[0] === `Environment=${key}=${value}` || lines[0] === `Environment=${unitQuote(`${key}=${value}`)}`) continue;
+      if (key !== 'SESSIONDECK_DATA_DIR') return false;
+      // Units written before the rename pin the old default; the migration
+      // leaves that path as a symlink, so both name the same store.
+      const pinned = environmentValue(lines[0], key);
+      if (!sameDirectory(pinned, value) && !(sameDirectory(pinned, legacyData) && sameDirectory(value, defaultData))) return false;
     }
     return true;
   }
@@ -106,7 +138,10 @@ export class StartupService {
         const cwd = resolve(this.options.cwd ?? process.cwd());
         const port = this.options.port ?? Number(process.env.PORT || process.env.SESSIONDECK_PORT || 4317);
         const host = this.options.host ?? process.env.HOST ?? process.env.SESSIONDECK_HOST ?? '127.0.0.1';
-        const env: Record<string, string> = { PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin', SESSIONDECK_DATA_DIR: this.dataDir, SESSIONDECK_PORT: String(port), SESSIONDECK_HOST: host };
+        const env: Record<string, string> = { PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin', SESSIONDECK_PORT: String(port), SESSIONDECK_HOST: host };
+        // Pin the data directory only when it is not the default: a unit that
+        // pinned today's default would survive a future rename pointing at it.
+        if (!sameDirectory(this.dataDir, defaultDataDir({ demo: process.env.SESSIONDECK_DEMO === '1' }))) env.SESSIONDECK_DATA_DIR = this.dataDir;
         // Native credentials stay in native files. Never copy arbitrary environment secrets.
         for (const key of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'DSH_HOME', 'SESSIONDECK_CLAUDE_BIN', 'SESSIONDECK_CODEX_BIN', 'SESSIONDECK_DSH_BIN', 'SESSIONDECK_DSH_TUI_BIN', 'SESSIONDECK_REMOTE_PORT']) if (process.env[key]) env[key] = process.env[key]!;
         const contents = ['# Managed by Dili.', '[Unit]', 'Description=Dili personal agent workbench', 'After=network.target', '', '[Service]', 'Type=simple', `WorkingDirectory=${unitPath(cwd)}`, ...Object.entries(env).map(([key, value]) => `Environment=${unitQuote(`${key}=${value}`)}`), `ExecStart=${unitQuote(process.execPath, true)} ${unitQuote(join(this.options.root, 'bin/dili.mjs'), true)}`, 'Restart=on-failure', 'RestartSec=5', 'TimeoutStopSec=30', 'KillMode=mixed', '', '[Install]', 'WantedBy=default.target', ''].join('\n');

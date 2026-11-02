@@ -15,7 +15,8 @@ Usage: dili [start] [--port 4317] [--host 127.0.0.1] [--data-dir PATH]
        dili service status|enable|disable [--port PORT] [--data-dir PATH]
 
 Node.js 24+ required. Ctrl+C stops the foreground server.
-Data defaults to ~/.local/share/sessiondeck and survives upgrades.
+Data defaults to ~/.local/share/dili and survives upgrades;
+~/.local/share/sessiondeck is migrated on the first start after the rename.
 service enable/disable changes auto-start only; it never restarts a live server.
 On WSL, auto-start applies after the distribution has started.
 `;

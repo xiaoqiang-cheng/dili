@@ -1,10 +1,19 @@
 # 使用、备份与故障处理
 
-更新日期：2026-10-23。首次安装和自动启动见[安装指南](installation.md)；中继配对、域名和管理员密钥见[远程访问](remote-access.md)。
+更新日期：2026-11-02。首次安装和自动启动见[安装指南](installation.md)；中继配对、域名和管理员密钥见[远程访问](remote-access.md)。
 
 ## 数据与备份
 
-默认数据目录为 `~/.local/share/sessiondeck`，可用 `SESSIONDECK_DATA_DIR` 指定。同一数据目录只允许一个实例，不能删除活动锁文件绕过保护。
+默认数据目录为 `~/.local/share/dili`（旧版本为 `~/.local/share/sessiondeck`，见下节自动迁移），可用 `SESSIONDECK_DATA_DIR` 指定。同一数据目录只允许一个实例，不能删除活动锁文件绕过保护。
+
+### 数据目录更名（`sessiondeck` → `dili`）
+
+旧版本把数据放在 `~/.local/share/sessiondeck`。新版本首次启动时会把整个目录原子重命名到 `~/.local/share/dili`，并在旧路径留下指向新目录的符号链接，因此旧服务单元、旧脚本和手工写的 `SESSIONDECK_DATA_DIR=~/.local/share/sessiondeck` 仍读写同一份数据，不会出现两个空库。
+
+- 迁移前先取得旧目录 `instance-lock.sqlite` 的锁：若旧实例仍在运行，本次沿用旧目录，等它退出后的下一次启动再迁移，绝不重命名正在写入的目录。
+- 只迁移旧默认路径；通过 `SESSIONDECK_DATA_DIR` 指定的其他目录不会被移动（值恰好是旧默认路径时例外）。
+- 重命名失败时继续使用旧目录，启动日志会说明原因。
+- 迁移后可以删除旧路径的符号链接；删除后旧版本 Dili 会新建空目录，因此只在确认不再回退旧版本时删除。
 
 元数据可在线备份，不用停止正在运行的会话：
 
@@ -41,6 +50,23 @@ scripts/restart-service.sh    # 从独立终端发起；会结束本实例托管
 重启会停止所有正在运行的 Agent 会话（它们是服务的子进程）；联系人保留原生会话 ID，可在原生历史及目录可用时手动恢复。脚本只会停止本项目、监听该端口的 Dili 进程，不会按端口误杀其他程序。手动查看：`systemctl --user status dili.service`，日志：`journalctl --user -u dili.service -f`。
 
 用户服务名为 `dili.service`。旧版本安装的 `sessiondeck.service` 仍会被识别：设置页「迁移到 dili.service」、`dili service enable` 会启用新单元并停用旧单元；`scripts/install-service.sh` 仅安装新单元并停用旧单元的自动启动，不启动或重启实例；`scripts/restart-service.sh` 会把旧单元托管的实例切换到 `dili.service`。
+
+### 改名或移动源码目录
+
+单元文件记录的是绝对路径，联系人、群组和独立工作树也各自保存绝对工作目录。把 checkout 从 `~/Develop/sessiondeck` 改成 `~/Develop/dili` 这类操作只改变路径，不改内容，但两处记录需要各自跟上：
+
+1. **单元文件**：直接在新目录运行 `scripts/restart-service.sh`。脚本按自身位置推导目录，发现 `dili.service` 的 `WorkingDirectory`／`ExecStart` 仍指向旧目录时，只改写这些含旧目录的行，保留自定义 `Environment=`（例如 `CODEX_HOME`、位于旧 checkout 内的 `SESSIONDECK_DATA_DIR`），然后 `daemon-reload`；只有单元不是本项目的启动命令时才按当前目录重装。它不会启动旧路径。校验失败会打印 `journalctl --user -u dili -n 50` 的提示，不会再“停掉旧实例但起不来”。
+2. **工作目录**：启动时会自动处理最常见的改名场景——数据目录里的 `install-root.json` 记录 Dili 运行过的 checkout；若记录中的目录已经消失、其父目录仍在，就把该目录下的联系人／群组工作目录改写到当前 checkout（只在新位置确实存在时逐字段改写，附加目录、独立工作树与群工作区都覆盖）。换盘、同名重建、只改子目录等无法安全判断的情况不猜，先用工具预览，再备份并写入：
+
+```bash
+npm run repair:workspaces -- --from /home/me/Develop/sessiondeck --to /home/me/Develop/dili
+npm run backup
+npm run repair:workspaces -- --from /home/me/Develop/sessiondeck --to /home/me/Develop/dili --apply
+```
+
+工具只改写旧前缀下、且新目录确实存在的路径（普通目录、附加目录、独立工作树、群工作区），并列出被跳过的项。写入只改存储，**运行中的实例仍持有旧路径的内存快照，需要重启 Dili 后页面才显示新路径**；已经运行的进程继续使用启动时的目录。`npm run doctor` 会列出当前不存在的工作目录，便于确认修复是否完成。
+
+Dili 只修复自己的记录。原生工具另有一套按绝对路径或会话 ID 保存的历史（例如 `~/.claude/projects/…-sessiondeck/`、`~/.codex/sessions`、`~/.dsh/storages`）：Dili 的对话面板按会话 ID 跨目录查找，不受改名影响；但原生 CLI 能否在旧目录之外恢复旧上下文由各后端决定，无法恢复时以原生提示为准，不要假定 Dili 已经修好原生侧。
 
 ## 日常工作流
 

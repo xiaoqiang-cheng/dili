@@ -36,7 +36,7 @@ dili --port 4327 --data-dir ~/.local/share/dili-test
 dili doctor
 ```
 
-默认浏览器地址为 `http://localhost:4317`。前台运行时 Ctrl+C 会停止 Dili 及其托管进程，保留原生历史、联系人、笔记和配置。程序安装目录与数据目录分离，兼容数据目录仍为 `~/.local/share/sessiondeck`。升级不应在仍有运行会话时覆盖服务依赖；安排停止服务后升级。
+默认浏览器地址为 `http://localhost:4317`。前台运行时 Ctrl+C 会停止 Dili 及其托管进程，保留原生历史、联系人、笔记和配置。程序安装目录与数据目录分离：默认数据目录为 `~/.local/share/dili`，旧版本的 `~/.local/share/sessiondeck` 会在首次启动时自动迁移并保留兼容链接。升级不应在仍有运行会话时覆盖服务依赖；安排停止服务后升级。
 
 npm 包和源码启动使用同一数据格式，不能同时使用同一数据目录；服务端升级会中断托管进程，请按[操作指南](operations.md)安排维护。
 

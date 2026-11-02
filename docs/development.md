@@ -76,7 +76,7 @@ npm run test:soak -- --minutes=45
 npm run test:terminal-load -- --minutes=10
 ```
 
-默认应用数据目录：`~/.local/share/sessiondeck`，可通过 `SESSIONDECK_DATA_DIR` 指定。数据目录使用独立 `instance-lock.sqlite` 的独占事务锁，进程退出后由操作系统释放；不要删除正在使用的锁文件。演示模式用于验证界面与组织流程，不能证明真实后端接入成功。在独立 checkout、空闲端口中，先创建新的临时目录：
+默认应用数据目录：`~/.local/share/dili`；旧版本的 `~/.local/share/sessiondeck` 会在首次启动时自动迁移，旧路径保留为兼容链接。也可通过 `SESSIONDECK_DATA_DIR` 指定。数据目录使用独立 `instance-lock.sqlite` 的独占事务锁，进程退出后由操作系统释放；不要删除正在使用的锁文件。演示模式用于验证界面与组织流程，不能证明真实后端接入成功。在独立 checkout、空闲端口中，先创建新的临时目录：
 
 ```sh
 dili_demo_root=$(mktemp -d /tmp/dili-demo.XXXXXX)

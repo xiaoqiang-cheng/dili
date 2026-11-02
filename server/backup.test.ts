@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
@@ -142,8 +142,14 @@ test('backup command follows the selected local data directory and prints counts
   assert.equal(item.store.session(item.source.id)?.running, true);
 });
 
-test('backup data path follows normal, demo and explicit server configuration', () => {
-  assert.equal(metadataDataDirectory({}), join(homedir(), '.local/share/sessiondeck'));
-  assert.equal(metadataDataDirectory({ SESSIONDECK_DEMO: '1' }), join(homedir(), '.local/share/sessiondeck-demo'));
-  assert.equal(metadataDataDirectory({ SESSIONDECK_DEMO: '1', SESSIONDECK_DATA_DIR: './custom-data' }), resolve('custom-data'));
+test('backup data path follows normal, demo and explicit server configuration', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'dili-backup-home-'));
+  try {
+    assert.equal(metadataDataDirectory({}, home), join(home, '.local/share/dili'));
+    assert.equal(metadataDataDirectory({ SESSIONDECK_DEMO: '1' }, home), join(home, '.local/share/dili-demo'));
+    assert.equal(metadataDataDirectory({ SESSIONDECK_DEMO: '1', SESSIONDECK_DATA_DIR: './custom-data' }), resolve('custom-data'));
+    // Before the service has migrated it, the pre-rename directory holds the store.
+    await mkdir(join(home, '.local/share/sessiondeck'), { recursive: true });
+    assert.equal(metadataDataDirectory({}, home), join(home, '.local/share/sessiondeck'));
+  } finally { await rm(home, { recursive: true, force: true }); }
 });

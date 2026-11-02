@@ -1,14 +1,15 @@
 import { access, stat } from 'node:fs/promises';
-import { constants } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { homedir } from 'node:os';
+import { constants, statSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { checkPty } from '../server/pty-health.ts';
 import { getBackendInfo } from '../server/adapters.ts';
+import { existingDataDir, resolveDataDir } from '../server/data-dir.ts';
 
 // Read-only checks plus a short-lived local PTY. No agent is started and no model is called.
 type Check = { label: string; state: 'ok' | 'warn' | 'error'; detail: string };
 const checks: Check[] = [];
-const dataDir = resolve(process.env.SESSIONDECK_DATA_DIR || join(homedir(), '.local/share', process.env.SESSIONDECK_DEMO === '1' ? 'sessiondeck-demo' : 'sessiondeck'));
+const dataDir = existingDataDir();
+const canonicalDataDir = resolveDataDir();
 const port = Number(process.env.PORT || process.env.SESSIONDECK_PORT || 4317);
 checks.push({ label: 'Node.js', state: Number(process.versions.node.split('.')[0]) >= 24 ? 'ok' : 'error', detail: process.version });
 
@@ -24,7 +25,7 @@ try {
       candidate = dirname(candidate);
     }
   }
-  checks.push({ label: '本地数据目录', state: 'ok', detail: dataDir });
+  checks.push({ label: '本地数据目录', state: 'ok', detail: dataDir === canonicalDataDir ? dataDir : `${dataDir}；服务下次启动会迁移到 ${canonicalDataDir}` });
 } catch (error) { checks.push({ label: '本地数据目录', state: 'error', detail: `${dataDir}：${error instanceof Error ? error.message : '无法访问'}` }); }
 
 try {
@@ -43,6 +44,21 @@ try {
   const state = await response.json() as { sessions?: unknown[]; groups?: unknown[]; demo?: boolean };
   if (!response.ok || !Array.isArray(state.sessions) || !Array.isArray(state.groups)) throw new Error('端口上运行的服务不是可用的 Dili');
   checks.push({ label: 'Web 服务', state: 'ok', detail: `http://127.0.0.1:${port}${state.demo ? '（演示模式）' : ''}` });
+  // A renamed or moved project leaves contacts pointing at the old directory;
+  // starting them would fail, so surface it here instead of per contact.
+  const workspaces = new Set<string>();
+  for (const entry of [...state.sessions, ...state.groups]) {
+    const value = entry as { cwd?: unknown; workspace?: unknown } | null;
+    for (const path of [value?.cwd, value?.workspace]) {
+      if (typeof path !== 'string' || !path) continue;
+      try { if (!statSync(path).isDirectory()) workspaces.add(path); }
+      catch { workspaces.add(path); }
+    }
+  }
+  if (workspaces.size) {
+    const listed = [...workspaces].slice(0, 3).join('、');
+    checks.push({ label: '工作目录', state: 'warn', detail: `${workspaces.size} 个目录不存在：${listed}${workspaces.size > 3 ? ' 等' : ''}；源码目录改名或移动后，用 npm run repair:workspaces -- --from <旧目录> --to <新目录> 预览修复` });
+  } else checks.push({ label: '工作目录', state: 'ok', detail: '联系人与群组的工作目录都存在' });
 } catch { checks.push({ label: 'Web 服务', state: 'warn', detail: `当前未连接；运行 dili；源码安装可构建后 npm start（端口 ${port}）` }); }
 
 console.log('Dili 本地环境检查\n');

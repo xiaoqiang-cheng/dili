@@ -358,7 +358,7 @@ PWA 和同一网页应用提供浏览器侧的机器列表（`/#/machines`）：
 
 品牌名 **Dili / 嘀哩工作台**，slogan 为「让每一次 AI 对话，都能继续成为工作」。当前标志为 **35 四向工作（Shared Centre）**，四块向中心收拢的几何形表达独立会话围绕共同任务推进；页面标识跟随主题。设计过程见 [Logo 记录](logo-concepts/README.md)。
 
-`SESSIONDECK_*`、`X-SessionDeck-*`、浏览器存储键、数据目录及旧服务名保留兼容性，不代表尚未更名。安装与服务迁移见[安装指南](installation.md)。
+`SESSIONDECK_*`、`X-SessionDeck-*`、浏览器存储键及旧服务名保留兼容性，不代表尚未更名；数据目录在首次启动时由 `~/.local/share/sessiondeck` 迁移到 `~/.local/share/dili`，旧路径保留为兼容链接。安装与服务迁移见[安装指南](installation.md)。
 
 ## 分享权限与预览（2026-11-02）
 

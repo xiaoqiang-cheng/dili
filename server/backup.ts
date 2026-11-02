@@ -1,7 +1,7 @@
 import { backup, DatabaseSync } from 'node:sqlite';
 import { chmod, link, lstat, mkdir, mkdtemp, open, readlink, rm, stat } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, join, parse, resolve, sep } from 'node:path';
+import { existingDataDir } from './data-dir.ts';
 
 const tables = ['sessions', 'groups', 'messages', 'deliveries', 'activities'] as const;
 type Table = typeof tables[number];
@@ -21,8 +21,10 @@ export interface MetadataBackupResult {
   counts: Record<Table, number>;
 }
 
-export function metadataDataDirectory(env: NodeJS.ProcessEnv = process.env): string {
-  return resolve(env.SESSIONDECK_DATA_DIR || join(homedir(), '.local/share', env.SESSIONDECK_DEMO === '1' ? 'sessiondeck-demo' : 'sessiondeck'));
+export function metadataDataDirectory(env: NodeJS.ProcessEnv = process.env, home?: string): string {
+  // Before the one-time rename this still points at the pre-rename directory,
+  // so a backup taken before restarting covers the real store.
+  return existingDataDir(env, home);
 }
 
 async function absent(path: string): Promise<void> {

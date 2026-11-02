@@ -45,6 +45,8 @@ import { submitDshInject } from './dsh-inject.ts';
 import { NativeStatusWatcher } from './native-status.ts';
 import { nativeHookPatch } from './native-events.ts';
 import { acquireInstanceLock } from './instance-lock.ts';
+import { migrateDataDir, resolveDataDir } from './data-dir.ts';
+import { relocateStoredWorkspaces } from './workspace-migration.ts';
 import { CodexBridge } from './codex.ts';
 import { ClaudeChatBridge, probeClaudeModels } from './claude-chat.ts';
 import { GroupReplies } from './group-replies.ts';
@@ -70,9 +72,17 @@ const host = (process.env.HOST || process.env.SESSIONDECK_HOST || '127.0.0.1').t
 if (!host.trim()) throw new Error('SESSIONDECK_HOST 不能为空');
 const wildcardHost = host === '0.0.0.0' || host === '::';
 const demo = process.env.SESSIONDECK_DEMO === '1';
-const dataDir = resolve(process.env.SESSIONDECK_DATA_DIR || join(homedir(), '.local/share', demo ? 'sessiondeck-demo' : 'sessiondeck'));
+// One start moves a pre-rename default directory to ~/.local/share/dili; the
+// old path stays a symlink so older units and scripts keep working.
+const dataDirMigration = await migrateDataDir(resolveDataDir(), {
+  demo, explicit: Boolean(process.env.SESSIONDECK_DATA_DIR), log: message => console.log(message),
+});
+if (dataDirMigration.note) console.log(`数据目录：${dataDirMigration.note}`);
+const dataDir = dataDirMigration.dataDir;
 const instanceLock = await acquireInstanceLock(dataDir);
 const store = new Store(join(dataDir, 'sessiondeck.sqlite'));
+// Before the first snapshot: rewrite contacts that point at a vanished checkout.
+relocateStoredWorkspaces(store, { dataDir, root, log: message => console.log(message) });
 const scratchpad = new ScratchpadStore(store.db);
 const submissions = new ChatSubmissions(store.db);
 const attachments = new Attachments(store.db, join(dataDir, 'chat-images'));

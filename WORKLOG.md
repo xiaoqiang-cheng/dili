@@ -1,5 +1,32 @@
 # Dili 本地迭代记录
 
+## 2026-11-02：数据目录改名、工作目录自动迁移与单元原地改写
+
+- 背景：上一节只处理了「这一次」改名（手工跑 `repair:workspaces`），用户进一步问了三点：1）工作区数据仍在 checkout 里时是否前向兼容；2）默认数据目录 `~/.local/share/sessiondeck` 能否改成 `~/.local/share/dili`；3）升级后能否无感迁移。结论：可以，但必须区分「能安全推断的改名」和「不能猜的映射」。
+- 数据目录：新增 `server/data-dir.ts`，把默认目录、旧目录、显式覆盖和迁移集中到一处（`bin`、`check-start`、`doctor`、`backup`、`repair:workspaces`、`startup.ts`、`dsh`／`codex` 回退值全部改为复用）。
+  - 首次启动把 `~/.local/share/sessiondeck` 整体 `rename(2)` 到 `~/.local/share/dili`，旧路径留下指向新目录的绝对符号链接；旧单元、旧脚本、手工写的 `SESSIONDECK_DATA_DIR=~/.local/share/sessiondeck` 继续读写同一份数据。demo 目录同样迁移为 `dili-demo`。
+  - 迁移前先对旧目录 `instance-lock.sqlite` 取独占锁：旧实例仍在运行时本次沿用旧目录（新的实例随后照常撞锁退出），等旧实例退出后的下一次启动再迁移，不会把正在写入的目录改名，也不会分叉出两个空库。
+  - 只有旧默认路径会被迁移；`SESSIONDECK_DATA_DIR` 指向其他目录时不动。值恰好等于旧默认路径时仍迁移（符号链接保证原值继续可用）。手工放在旧路径上的符号链接不重命名。
+  - 目录改不动时继续用旧目录并在日志说明；`data-dir` 的迁移只影响存储，不改变数据库文件名 `sessiondeck.sqlite`，备份文件随之移动。
+- 工作目录自动迁移：新增 `server/workspace-migration.ts`，数据目录记录 `install-root.json`（最近运行过的 checkout，最多 8 个）。
+  - 启动时在创建 `StatePublisher` 之前执行：记录中的 checkout 已消失、但其父目录仍在（区分改名与临时卸载／换盘）时，把其下的 `cwd`、`additionalDirectories`、`worktree`（path 与 repository 成对）和群 `workspace` 改写到当前 checkout；只改新位置确实存在的字段，缺一个就跳过并计数，最后写一次日志。嵌套的旧根按路径长度从深到浅处理。
+  - 纯逻辑从 `scripts/workspace-paths.ts` 移到 `shared/workspace-paths.ts`，服务端启动修复和 `repair:workspaces` 共用同一套规则；CLI 行为不变，默认数据目录改为先读真实存在的目录。
+- 单元文件：上一节的「发现旧路径就重装」改为原地改写。新增 `scripts/unit-relocation.ts`（纯函数 + CLI）：只改 `WorkingDirectory=`、`ExecStart=`、`Environment=` 中含旧 checkout 的行，按路径边界替换（`/a/b` 不会碰到 `/a/b-old`），保留自定义 `Environment=`（`CODEX_HOME`、位于 checkout 内的 `SESSIONDECK_DATA_DIR` 等）；`ExecStart` 不是本项目的启动命令、或路径含 systemd 转义字符时才回退到 `install-service.sh` 重装。`scripts/restart-service.sh` 调用它并在改写后 `daemon-reload`，仍然不停正在运行的实例。
+  - `server/startup.ts` 改为按真实路径（`realpath`）比较数据目录：改名后的旧单元（显式 pin 旧默认路径）与新目录等价，不会误报「已有用户服务属于其他安装」；新生成的单元不再 pin 默认数据目录，避免下次改名又被钉死。
+- 三个问题的回答：1）前向兼容成立——工作目录在 checkout 内（等于根或任意子目录）、数据目录被 `SESSIONDECK_DATA_DIR` 放在 checkout 内、旧版本单元 pin 旧默认路径，这三种情况都能继续工作；改写到 `<新根>/<原相对路径>`，目标不存在就不改。2）三个后端都只涉及 Dili 自己的元数据和文件路径，不改原生存储，跨后端中立。3）没有界面假象：自动修复发生在第一次状态快照之前，日志与 `doctor` 都读真实目录；无法安全判断的映射仍然要人确认。
+- 验证：`npm run check` 通过；`npm test` 459 项、458 通过、0 失败、1 跳过（新增 `server/data-dir.test.ts` 8 项、`server/workspace-migration.test.ts` 7 项、`scripts/unit-relocation.test.ts` 6 项，`server/setup.test.ts` 增加符号链接等价用例，`server/backup.test.ts` 改为临时 HOME 并覆盖旧目录回退）。用假 `systemctl`／`lsof` 模拟 restart：旧单元 → 原地改写 + `daemon-reload` + 启动；已是当前目录 → 不改写；checkout 内数据目录 → 随单元一起改写；外部单元 → 重装并保留其它行。用临时 HOME 和真实数据库副本做了两次端到端演练：旧目录被改名 + 符号链接 + `install-root.json` 生成，服务返回 48 个会话／3 个群组；把某会话 `cwd` 指向一个已消失的旧 checkout 后重启，`/api/state` 在首个快照里就是改写后的路径。
+- 未做／边界：没有重启本机正在运行的服务（重启会终止其托管的会话，数据目录迁移与工作目录修复都在下次启动时生效）；中继数据目录仍是 `~/.local/share/sessiondeck-relay`（另一个产品面，未改名）；原生工具自己的历史与凭据未改写；`install-root.json` 只保留最近 8 个 checkout，不做长期审计；父目录也消失（换盘、卸载）时不自动猜映射。
+
+## 2026-11-02：适配 checkout 改名（restart 脚本与工作目录修复）
+
+- 背景：把 checkout 从 `~/Develop/sessiondeck` 改名为 `~/Develop/dili` 后，`scripts/restart-service.sh` 会停掉旧实例却起不来——`dili.service` 里仍是旧 `WorkingDirectory`／`ExecStart`，`systemctl start` 失败；`./start.sh` 能启动，但 13 个联系人的工作目录仍指向旧路径，启动报「工作目录不存在或无法访问」，工作区面板 404。
+- `scripts/restart-service.sh` 不再依赖任何写死的目录：`project_dir` 来自脚本自身位置，后台重入也改用解析后的绝对路径。启动前核对已安装单元的 `WorkingDirectory`／`ExecStart`，与当前 checkout 不一致时调用 `install-service.sh` 重装（只写单元，不停实例），并在启动前 `daemon-reload`；旧实例退出后 `enable --now` 失败会打印状态与日志命令，成功则以端口真正监听为准（最多 180 秒），不再“看起来重启成功”。`install-service.sh` 的 `daemon-reload` 失败时给出明确提示，而不是中途退出。
+- 新增 `scripts/workspace-paths.ts`（纯逻辑：前缀改写、边界判断、按“新目录必须存在”逐字段决定是否改写、工作树 path／repository 成对处理）与 `scripts/repair-workspaces.ts`（默认预览，`--apply` 在单个事务内重读行后合并，避免覆盖运行中实例的并发更新）。`npm run backup` 之后在本机执行：13 个会话的 `cwd` 由 `/home/xiaoqiang/Develop/sessiondeck` 改写为 `/home/xiaoqiang/Develop/dili`，0 个群组、0 项跳过；备份在 `~/.local/share/sessiondeck/backups/sessiondeck-2026-11-02T02-51-32-866Z.sqlite`。`npm run doctor` 新增工作目录检查，列出仍不存在的目录并提示修复命令；新增 `npm run repair:workspaces` 别名，并把两个新脚本加入 `package.json` 的 `files` 白名单（已用 `npm pack --dry-run` 核对）。
+- 三个问题的回答：1）路径修复只碰 `Session.cwd`／`additionalDirectories`／`worktree`／`Group.workspace`，没有后端专属类型或分支，跨后端中立。2）只改写“新目录确实存在”的字段，缺失项列出并保留原路径；原生会话 ID 不变，恢复仍由各后端自己的原生能力决定。3）没有新增界面假象：写入只改存储，脚本和文档都说明运行中的实例仍持有旧路径的内存快照，必须重启 Dili 才显示新路径；doctor 的提示来自真实 `stat`。
+- 验证：`npm run check` 通过；`npx tsx --test scripts/workspace-paths.test.ts scripts/repair-workspaces.test.ts` 12 项通过（含幂等与跳过逻辑、临时 SQLite 真实写入）。本机数据目录复查：旧路径 13 → 0，新路径 0 → 13；仍运行的服务读的是内存快照，需重启后页面才一致。
+- 边界：Dili 只改自己的会话／群组记录。原生工具另有按绝对路径保存的历史（`~/.claude/projects/-home-…-sessiondeck/`、`~/.codex/sessions`、`~/.dsh/storages/workspace.json` 等）：Dili 对话面板按会话 ID 跨目录查找，仍能读旧历史；原生 CLI 能否在旧目录之外恢复由各后端决定，没有代改原生存储。
+- 未做：没有自动重启活动实例（重启会终止其托管的会话）；没有自动改写用户数据，修复需要显式 `--apply` 并先备份；`artifacts/` 下旧截图脚本里的绝对路径属于历史产物，未改。
+
 ## 2026-11-02：0.5.4 发布准备
 
 - 版本号 0.5.3 → 0.5.4（`package.json`、`package-lock.json`、`docs/releasing.md`、`docs/installation.md` 示例包名）。
@@ -766,3 +793,10 @@
 - 三问：不涉及后端专属契约，保持跨后端中立；三个后端共用远程链路，能力一致；链接可达、身份绑定与隧道连接均有 HTTP/服务实测，不伪造成功。
 - 验证：类型检查、原子前端构建、relay 构建通过；URL/relay 测试通过；线上新页面、管理页、auth status 为 200，旧网页为 410，个人站点为 200，旧设备未认证接口为 401，设备隧道仍 connected。Caddy validate 通过，配置与 bundle 备份于 paw /opt/sessiondeck-relay/backups/domain-20261102-141153。
 - 未重启承载当前会话的本机服务；后端分享链接生成修正下次安全重启生效，已构建前端会立即规范化新建分享链接。未推送。
+
+## 2026-11-02 · T-7d6bb9 未提交修改复核与版本整理
+
+- 已阅读全部未提交修改，归为默认数据目录兼容迁移、checkout 工作区路径修复，以及 systemd 单元路径修复三个相关区域；按数据/工作区与服务脚本拆分本地提交，不 push，不重启活动服务。
+- 复核补强：显式指定旧默认目录且新旧两份目录同时存在时保留旧库，不静默切换；显式旧目录本身为用户符号链接时继续读该链接；迁移保持旧库锁直到兼容链接恢复，链接失败明确报告。增加对应回归测试。
+- 三问：修改仅作用于 Dili 存储和目录，未新增后端专属公共契约；三个后端使用相同目录规则且不改原生凭据/历史；修复按实际存在目录执行，无法确认的目标保留原值并报告，不把迁移或恢复显示成无依据的成功。
+- 验证：npm run check 通过；npm test 全量 473 项，472 通过、1 跳过、0 失败；迁移/修复/单元纯逻辑专项 35 项通过；npm pack --dry-run 确认运行时新增模块与修复入口包含在包内，原子前端构建通过。未新增前端行为，不额外运行浏览器回归。

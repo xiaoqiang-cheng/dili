@@ -1,14 +1,20 @@
+import { existsSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-// Keep these settings aligned with server/index.ts. This runs before npm ci,
+// Keep these settings aligned with server/data-dir.ts. This runs before npm ci,
 // so it deliberately depends only on Node builtins.
 const port = Number(process.env.PORT || process.env.SESSIONDECK_PORT || 4317);
 const host = (process.env.HOST || process.env.SESSIONDECK_HOST || '127.0.0.1').trim().replace(/^\[(.*)\]$/, '$1');
-const dataDir = resolve(process.env.SESSIONDECK_DATA_DIR || join(homedir(), '.local/share', process.env.SESSIONDECK_DEMO === '1' ? 'sessiondeck-demo' : 'sessiondeck'));
+const share = join(homedir(), '.local/share');
+const canonicalDataDir = resolve(process.env.SESSIONDECK_DATA_DIR || join(share, process.env.SESSIONDECK_DEMO === '1' ? 'dili-demo' : 'dili'));
+const legacyDataDir = resolve(join(share, process.env.SESSIONDECK_DEMO === '1' ? 'sessiondeck-demo' : 'sessiondeck'));
+// Before the service performs its one-time migration the lease lives in the old
+// directory; after it, the old path is a symlink and the canonical one exists.
+const dataDir = existsSync(canonicalDataDir) || process.env.SESSIONDECK_DATA_DIR ? canonicalDataDir : existsSync(legacyDataDir) ? legacyDataDir : canonicalDataDir;
 
 async function checkPort() {
   const probe = createServer();
