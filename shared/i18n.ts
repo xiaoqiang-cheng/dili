@@ -5,6 +5,21 @@
  * `{name}` substitutions and never HTML.
  */
 export const zh = {
+  'share.groupTitle': '共享群聊',
+  'share.connected': '已连接',
+  'share.reconnecting': '正在重连',
+  'share.members': '群成员',
+  'share.member': '群成员',
+  'share.running': '运行中',
+  'share.stopped': '未运行',
+  'share.logout': '退出共享',
+  'share.pickMember': '选择要 @ 的成员',
+  'share.unassign': '取消指派给 {name}',
+  'share.composerHint': '输入 @ 指派成员，或直接记录想法…',
+  'share.sending': '发送中…',
+  'share.sendTask': '发送并分派',
+  'share.send': '发送',
+  'share.readOnly': '这是只读分享，可以查看群聊进展。',
   'share.read': '只读',
   'share.write': '协作',
   'share.full': '全部',

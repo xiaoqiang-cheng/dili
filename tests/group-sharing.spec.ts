@@ -1,7 +1,7 @@
 import { mutationHeaders, test } from './fixtures';
 import { expect } from '@playwright/test';
 
-test('group share entry, live collaboration, read-only access and revocation', async ({ page, request, browser, baseURL }) => {
+test('group share entry, live collaboration, read-only access and revocation', async ({ page, request, browser, baseURL }, testInfo) => {
   const headers = await mutationHeaders(request);
   const groupResponse = await request.post('/api/groups', { headers, data: { title: '群分享验收', goal: '跨浏览器协作' } });
   expect(groupResponse.ok()).toBeTruthy();
@@ -23,6 +23,11 @@ test('group share entry, live collaboration, read-only access and revocation', a
     await guest.getByRole('button', { name: '进入会话' }).click();
     await expect(guest.getByRole('heading', { name: '群分享验收' })).toBeVisible();
     await expect(guest.getByLabel('原生终端', { exact: true })).toHaveCount(0);
+    const header = await guest.locator('.share-topbar').boundingBox();
+    const timeline = await guest.getByLabel('群消息', { exact: true }).boundingBox();
+    expect(header!.height).toBeLessThan(80);
+    expect(timeline!.y).toBeGreaterThanOrEqual(header!.y + header!.height);
+    expect(timeline!.width).toBeGreaterThan(1000);
     await guest.getByTitle('当前工作区', { exact: true }).click();
     await expect(guest.getByRole('complementary', { name: '资源管理器' })).toBeVisible();
     await guest.getByText('README.MD', { exact: true }).click();
@@ -34,17 +39,32 @@ test('group share entry, live collaboration, read-only access and revocation', a
     await guest.getByRole('button', { name: '发送', exact: true }).click();
     await expect(guest.getByLabel('群消息', { exact: true })).toContainText('访客协作消息');
     await expect(guest.getByLabel('群消息', { exact: true })).toContainText('协作访客');
-    await request.post(`/api/groups/${group.id}/messages`, { headers, data: { text: '所有者实时回复' } });
+    await request.post(`/api/groups/${group.id}/messages`, { headers, data: { text: '所有者实时回复\n\n## 评审结论\n\n- **共享工作台**：布局与 Dili 保持一致\n- 支持 `Markdown`、文件预览与 @ 分派' } });
     await expect(guest.getByLabel('群消息', { exact: true })).toContainText('所有者实时回复');
     await guest.locator('input[type="file"]').setInputFiles({ name: '协作截图.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64') });
     await expect(guest.getByLabel('待发送图片').locator('img')).toHaveCount(1);
     await guest.getByRole('button', { name: '发送', exact: true }).click();
     await expect(guest.getByLabel('消息图片').locator('img')).toHaveCount(1);
     await expect(guest.getByRole('button', { name: '语音输入', exact: true })).toBeVisible();
-    await guest.getByLabel('@协作成员', { exact: true }).check();
-    await guest.getByLabel('群消息内容').fill('协作任务');
+    await guest.getByLabel('群消息内容').fill('@协');
+    await expect(guest.getByRole('listbox', { name: '选择要 @ 的成员' })).toBeVisible();
+    await guest.getByLabel('群消息内容').press('Enter');
+    await expect(guest.getByLabel('群消息内容')).toHaveValue('@协作成员 ');
+    await guest.getByLabel('群消息内容').press('End');
+    await guest.getByLabel('群消息内容').pressSequentially('协作任务');
     await guest.getByRole('button', { name: '发送并分派' }).click();
     await expect(guest.getByLabel('群消息', { exact: true })).toContainText('协作任务');
+    await expect(guest.locator('.bubble h2')).toHaveText('评审结论');
+    await guest.screenshot({ path: testInfo.outputPath('group-share-desktop.png') });
+    await guest.setViewportSize({ width: 390, height: 844 });
+    expect((await guest.locator('.share-topbar').boundingBox())!.height).toBeLessThan(65);
+    await expect(guest.getByRole('button', { name: '发送', exact: true })).toBeInViewport();
+    expect(await guest.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await guest.getByLabel('群消息内容').fill('@');
+    await expect(guest.getByRole('option', { name: '协作成员' })).toBeInViewport();
+    await guest.screenshot({ path: testInfo.outputPath('group-share-mobile.png') });
+    await guest.getByLabel('群消息内容').press('Escape');
+    await guest.getByLabel('群消息内容').fill('');
     const readResponse = await request.post(`/api/groups/${group.id}/shares`, { headers, data: { mode: 'read', ttlDays: 1 } });
     const readLink = await readResponse.json();
     await guest.getByRole('button', { name: '退出共享' }).click();

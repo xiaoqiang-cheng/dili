@@ -962,3 +962,7 @@ select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--line-stro
 .debug-grid > div > span { color: var(--muted); }
 .debug-grid code { overflow-wrap: anywhere; font-size: 12px; }
 .chat-history-more { display: flex; justify-content: center; padding: 4px 0 10px; }
+
+/* Shared pages are stacked workspaces, never a horizontal title rail. */
+.app-shell.share-shell { flex-direction: column; }
+.share-shell > .app-body { flex: 1; min-height: 0; }
