@@ -42,3 +42,19 @@ export class HistoryCache<T> {
     }
   }
 }
+
+/** Navigation may detach a reader, but must not start a duplicate HTTP transfer. */
+export class HistoryRequests<T> {
+  private pending = new Map<string, Promise<T>>();
+  read(key: string, load: () => Promise<T>): Promise<T> {
+    const existing = this.pending.get(key);
+    if (existing) return existing;
+    const result = Promise.resolve().then(load);
+    this.pending.set(key, result);
+    void result.then(() => this.remove(key, result), () => this.remove(key, result));
+    return result;
+  }
+  private remove(key: string, result: Promise<T>) {
+    if (this.pending.get(key) === result) this.pending.delete(key);
+  }
+}

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { HistoryCache, historyRefresh } from './history-refresh';
+import { HistoryCache, HistoryRequests, historyRefresh } from './history-refresh';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 test('slow refresh is retained and repeated updates coalesce into one follow-up', async () => {
@@ -40,4 +40,21 @@ test('history cache separates instances, bounds memory and replaces oversized en
   for (let n = 0; n < 9; n++) cache.put(String(n), 'entry');
   assert.equal(cache.get('instance-a/group'), null);
   cache.put('8', 'x'.repeat(500_001)); assert.equal(cache.get('8'), null);
+});
+
+
+test('navigation shares unfinished reads; failures release the slot for retry', async () => {
+  const requests = new HistoryRequests<string>();
+  let calls = 0, release!: (value: string) => void;
+  const load = () => { calls++; return new Promise<string>(resolve => { release = resolve; }); };
+  const first = requests.read('instance/group', load);
+  const second = requests.read('instance/group', load);
+  await tick();
+  assert.equal(first, second); assert.equal(calls, 1);
+  release('history'); assert.equal(await second, 'history');
+  const fresh = requests.read('instance/group', async () => 'updated');
+  assert.equal(await fresh, 'updated');
+  await assert.rejects(requests.read('failed', async () => { throw new Error('offline'); }), /offline/);
+  assert.equal(await requests.read('failed', async () => 'retried'), 'retried');
+  assert.equal(await requests.read('other-instance/group', async () => 'other'), 'other');
 });

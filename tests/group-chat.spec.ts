@@ -539,3 +539,49 @@ test('returning to a group displays its cached history while remote refresh is b
     await expect(page.getByText('正在读取群组动态…', { exact: true })).toBeHidden();
   } finally { release(); }
 });
+
+
+test('rapid group navigation retains a first read that finishes off-screen and never flashes a warm loader', async ({ page }) => {
+  const { group } = await createGroup(page.request, '连续切换缓存');
+  const { group: other } = await createGroup(page.request, '连续切换对照');
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  let firstRequests = 0, finished = false;
+  await page.route(`**/api/groups/${group.id}`, async route => {
+    if (route.request().method() !== 'GET') return route.continue();
+    firstRequests++;
+    await blocked;
+    await route.continue();
+    finished = true;
+  });
+  await page.goto(`/#/groups/${group.id}`);
+  try {
+    await expect.poll(() => firstRequests).toBe(1);
+    await page.evaluate(id => { location.hash = `/groups/${id}`; }, other.id);
+    await expect(page.locator('.group-message').filter({ hasText: '方案成员的结论' })).toBeVisible();
+    await page.evaluate(id => { location.hash = `/groups/${id}`; }, group.id);
+    await expect(page.getByText('正在读取群组动态…', { exact: true })).toBeVisible();
+    expect(firstRequests).toBe(1);
+    await page.evaluate(id => { location.hash = `/groups/${id}`; }, other.id);
+    await expect(page.locator('.group-message').filter({ hasText: '方案成员的结论' })).toBeVisible();
+    const firstResponse = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === `/api/groups/${group.id}`);
+    release();
+    await (await firstResponse).finished();
+    await expect.poll(() => finished).toBe(true);
+    await page.route(`**/api/groups/${group.id}?*`, route => route.abort());
+    await page.evaluate(() => {
+      const seen: string[] = [];
+      (window as unknown as { groupLoaders: string[] }).groupLoaders = seen;
+      new MutationObserver(records => {
+        for (const record of records) for (const node of record.addedNodes) {
+          if (node.textContent?.includes('正在读取群组动态')) seen.push(node.textContent);
+        }
+      }).observe(document.body, { childList: true, subtree: true });
+    });
+    await page.evaluate(id => { location.hash = `/groups/${id}`; }, group.id);
+    await expect(page.locator('.group-message').filter({ hasText: '方案成员的结论' })).toBeVisible();
+    await expect(page.getByText('正在读取群组动态…', { exact: true })).toBeHidden();
+    expect(await page.evaluate(() => (window as unknown as { groupLoaders: string[] }).groupLoaders)).toEqual([]);
+    expect(firstRequests).toBe(1);
+  } finally { release(); }
+});
