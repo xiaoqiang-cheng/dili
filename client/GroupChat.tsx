@@ -16,6 +16,7 @@ import ModalShell from './Modal';
 import TerminalPane from './TerminalPane';
 import { useCompactLayout } from './useCompactLayout';
 import './group-chat.css';
+import { useInputHistory } from './input-history';
 
 const AgentChatPane = lazy(() => import('./AgentChatPane'));
 
@@ -323,6 +324,14 @@ export default function GroupChat({ active = true, onShare, group, detail, membe
     const token = value.slice(0, caret).match(/@([^\s@]{0,20})$/);
     setMention(token ? { query: token[1], start: caret - token[0].length, end: caret } : null);
   };
+  // ↑/↓ recall what you posted here before, with the members it was addressed to.
+  const sentMessages = useMemo(() => detail.messages.filter(message => message.senderId === null && (message.kind === 'note' || message.kind === 'task') && message.text.trim()), [detail.messages]);
+  const draftRecipients = useRef<string[]>([]);
+  const historyKeyDown = useInputHistory(group.id, useMemo(() => sentMessages.map(message => message.text.trim()), [sentMessages]), text, (value, index, previous) => {
+    if (previous === null) draftRecipients.current = recipients;
+    setText(value); setMention(null);
+    setRecipients(index === null ? draftRecipients.current : sentMessages[index]!.recipientIds);
+  });
   const mentionChoices = mention === null ? [] : activeMembers.filter(member => member.title.toLowerCase().includes(mention.query.toLowerCase()));
   const selectedMentionIndex = Math.min(mentionIndex, Math.max(0, mentionChoices.length - 1));
   const selectedMentionId = mentionChoices[selectedMentionIndex]?.id;
@@ -500,6 +509,7 @@ export default function GroupChat({ active = true, onShare, group, detail, membe
           }
           if (mentionChoices.length && !event.shiftKey && (event.key === 'Enter' || event.key === 'Tab')) { event.preventDefault(); chooseMention(mentionChoices[selectedMentionIndex]); return; }
           if (event.key === 'Escape' && mention !== null) { event.preventDefault(); setMention(null); return; }
+          if (historyKeyDown(event)) return;
           // Enter sends, Shift+Enter inserts a newline, like private chats.
           if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); }
         }} onSelect={event => { const field = event.currentTarget; if (mention && (field.selectionStart < mention.start || field.selectionStart > mention.end + 1)) setMention(null); }} placeholder={activeRecipients.length ? '描述任务；成员会收到群 prompt、任务和你引用的结论…' : defaultMember ? `发送给 ${defaultMember.title}，输入 @ 可切换成员…` : '输入 @ 指派成员，或直接记录想法…'} value={text} onChange={event => onText(event.target.value, event.target.selectionStart)} rows={3} maxLength={30000} />

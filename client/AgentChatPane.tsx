@@ -24,6 +24,7 @@ import AgentChatSettingsPanel from './AgentChatSettingsPanel';
 import AgentChatQuickSettings from './AgentChatQuickSettings';
 import AgentChatCommands, { type ChatCommand } from './AgentChatCommands';
 import { useAgentChatSettings, type SettingField } from './useAgentChatSettings';
+import { historyEntries, useInputHistory } from './input-history';
 import './codex-chat.css';
 
 type Pending = { requestId: string; text: string; attachments?: ChatAttachment[]; queueId?: string };
@@ -439,6 +440,7 @@ function ChatSession({ session, allowTerminal = true, onTerminal, onSelection }:
   const visibleItems = [...(olderCurrent?.items.filter(item => !existingIds.has(item.id)) ?? []), ...(snapshot?.items ?? [])].filter(item => !supersededIds.has(item.id));
   const olderCursor = olderCurrent ? olderCurrent.cursor : snapshot?.historyCursor;
   const outlineEntries = visibleItems.filter(item => item.type === 'user');
+  const historyKeyDown = useInputHistory(session.id, historyEntries(outlineEntries.map(item => item.text)), draft.text, text => updateDraft({ ...draftRef.current, text }));
   return <section ref={pane} className="codex-chat-pane" aria-label={`${agentName} 图形会话`} onKeyDown={event => {
     if (outlineOpen && event.key === 'Escape' && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); closeOutline(); }
   }}>
@@ -478,6 +480,7 @@ function ChatSession({ session, allowTerminal = true, onTerminal, onSelection }:
       {preview && <div className="composer-preview" aria-label="消息 Markdown 预览"><Markdown text={draft.text || '还没有文字内容'} /></div>}
       <AgentChatCommands text={draft.text} anchor={textarea} enabled={!settingsOpen && !draft.attachments.length && !session.archived && !draft.pending} select={openCommand} />
       <textarea ref={textarea} aria-label={`给 ${agentName} 发送消息`} placeholder={session.archived ? '恢复联系人后继续对话' : hasTurn ? session.backend === 'claude' ? '补充下一条任务，本轮结束后自动发送…' : session.backend === 'dsh' ? '补充下一条任务，本轮结束后按原生队列处理…' : '补充或纠正当前任务，发送后交给原生会话处理…' : '描述任务，或继续补充你的想法…'} value={draft.text} maxLength={30000} disabled={session.archived} rows={3} onChange={event => updateDraft({ ...draftRef.current, text: event.target.value })} onKeyDown={event => {
+        if (historyKeyDown(event)) return;
         if (event.key === 'Enter' && event.shiftKey && (event.ctrlKey || event.metaKey)) return;
         if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) { event.preventDefault(); if (canSend) void send(); }
       }} />

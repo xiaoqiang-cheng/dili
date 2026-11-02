@@ -10,6 +10,7 @@ import VoiceInput, { appendVoiceText } from './VoiceInput';
 import { Plus, TerminalSquare } from 'lucide-react';
 import { useAutoGrow, useCompactLayout } from './useCompactLayout';
 import MessageQueue, { readQueue, type QueuedMessage } from './MessageQueue';
+import { readSentHistory, rememberSent, useInputHistory } from './input-history';
 import './attachments.css';
 
 type Sent = { text: string; attachments: string[]; queueId?: string };
@@ -70,9 +71,14 @@ export default function NativeInputComposer({session,onTerminal,onSent,onActivit
     else window.dispatchEvent(new CustomEvent('dili:native-draft', {detail: {id: session.id}}));
     return saved;
   }
+  const [sentHistory, setSentHistory] = useState(() => readSentHistory(session.id));
+  useEffect(() => { setSentHistory(readSentHistory(session.id)); }, [session.id]);
+  const historyKeyDown = useInputHistory(session.id, sentHistory, draft.text, text => update({ ...latest.current, text }));
   function complete(pending: string, sent: Sent) {
     const current = active.current ? latest.current : read(session.id);
     if (current.pending !== pending) return;
+    const history = rememberSent(session.id, sent.text);
+    if (active.current) setSentHistory(history);
     update({text:!sent.queueId && current.text === sent.text ? '' : current.text, attachments:sent.queueId ? current.attachments : current.attachments.filter(item=>!sent.attachments.includes(item.id)), queue:current.queue?.filter(item=>item.id!==sent.queueId)});
     // Keep the optimistic bubble until conversation history confirms the text.
     if (active.current) { onActivityChange?.('accepted'); onSent?.(); }
@@ -146,6 +152,7 @@ export default function NativeInputComposer({session,onTerminal,onSent,onActivit
     finally { if(active.current) setBusy(false); }
   }
   const field = <>{preview && <div className="composer-preview" aria-label="消息 Markdown 预览"><Markdown text={draft.text || '还没有文字内容'}/></div>}<textarea ref={fieldRef} aria-label="原生会话消息草稿" value={draft.text} maxLength={30000} rows={3} placeholder={session.backend === 'dsh' ? '描述任务；Enter 交给原生 TUI，Shift + Enter 换行' : '描述任务；Enter 填入原生终端，Shift + Enter 换行'} disabled={session.archived} onChange={event=>{update({...latest.current,text:event.target.value});}} onKeyDown={event=>{
+    if (historyKeyDown(event)) return;
     if (event.key === 'Enter' && event.shiftKey && (event.ctrlKey || event.metaKey)) return;
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) { event.preventDefault(); if(canSend) void send(); }
   }}/></>;
