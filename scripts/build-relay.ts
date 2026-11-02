@@ -6,3 +6,4 @@ await copyFile('relay/index.html', 'dist/relay/index.html');
 await copyFile('relay/public.caddy', 'dist/relay/public.caddy');
 await copyFile('relay/pwa.caddy', 'dist/relay/pwa.caddy');
 console.log('配对服务构建就绪：dist/relay');
+await copyFile('relay/retired-origin.caddy', 'dist/relay/retired-origin.caddy');

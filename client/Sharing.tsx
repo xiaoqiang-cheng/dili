@@ -30,8 +30,9 @@ export function ShareDialog({ session, group, close, notify }: { session?: Sessi
     event.preventDefault(); setBusy(true); setError('');
     try {
       const result = await api<{ share: Share; url: string; remoteReady: boolean }>(`/${endpoint}/${target.id}/shares`, { mode, ttlDays: ttl === 'never' ? null : Number(ttl), label: label.trim() });
-      setCreated(result); setLabel('');
-      await copyToClipboard(result.url).then(() => notify('分享链接已复制')).catch(() => {});
+      const url = publicMachineUrl(result.url);
+      setCreated({ ...result, url }); setLabel('');
+      await copyToClipboard(url).then(() => notify('分享链接已复制')).catch(() => {});
       await load();
     } catch (cause) { setError(cause instanceof Error ? cause.message : '无法创建分享'); }
     finally { setBusy(false); }

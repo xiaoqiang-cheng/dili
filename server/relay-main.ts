@@ -11,7 +11,7 @@ import { acquireInstanceLock } from './instance-lock.ts';
 const directory = resolve(process.env.SESSIONDECK_RELAY_DATA_DIR || join(homedir(), '.local/share/sessiondeck-relay'));
 const port = Number(process.env.SESSIONDECK_RELAY_PORT || 18501);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('中继服务端口无效');
-const serverUrl = relayUrl(process.env.SESSIONDECK_RELAY_URL || 'https://discoverpaw.com/connect');
+const serverUrl = relayUrl(process.env.SESSIONDECK_RELAY_URL || 'https://dili.discoverpaw.com/connect');
 const domains = [...new Set([serverUrl, ...(process.env.SESSIONDECK_RELAY_DOMAINS || '').split(',').map(value => value.trim()).filter(Boolean)])];
 const firstPort = Number(process.env.SESSIONDECK_RELAY_FIRST_PORT || 18700), lastPort = Number(process.env.SESSIONDECK_RELAY_LAST_PORT || 18799);
 if (!Number.isInteger(firstPort) || !Number.isInteger(lastPort) || firstPort < 1024 || lastPort > 65535 || firstPort > lastPort) throw new Error('设备端口范围无效');

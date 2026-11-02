@@ -135,3 +135,23 @@ test('the relay admin can send a device notices that its Dili collects with its 
   assert.equal((await admin(`/devices/${device.id}/notices`, { text: 'late' })).status, 409);
   assert.equal((await collect()).status, 401);
 });
+
+test('official browser links migrate while existing device Host and Origin bindings stay unchanged', async t => {
+  const db = new DatabaseSync(':memory:'), store = new RelayStore(db);
+  const invite = store.createInvite('https://discoverpaw.com/connect', 'legacy', 24);
+  const device = store.redeem(decodeInvite(invite.invite).secret, newSecret(), newSecret(), 'legacy device', 'https://discoverpaw.com/connect');
+  const server = createServer(createRelayApp(store, { serverUrl: 'https://dili.discoverpaw.com/connect', adminToken: 'admin-fixture', pluginToken: 'plugin-fixture', adminHtml: resolve('relay/index.html') })).listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); db.close(); });
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}`;
+  const response = await fetch(base + '/connect/api/admin/state', { headers: { authorization: 'Bearer admin-fixture' } });
+  const state = await response.json();
+  assert.deepEqual(state.domains, ['dili.discoverpaw.com']);
+  assert.equal(state.devices[0].publicUrl, `https://dili.discoverpaw.com/connect/d/${device.id}`);
+  const route = await fetch(base + '/internal/route', { headers: { 'x-forwarded-uri': `/connect/d/${device.id}/api/state` } });
+  assert.equal(route.status, 200);
+  assert.equal(route.headers.get('x-dili-device-host'), 'discoverpaw.com');
+  assert.equal(route.headers.get('x-dili-device-origin'), 'https://discoverpaw.com');
+  assert.equal(store.devices()[0].serverUrl, 'https://discoverpaw.com/connect');
+});

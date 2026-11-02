@@ -1,3 +1,4 @@
+import { relayPublicUrl } from '../shared/relay-public-url.ts';
 import express from 'express';
 import { createServer } from 'node:http';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -626,7 +627,7 @@ app.delete('/api/remote/pair', async (_req, res) => res.json(await changeRemote(
   return remoteStatus();
 })));
 
-const shareUrl = (secret: string) => `${remoteSettings().publicUrl || `http://127.0.0.1:${remoteSettings().localPort}`}/#/share/${secret}`;
+const shareUrl = (secret: string) => `${remoteSettings().publicUrl ? relayPublicUrl(remoteSettings().publicUrl).replace(/\/$/, '') : `http://127.0.0.1:${remoteSettings().localPort}`}/#/share/${secret}`;
 app.get('/api/sessions/:id/shares', (req, res) => { session(String(req.params.id)); res.json(auth.shares(String(req.params.id))); });
 app.post('/api/sessions/:id/shares', (req, res) => {
   const item = session(String(req.params.id));

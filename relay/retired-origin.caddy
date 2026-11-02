@@ -1,0 +1,19 @@
+# Import inside discoverpaw.com. Old browser URLs are retired, not redirected.
+# Preserve authenticated transport for devices paired before the domain cutover.
+handle /~!frp {
+  reverse_proxy 127.0.0.1:18502
+}
+@pairedDeviceTransport path_regexp ^/connect/api/devices/[a-z0-9]{16}/(notices|revoke)$
+handle @pairedDeviceTransport {
+  reverse_proxy 127.0.0.1:18501 {
+    flush_interval -1
+  }
+}
+@retiredDili {
+  path /connect /connect/*
+  not path_regexp ^/connect/api/devices/[a-z0-9]{16}/(notices|revoke)$
+}
+handle @retiredDili {
+  header Cache-Control "no-store"
+  respond "This Dili address has been retired. Use https://dili.discoverpaw.com/" 410
+}

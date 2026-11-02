@@ -12,14 +12,14 @@
 ## 链路分层
 
 ```
-手机/PWA ──HTTPS──> discoverpaw.com
+手机/PWA ──HTTPS──> dili.discoverpaw.com
                       │
                       ├─ 在家：DNS 返回主机 LAN IP，Caddy 直连主机 4318
                       └─ 在外：Caddy ──> 中继 18501 ──> X-SessionDeck-Upstream
                                               127.0.0.1:<该设备的 frp 端口> ──> 主机 4318
 ```
 
-浏览器看到的始终是 `https://discoverpaw.com/connect/d/<id>/`，Dili 的 `remoteBase` 和 Cookie 路径不变。
+浏览器看到的始终是 `https://dili.discoverpaw.com/connect/d/<id>/`，Dili 的 `remoteBase` 和 Cookie 路径不变。
 
 ## 一、同一局域网直连
 
@@ -27,7 +27,7 @@
 
 在家庭路由器的 DNS（dnsmasq、AdGuard Home、Pi-hole 或企业 DNS）中做 split-horizon：
 
-- `discoverpaw.com` A → 主机 LAN IP（例如 `192.168.1.10`）
+- `dili.discoverpaw.com` A → 主机 LAN IP（例如 `192.168.1.10`）
 - 如果公网有 AAAA，必须同时覆盖 AAAA；否则浏览器可能优先走 IPv6 到公网。
 - 不要改写 `/etc/hosts` 之外的全局 DNS；只影响家庭网络。
 
@@ -38,7 +38,7 @@
 示例（放在主机 Caddy 的站点块中）：
 
 ```caddyfile
-discoverpaw.com {
+dili.discoverpaw.com {
   tls {
     dns cloudflare {env.CLOUDFLARE_API_TOKEN}
   }
@@ -68,7 +68,7 @@ discoverpaw.com {
 在家庭网络内：
 
 ```bash
-curl -I https://discoverpaw.com/connect/d/<id>/
+curl -I https://dili.discoverpaw.com/connect/d/<id>/
 # 证书、Host、Origin 正常；响应来自主机而不是公网服务器
 ```
 
@@ -97,7 +97,7 @@ SESSIONDECK_REMOTE_BIND=127.0.0.1
 
 ```bash
 # 无需任何 P2P 相关变量
-SESSIONDECK_RELAY_URL=https://discoverpaw.com/connect
+SESSIONDECK_RELAY_URL=https://dili.discoverpaw.com/connect
 ```
 
 `/internal/route` 对每个设备返回 `X-SessionDeck-Upstream: 127.0.0.1:<该设备的端口>`，端口由 frps 在配对时分配，设备之间天然隔离。
@@ -125,3 +125,9 @@ SESSIONDECK_WEB_PROXY_TARGETS='http://127.0.0.1:5173,http://10.11.1.111:3000'
 3. 两种链路都能登录、看状态、打开原生 dsh 界面和允许列表中的网页服务。
 4. 撤销设备后，两条链路都立即失效。
 5. 主机 4318 没有公网监听；公网只开 443（和既有 FRP 端口）。
+
+## 官方入口切换（2026-11-02）
+
+官方浏览器入口仅为 `https://dili.discoverpaw.com`。旧域名的 `/connect`、设备与分享链接返回 410，不重定向；旧的 8443 入口也停用。旧 PWA 需从新域名重新安装，Cookie 不跨域迁移。
+
+既有配对设备的签名与 FRP 传输绑定不修改：旧域名仅保留 `/~!frp` 和经过设备认证的通知/撤销接口。新域名 Caddy 通过 `/internal/route` 返回的设备 Host/Origin 转发到原绑定；不能直接替换数据库中的 `serverUrl`。新邀请码仅使用新域名。

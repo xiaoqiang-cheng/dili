@@ -1,3 +1,4 @@
+import { relayPublicUrl } from '../shared/relay-public-url.ts';
 import express from 'express';
 import type { RelayBandwidth } from './relay-bandwidth.ts';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
@@ -91,7 +92,7 @@ export function createRelayApp(store: RelayStore, options: RelayOptions) {
   });
   app.get('/connect/api/admin/bandwidth', (_req, res) => res.json(options.bandwidth?.snapshot() ?? { available: false, error: '带宽采样未启用', history: [], current: null }));
   app.get('/connect/api/admin/state', (_req, res) => res.json({
-    devices: store.devices().map(device => ({ ...device, publicUrl: `${device.serverUrl ?? serverUrl}/d/${device.id}`, effectiveBandwidth: device.bandwidthLimit ?? DEFAULT_DEVICE_BANDWIDTH, pendingNotices: notices.pending(device.id).length })),
+    devices: store.devices().map(device => ({ ...device, publicUrl: relayPublicUrl(`${device.serverUrl ?? serverUrl}/d/${device.id}`), effectiveBandwidth: device.bandwidthLimit ?? DEFAULT_DEVICE_BANDWIDTH, pendingNotices: notices.pending(device.id).length })),
     invites: store.invites(), requests: store.requests(), domains, defaultBandwidth: DEFAULT_DEVICE_BANDWIDTH,
   }));
   app.post('/connect/api/admin/requests/:id/review', (req, res) => {

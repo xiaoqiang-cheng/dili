@@ -41,7 +41,7 @@ try {
   await copy(`dist/relay/clients/${clientArchive}`, join(relayName, 'relay/clients', clientArchive));
   const launcher = ['#!/usr/bin/env bash', 'set -euo pipefail', 'root="$(CDPATH=\'\' cd -- \"$(dirname -- \"${BASH_SOURCE[0]}\")\" && pwd)"', 'export SESSIONDECK_RELAY_HTML="$root/relay/index.html"', 'export SESSIONDECK_RELAY_CLIENTS_DIR="$root/relay/clients"', 'exec node "$root/relay/relay.mjs"', ''].join('\n');
   await writeFile(join(staging, relayName, 'start-relay.sh'), launcher, { mode: 0o755 });
-  await writeFile(join(staging, relayName, 'README.md'), '# Dili Relay ' + version + ' for Linux x86_64\n\n配置 SESSIONDECK_RELAY_URL（默认 https://discoverpaw.com/connect）和可选的 SESSIONDECK_RELAY_DOMAINS 后执行 ./start-relay.sh。域名必须解析到同一台 Caddy／中继服务。还需单独安装并配置 frps 与 Caddy；本脚本仅启动配对服务，不会自动启动整套中继。自定义域名需完成 DNS、TLS、Caddy 配置并验收配对与隧道。\n');
+  await writeFile(join(staging, relayName, 'README.md'), '# Dili Relay ' + version + ' for Linux x86_64\n\n配置 SESSIONDECK_RELAY_URL（默认 https://dili.discoverpaw.com/connect）和可选的 SESSIONDECK_RELAY_DOMAINS 后执行 ./start-relay.sh。域名必须解析到同一台 Caddy／中继服务。还需单独安装并配置 frps 与 Caddy；本脚本仅启动配对服务，不会自动启动整套中继。自定义域名需完成 DNS、TLS、Caddy 配置并验收配对与隧道。\n');
   await archive(relayName, relayName);
   await exec(process.execPath, ['--import', 'tsx', 'scripts/build-pwa.ts'], { cwd: root });
   const pwaName = `dili-pwa-${version}-all-platforms`;

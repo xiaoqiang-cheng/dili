@@ -1,5 +1,5 @@
-# Import inside the PWA HTTPS site. Keep the original relay site's routes too.
-# This alias changes browser routing, never SD1, FRP or existing device bindings.
+# Import inside dili.discoverpaw.com, the sole official browser origin.
+# Existing device bindings may still use the original transport Host internally.
 handle /connect/d/* {
   route {
     @foreignOrigin {
