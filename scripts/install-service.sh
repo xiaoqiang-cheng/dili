@@ -2,6 +2,9 @@
 # Installs Dili as a systemd --user service so it can be restarted from
 # anywhere (including a Dili shell opened remotely) and comes back after
 # a reboot. This never stops a running instance; see restart-service.sh.
+# The unit records absolute paths, so re-run this after moving or renaming the
+# checkout; restart-service.sh does that automatically when it finds the unit
+# pointing somewhere else.
 set -euo pipefail
 
 project_dir="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,7 +33,10 @@ KillMode=mixed
 WantedBy=default.target
 EOF
 
-systemctl --user daemon-reload
+if ! systemctl --user daemon-reload; then
+  echo "已写入 $unit_dir/dili.service，但无法连接 systemd --user；请在可用的用户会话执行 systemctl --user daemon-reload。" >&2
+  exit 1
+fi
 systemd-analyze --user verify "$unit_dir/dili.service" 2>&1 | grep -v '^$' || true
 # Keep user services alive without an interactive login (needed after reboot).
 if [[ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != yes ]]; then
