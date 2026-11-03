@@ -105,6 +105,8 @@ select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--line-stro
 .app-main { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .workspace-area { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; }
 .main-content[hidden] { display: none; }
+.pull-refresh { display: flex; align-items: center; justify-content: center; gap: 6px; overflow: hidden; color: var(--muted); font-size: 12px; transition: height .18s ease; }
+.pull-refresh.pulling { transition: none; }
 .topbar { flex-shrink: 0; position: sticky; top: 0; z-index: 30; background: var(--bg); border-bottom: 1px solid var(--line); }
 .topbar-row { display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 16px 0 20px; }
 .brand { display: inline-flex; flex-shrink: 0; }

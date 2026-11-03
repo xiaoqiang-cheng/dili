@@ -42,3 +42,35 @@ esac
     assert.doesNotMatch(commands, /(?:stop|restart) dili/);
   });
 }
+
+test('restart hands off to its own systemd unit so stopping the service cannot kill it', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dili-restart-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const scripts = join(root, 'scripts'), bin = join(root, 'bin');
+  await mkdir(scripts); await mkdir(bin);
+  await copyFile(new URL('./restart-service.sh', import.meta.url), join(scripts, 'restart-service.sh'));
+  const log = join(root, 'commands');
+  await writeFile(join(bin, 'systemctl'), `#!/bin/sh
+printf 'systemctl %s\\n' "$*" >> "$RESTART_LOG"
+case "$*" in
+ *LoadState*) echo loaded ;;
+ *FragmentPath*) echo /nonexistent/dili-test-unit ;;
+ *is-active*) exit 3 ;;
+esac
+`, { mode: 0o755 });
+  const handoff = (exit: number) => writeFile(join(bin, 'systemd-run'), `#!/bin/sh\nprintf 'systemd-run %s\\n' "$*" >> "$RESTART_LOG"\nexit ${exit}\n`, { mode: 0o755 });
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, XDG_CONFIG_HOME: join(root, 'config'), RESTART_LOG: log, TMPDIR: root, SESSIONDECK_PORT: '4999' };
+  await handoff(0);
+  const result = await execute('bash', [join(scripts, 'restart-service.sh')], { env, timeout: 5000 });
+  assert.match(result.stdout, /正在后台重启/);
+  const commands = await readFile(log, 'utf8');
+  assert.match(commands, /systemd-run --user --quiet --collect --unit=dili-restart /);
+  assert.match(commands, /--setenv=SESSIONDECK_PORT=4999/);
+  assert.match(commands, /--setenv=PATH=/);
+  assert.doesNotMatch(commands, /stop dili|enable --now/);
+  // No handoff, no restart: it must not go on to stop the service from inside it.
+  await writeFile(log, '');
+  await handoff(1);
+  await assert.rejects(execute('bash', [join(scripts, 'restart-service.sh')], { env, timeout: 5000 }), (error: { code?: number; stderr?: string }) => error.code === 1 && /当前服务未改动/.test(error.stderr ?? ''));
+  assert.doesNotMatch(await readFile(log, 'utf8'), /stop dili|enable --now/);
+});

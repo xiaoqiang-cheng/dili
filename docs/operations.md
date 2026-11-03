@@ -44,10 +44,10 @@ scripts/fix-codex-sandbox.sh
 
 ```bash
 scripts/install-service.sh    # 安装单元，尝试启用 linger；不启动或重启当前实例
-scripts/restart-service.sh    # 从独立终端发起；会结束本实例托管的 Agent / Shell
+scripts/restart-service.sh    # 可在 Dili 内嵌终端或独立终端运行；会结束本实例托管的 Agent / Shell
 ```
 
-重启会停止所有正在运行的 Agent 会话（它们是服务的子进程）；联系人保留原生会话 ID，可在原生历史及目录可用时手动恢复。脚本只会停止本项目、监听该端口的 Dili 进程，不会按端口误杀其他程序。手动查看：`systemctl --user status dili.service`，日志：`journalctl --user -u dili.service -f`。
+脚本把实际重启交给独立的临时单元 `dili-restart.service`，不在 `dili.service` 的 cgroup 里，所以停止服务时不会被一起杀掉；进度见 `${TMPDIR:-/tmp}/dili-restart.log`。重启会停止所有正在运行的 Agent 会话（它们是服务的子进程）；联系人保留原生会话 ID，可在原生历史及目录可用时手动恢复。脚本只会停止本项目、监听该端口的 Dili 进程，不会按端口误杀其他程序。手动查看：`systemctl --user status dili.service`，日志：`journalctl --user -u dili.service -f`。
 
 用户服务名为 `dili.service`。旧版本安装的 `sessiondeck.service` 仍会被识别：设置页「迁移到 dili.service」、`dili service enable` 会启用新单元并停用旧单元；`scripts/install-service.sh` 仅安装新单元并停用旧单元的自动启动，不启动或重启实例；`scripts/restart-service.sh` 会把旧单元托管的实例切换到 `dili.service`。
 

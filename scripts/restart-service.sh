@@ -2,9 +2,11 @@
 # Restarts Dili on this machine, safe to run from a shell that
 # Dili itself hosts (the bottom terminal, even over remote access).
 #
-# The work runs detached in its own session, so stopping the service does not
-# kill the restart halfway. Every running agent session is stopped with the
-# service; contacts keep their native IDs and resume from their cards.
+# The work runs in its own transient systemd unit. setsid is not enough: a process
+# started from Dili's terminal stays in dili.service's cgroup whatever its session,
+# and stopping the service kills that whole cgroup, so the restart would die before
+# starting anything. Every running agent session is stopped with the service;
+# contacts keep their native IDs and resume from their cards.
 #
 # Every path comes from this script's own location, so the checkout can be
 # renamed or moved: the installed unit is rewritten for the current directory
@@ -57,7 +59,23 @@ if [[ -f "$unit_path" ]]; then
 fi
 
 if [[ "${1:-}" != --detached ]]; then
-  setsid nohup "$self" --detached >"$log" 2>&1 < /dev/null &
+  restart_unit=dili-restart
+  if systemctl --user is-active --quiet "$restart_unit" 2>/dev/null; then
+    echo "已有一次重启正在进行，日志：$log"
+    exit 0
+  fi
+  # A transient unit starts from the manager's environment, not this shell's.
+  # Do not fall back to a plain background job: inside Dili it would stop the
+  # service and then die, leaving the machine without Dili or its remote link.
+  run_env=(--setenv=PATH="$PATH")
+  for name in SESSIONDECK_PORT PORT TMPDIR; do
+    [[ -n "${!name:-}" ]] && run_env+=(--setenv="$name=${!name}")
+  done
+  if ! systemd-run --user --quiet --collect --unit="$restart_unit" "${run_env[@]}" \
+    /usr/bin/env bash -c 'exec "$0" --detached >"$1" 2>&1 </dev/null' "$self" "$log"; then
+    echo "无法用 systemd-run 启动重启任务，当前服务未改动。" >&2
+    exit 1
+  fi
   echo "正在后台重启 Dili，日志：$log"
   echo "这个终端会随旧服务一起关闭；十几秒后刷新页面即可。"
   exit 0

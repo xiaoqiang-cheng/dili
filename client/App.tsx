@@ -7,6 +7,7 @@ import { AUTO_MODE_NOTE, type ExecutionMode } from '../shared/execution';
 import { claudePermissionChoices, claudePermissionLabel } from '../shared/permissions';
 import { DEFAULT_GROUP_PROMPT } from '../shared/group-prompt';
 import { t } from '../shared/i18n';
+import PullToRefresh from './PullToRefresh';
 import ClaudeTerminalSettings from './ClaudeTerminalSettings';
 import { appUrl } from './urls';
 import { machineHome } from './machine-links';
@@ -328,6 +329,8 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
       throw cause;
     }
   }, [acceptState]);
+  // The same catch-up a reconnecting event stream does.
+  const refreshContacts = useCallback(async () => { setGroupReload(value => value + 1); await refresh(); }, [refresh]);
   useEffect(() => {
     if (!state) return;
     const missingGroup = groupId && !state.groups.some((group) => group.id === groupId);
@@ -676,6 +679,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     <div className="app-main">
     <div ref={workspaceAreaRef} className={`workspace-area ${listView ? 'contacts-workspace' : ''} ${contactsScrolling ? 'contacts-scrolling' : ''} ${selected ? 'session-active' : ''}`} style={{ '--contacts-width': `${effectiveContactWidth}px` } as CSSProperties} onScroll={event => { if (listView && event.target === event.currentTarget) revealContactScrollbar(); }}>
     <main className={`main-content ${listView ? 'contacts-pane' : ''}`} aria-label={listView ? '联系人列表' : undefined} inert={!!modal} hidden={!!selected && !listView} onScroll={() => { if (listView) revealContactScrollbar(); }}>
+      {listView && <PullToRefresh onRefresh={refreshContacts} />}
       {state && !connected && <div className="connection-banner" role="status"><Radio size={15} /><span>{hasConnected ? '服务连接已中断，正在自动重连。卡片暂时显示上次收到的状态。' : '正在建立实时连接，卡片显示最近获取的状态。'}</span><button className="text-button" onClick={() => void refresh().catch(() => {})}>重新获取</button></div>}
       {connectionError && !selected && <div role="alert" className="error-banner connection-error"><span>{connectionError}</span><button className="text-button" onClick={() => void refresh().catch(() => {})}>重试连接</button></div>}
       {error && !selected && <div role="alert" className="error-banner"><span>{error}</span><button className="icon-button" aria-label="关闭错误提示" onClick={() => setError('')}><X size={15} /></button></div>}

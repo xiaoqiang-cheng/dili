@@ -99,3 +99,32 @@ test('the terminal exposes its extra keys as real touch buttons', async ({ page 
   expect(bounds!.y).toBeGreaterThan(0);
   expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(846);
 });
+
+test('pulling the contact list down refreshes it and shows a spinner', async ({ page }) => {
+  await page.goto('/#/contacts');
+  await expect(page.locator('.contact-grid')).toBeVisible();
+  let reads = 0, release = () => {};
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/state', async route => { reads++; await held; await route.continue(); });
+  const touch = await page.context().newCDPSession(page);
+  const send = (type: string, y?: number) => touch.send('Input.dispatchTouchEvent', { type: type as 'touchStart', touchPoints: y === undefined ? [] : [{ x: 195, y }] });
+  const box = (await page.locator('.contact-grid').boundingBox())!;
+  const pull = async (to: number) => {
+    await send('touchStart', box.y + 10);
+    for (let y = box.y + 10; y <= box.y + to; y += 20) await send('touchMove', y);
+  };
+  // Too short a pull springs back without reading anything.
+  await pull(60);
+  await expect(page.locator('.pull-refresh')).toContainText('下拉刷新');
+  await send('touchEnd');
+  await expect(page.locator('.pull-refresh svg')).toHaveCount(0);
+  expect(reads).toBe(0);
+  await pull(200);
+  await expect(page.locator('.pull-refresh')).toContainText('松开刷新');
+  await send('touchEnd');
+  await expect(page.locator('.pull-refresh[role="status"]')).toContainText('正在刷新');
+  await expect(page.locator('.pull-refresh .spin')).toBeVisible();
+  expect(reads).toBe(1);
+  release();
+  await expect(page.locator('.pull-refresh svg')).toHaveCount(0);
+});
