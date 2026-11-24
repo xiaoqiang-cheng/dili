@@ -14,6 +14,9 @@ export class StatePublisher {
   private changedActivities = new Map<string, Activity>();
   private removedActivities = new Set<string>();
   private backendsChanged = false;
+  /** A hard-deleted session cannot be expressed as an upsert patch, so the
+   * next broadcast sends a full snapshot instead. */
+  private fullSnapshot = false;
   private unsubscribe: () => void;
   constructor(store: Store, private options: { instanceId: string; backends: BackendInfo[]; defaultCwd: string; demo: boolean }) {
     this.sessionMap = new Map(store.sessions().map(item => [item.id, item]));
@@ -23,7 +26,10 @@ export class StatePublisher {
   }
   private change(change: StoreChange) {
     this.revision++;
-    if (change.table === 'sessions') { this.sessionMap.set(change.data.id, change.data); this.changedSessions.set(change.data.id, change.data); }
+    if (change.table === 'sessions') {
+      if ('removed' in change) { this.sessionMap.delete(change.removed); this.changedSessions.delete(change.removed); this.fullSnapshot = true; }
+      else { this.sessionMap.set(change.data.id, change.data); this.changedSessions.set(change.data.id, change.data); }
+    }
     else if (change.table === 'groups') { this.groupMap.set(change.data.id, change.data); this.changedGroups.set(change.data.id, change.data); }
     else {
       this.activityMap.set(change.data.id, change.data); this.changedActivities.set(change.data.id, change.data);
@@ -37,6 +43,16 @@ export class StatePublisher {
   setBackends(backends: BackendInfo[]) { this.options = { ...this.options, backends }; this.backendsChanged = true; this.revision++; }
   snapshot(): AppState {
     return { ...this.options, revision: this.revision, sessions: this.sessions(), groups: [...this.groupMap.values()], activities: [...this.activityMap.values()].reverse() };
+  }
+  /** Full snapshots are only needed for deletions, which patches cannot express. */
+  takeFull(): { state: AppState; baseRevision: number } | null {
+    if (!this.fullSnapshot) return null;
+    this.fullSnapshot = false;
+    const baseRevision = this.publishedRevision;
+    const state = this.snapshot();
+    this.changedSessions.clear(); this.changedGroups.clear(); this.changedActivities.clear(); this.removedActivities.clear(); this.backendsChanged = false;
+    this.publishedRevision = this.revision;
+    return { state, baseRevision };
   }
   takePatch(): StatePatch | null {
     if (this.revision === this.publishedRevision) return null;

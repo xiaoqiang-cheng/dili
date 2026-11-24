@@ -47,6 +47,12 @@ test('the export and usage routes are read-only and require a session share matc
   }
 });
 
+test('purging a trashed session is owner-only', () => {
+  assert.equal(allowed(owner, 'DELETE', '/api/sessions/s1').allowed, true);
+  assert.deepEqual(allowed(share({ mode: 'write' }), 'DELETE', '/api/sessions/s1'), { allowed: false, status: 403, error: '分享链接无权执行此操作' });
+  assert.deepEqual(allowed(null, 'DELETE', '/api/sessions/s1'), { allowed: false, status: 401, error: '请先登录' });
+});
+
 test('diagnostics are owner-only even for a writable share', () => {
   assert.equal(allowed(owner, 'GET', '/api/debug').allowed, true);
   assert.deepEqual(allowed(share({ mode: 'write' }), 'GET', '/api/debug'), { allowed: false, status: 403, error: '分享链接无权执行此操作' });

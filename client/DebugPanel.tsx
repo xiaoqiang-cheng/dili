@@ -54,7 +54,7 @@ export default function DebugPanel({ close }: { close: () => void }) {
       <div><span>进程</span><small>PID {snapshot.pid} · Node {snapshot.node} · {snapshot.platform}</small></div>
       <div><span>运行时长</span><small>{duration(snapshot.uptimeSeconds)} · 内存 {size(snapshot.memoryRssBytes)}</small></div>
       <div><span>状态修订</span><small>r{snapshot.revision} · 补发窗口 {snapshot.replay.retained} 条（最新 r{snapshot.replay.latestRevision}）</small></div>
-      <div><span>会话</span><small>{snapshot.sessions.total} 个 · 运行 {snapshot.sessions.running} · 待处理 {snapshot.sessions.attention} · 归档 {snapshot.sessions.archived} · 群 {snapshot.groups}</small></div>
+      <div><span>会话</span><small>{snapshot.sessions.total} 个 · 运行 {snapshot.sessions.running} · 待处理 {snapshot.sessions.attention} · 垃圾桶 {snapshot.sessions.archived} · 群 {snapshot.groups}</small></div>
       <div><span>连接</span><small>状态流 {snapshot.connections.stateStreams} · WebSocket {snapshot.connections.websockets} · 终端 {snapshot.terminals.sessions} · Shell {snapshot.terminals.shells}</small></div>
       <div><span>闲置休眠</span><small>{snapshot.idleSleepMinutes > 0 ? `已开启 · ${snapshot.idleSleepMinutes} 分钟` : '未开启'} · {snapshot.demo ? '演示模式' : '本地模式'}</small></div>
       <div><span>数据目录</span><code>{snapshot.dataDir}</code></div>

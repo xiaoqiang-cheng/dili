@@ -976,7 +976,7 @@ test('group directory grants validate the whole selection and return per-member 
   await request(`/api/sessions/${ids[1]}`, 'PATCH', { archived: true });
   const archived = await request<GroupDirectoryResponse>(route, 'POST', { path: f.directory, sessionIds: ids.slice(0, 2) });
   assert.deepEqual(archived.results.map(result => result.status), ['unchanged', 'failed']);
-  assert.match(archived.results[1].error!, /归档/);
+  assert.match(archived.results[1].error!, /垃圾桶/);
   await request(`/api/groups/${group.id}`, 'PATCH', { archived: true });
   await request(route, 'POST', { path: extra, sessionIds: [ids[0]] }, 409);
   await request('/api/groups/missing/directories', 'POST', { path: extra, sessionIds: [ids[0]] }, 404);

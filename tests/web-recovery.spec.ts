@@ -162,25 +162,40 @@ test('terminal transport reconnects after a simulated service outage and replays
 
 for (const backend of ['codex', 'claude', 'dsh'] as const) test(`${backend} running contacts automatically stop on archive, and restore does not restart`, async ({ page }) => {
   const state = await readState(page.request);
-  const session = await mutate<Session>(page.request, '/sessions', { backend, title: `${backend} 自动停止归档回归`, cwd: state.defaultCwd });
+  const session = await mutate<Session>(page.request, '/sessions', { backend, title: `${backend} 自动停止移入垃圾桶回归`, cwd: state.defaultCwd });
   await mutate(page.request, `/sessions/${session.id}/start`);
   try {
     await page.goto('/');
     await page.getByRole('button', { name: `${session.title} 的更多操作`, exact: true }).click();
-    await page.getByRole('button', { name: '归档联系人', exact: true }).click();
+    await expect(page.getByRole('button', { name: '置顶会话', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Fork 会话', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '分享会话', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '移入垃圾桶', exact: true }).click();
     await expect(page.getByRole('button', { name: `进入 ${session.title} 的会话`, exact: true })).not.toBeVisible();
     let current = (await readState(page.request)).sessions.find(item => item.id === session.id)!;
     expect(current.archived).toBe(true); expect(current.running).toBe(false); expect(current.status).toBe('stopped');
     const nativeSessionId = current.nativeSessionId;
     await page.goto(`/#/archive?session=${session.id}`);
-    await expect(page.getByRole('button', { name: '已归档 · 恢复联系人', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '已移入垃圾桶 · 恢复会话', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '启动原生会话', exact: true })).toBeDisabled();
-    await page.getByRole('button', { name: '已归档 · 恢复联系人', exact: true }).click();
+    await page.getByRole('button', { name: '已移入垃圾桶 · 恢复会话', exact: true }).click();
     await expect(page.getByRole('button', { name: '启动原生会话', exact: true })).toBeEnabled();
     current = (await readState(page.request)).sessions.find(item => item.id === session.id)!;
     expect(current.archived).toBe(false); expect(current.running).toBe(false);
     expect(current.nativeSessionId).toBe(nativeSessionId);
   } finally { await mutate(page.request, `/sessions/${session.id}/stop`); }
+});
+
+test('a trashed session can be permanently cleaned from Dili after confirmation', async ({ page }) => {
+  const state = await readState(page.request);
+  const session = await mutate<Session>(page.request, '/sessions', { backend: 'codex', title: '清理回归', cwd: state.defaultCwd });
+  await mutate(page.request, `/sessions/${session.id}`, { archived: true }, 'PATCH');
+  page.on('dialog', dialog => dialog.accept());
+  await page.goto('/#/archive');
+  await page.getByRole('button', { name: `${session.title} 的更多操作`, exact: true }).click();
+  await page.getByRole('button', { name: '清理', exact: true }).click();
+  await expect(page.getByRole('button', { name: `进入 ${session.title} 的会话`, exact: true })).not.toBeVisible();
+  expect((await readState(page.request)).sessions.some(item => item.id === session.id)).toBe(false);
 });
 
 test('directed group delivery stays pending on failure, retries once, and cancellation updates the board', async ({ page }) => {

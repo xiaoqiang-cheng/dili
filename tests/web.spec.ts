@@ -704,7 +704,7 @@ test('the "需要你处理" badge counts unread reminders, matching the red badg
       { ...seed, id: 'seen-waiting', title: '已看过但仍在等待', groupId: null, archived: false, pinned: false, running: true, status: 'waiting_input', unread: 0, lastActivity: '2026-01-04T00:00:00Z' },
       { ...seed, id: 'stale-running', title: '曾提醒但已在运行', groupId: null, archived: false, pinned: true, running: true, status: 'running', unread: 1, lastActivity: '2026-01-01T00:00:00Z' },
       { ...seed, id: 'unseen-waiting', title: '等待且未读', groupId: null, archived: false, pinned: false, running: true, status: 'waiting_approval', unread: 2, lastActivity: '2026-01-02T00:00:00Z' },
-      { ...seed, id: 'archived-unseen', title: '已归档的未读', groupId: null, archived: true, pinned: false, running: false, status: 'error', unread: 1, lastActivity: '2026-01-03T00:00:00Z' },
+      { ...seed, id: 'archived-unseen', title: '垃圾桶中的未读', groupId: null, archived: true, pinned: false, running: false, status: 'error', unread: 1, lastActivity: '2026-01-03T00:00:00Z' },
     ];
   });
   await page.goto('/');

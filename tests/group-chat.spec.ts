@@ -363,11 +363,11 @@ test('member avatars open private chat and unmentioned messages follow the last 
 });
 
 test('groups can be archived and restored without losing history or members', async ({ page, request }) => {
-  const { group, members } = await createGroup(request, '归档群聊验收');
+  const { group, members } = await createGroup(request, '垃圾桶群聊验收');
   await page.goto('/#/contacts');
   const card = page.locator('.group-card').filter({ hasText: group.title });
   await card.getByRole('button', { name: `${group.title} 的更多操作` }).click();
-  await card.getByRole('button', { name: '归档群聊', exact: true }).click();
+  await card.getByRole('button', { name: '移入垃圾桶', exact: true }).click();
   await expect(card).toHaveCount(0);
   await page.goto('/#/archive');
   await expect(card).toBeVisible();

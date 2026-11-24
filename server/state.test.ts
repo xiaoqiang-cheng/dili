@@ -45,6 +45,24 @@ test('group read receipts clear member badges without dropping other pending cha
   assert.equal(applyGroupRead(null, receipt), null);
 });
 
+test('hard deletion forces one full snapshot and cannot leak a stale upsert patch', t => {
+  const store = new Store(':memory:');
+  const kept = store.addSession({ backend: 'codex', title: '保留', cwd: '/tmp' });
+  const removed = store.addSession({ backend: 'claude', title: '清理', cwd: '/tmp' });
+  const publisher = new StatePublisher(store, { instanceId: 'remove', backends: [], defaultCwd: '/tmp', demo: true });
+  t.after(() => { publisher.close(); store.close(); });
+  const before = publisher.snapshot();
+  store.removeSession(removed.id);
+  const full = publisher.takeFull();
+  assert.ok(full);
+  assert.equal(full.baseRevision, before.revision);
+  assert.deepEqual(full.state.sessions.map(item => item.id), [kept.id]);
+  assert.equal(publisher.takeFull(), null);
+  assert.equal(publisher.takePatch(), null);
+  store.updateSession(kept.id, { title: '改名' });
+  assert.deepEqual(publisher.takePatch()!.sessions![0].title, '改名');
+});
+
 test('committed metadata produces small ordered patches without full table rereads', t => {
   const store = new Store(':memory:');
   for (let i = 0; i < 500; i++) store.addSession({ backend: 'codex', title: `contact ${i}`, cwd: '/tmp' });
