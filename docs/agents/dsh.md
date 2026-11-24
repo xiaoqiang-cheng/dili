@@ -3,20 +3,20 @@
 ## 三条路径
 
 1. **dsh 0.2+ 结构化图形对话**：`server/agents/dsh-chat.ts` 通过 `DshBridge` 复用 `AgentChatPane`；文本、工具、问题和停止都走原生 RPC，审批仍有独立的状态与原生入口。网页会话持有写锁时可直接发送；若当前由 dsh-tui 持有，图形对话只读，需先显式接管（会退出 TUI，并从同一份已保存会话恢复）。
-2. **dsh-tui 存在**：`server/terminal.ts` 托管原生 PTY，输入、图片、审批都在原生 TUI 里完成；Dili 提供联系人、状态、工具卡和对话记录。
+2. **dsh-tui 存在**：`server/terminal.ts` 托管原生 PTY，输入、图片、审批都在原生 TUI 里完成；Dili 提供会话、状态、工具卡和对话记录。
 3. **没有 dsh-tui 或显式使用原生界面**：`server/dsh.ts` 启动 Harness 自己的 Web 服务，页面用 iframe 打开原生界面；对话记录走原生 session 历史 API 或压缩日志。
 
-传输方式是**每个联系人**的属性，不是“装了 dsh-tui 就全走终端”：群聊投递、停止、Fork 和空闲观察都以 `executionTransport === 'web'` 判断，避免把网页会话误判成 PTY 而报“会话尚未启动”。
+传输方式是**每个会话**的属性，不是“装了 dsh-tui 就全走终端”：群聊投递、停止、Fork 和空闲观察都以 `executionTransport === 'web'` 判断，避免把网页会话误判成 PTY 而报“会话尚未启动”。
 
 用 `SESSIONDECK_DSH_PREFER_WEB=1` 可强制走 Web 桥（TUI 挂起但收不到输入时的退路）。
 
 ## 身份与服务
 
 - dsh 0.1 使用 `session-<uuid>`；0.2 的不同版本既可能使用裸 UUID，也可能继续生成 `session-<uuid>`（0.2.2-rc.1 的原生 Web 控制器就是后者）。`DSH_ID` 两种都接受，新建仍用裸 UUID。
-- **不要用前缀判断会话是否可恢复。** 以原生 `session.list` 是否列出该 ID 为准：列出就恢复原会话；只有前缀形式且原生列表不认识时，才视为 0.1 遗留，经 `/start mode chat` 新建裸 UUID 会话并写回联系人（联系人保留，旧历史仍在本机）。仅凭 `session-<uuid>` 直接替换会丢掉 0.2.2 原生会话的上下文。
+- **不要用前缀判断会话是否可恢复。** 以原生 `session.list` 是否列出该 ID 为准：列出就恢复原会话；只有前缀形式且原生列表不认识时，才视为 0.1 遗留，经 `/start mode chat` 新建裸 UUID 会话并写回该 ID（旧历史仍在本机）。仅凭 `session-<uuid>` 直接替换会丢掉 0.2.2 原生会话的上下文。
 - 原生 Web 服务按需启动，端口由 `SESSIONDECK_DSH_PORT` 指定；未指定时每次选空闲端口。
 - 服务只监听本机；不要把它当成可远程访问的入口。
-- dsh 0.2 的原生权限目录只有 `read-only`、`workspace-write`、`danger-full-access`，没有 `auto`。Dili 不再为 dsh 提供 Auto，也不注入启动覆盖层；历史 Auto 联系人在启动时归一为原生默认，并在状态里说明原因。
+- dsh 0.2 的原生权限目录只有 `read-only`、`workspace-write`、`danger-full-access`，没有 `auto`。Dili 不再为 dsh 提供 Auto，也不注入启动覆盖层；历史 Auto 会话在启动时归一为原生默认，并在状态里说明原因。
 
 ## 远程原生界面（2026-11-01）
 

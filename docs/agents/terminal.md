@@ -4,8 +4,8 @@
 
 | 类型 | 文件 | 生命周期 |
 | --- | --- | --- |
-| 会话原生终端 | `server/terminal.ts` | 跟随联系人，停止会话时回收，重连恢复快照 |
-| 底部 Shell | `server/shell-terminals.ts` | 独立于联系人，最多 16 个标签，关闭标签结束进程 |
+| 会话原生终端 | `server/terminal.ts` | 跟随会话，停止会话时回收，重连恢复快照 |
+| 底部 Shell | `server/shell-terminals.ts` | 独立于会话，最多 16 个标签，关闭标签结束进程 |
 
 两者都基于 node-pty，但不要互相复用状态：停止会话不能杀掉用户的 Shell，反之亦然。
 
