@@ -40,14 +40,14 @@ export default function GroupCard({ group, members, active, onOpen, onPin, onEdi
     <div className="card-head">
       <span className="avatar-wrap"><GroupAvatar members={live} />{unread > 0 && <span className="unread-badge" aria-label={`${unread} 条未读`}>{unread > 99 ? '99+' : unread}</span>}</span>
       <div className="card-title">
-        <div className="card-title-row"><button className="card-main" aria-current={active ? 'true' : undefined} aria-label={`进入群聊 ${group.title}`} onClick={onOpen}><h3 title={group.title}>{group.title}</h3></button><span className="group-badge">{group.archived ? '已删除' : '群聊'} · {live.length}</span></div>
+        <div className="card-title-row"><button className="card-main" aria-current={active ? 'true' : undefined} aria-label={`进入群聊 ${group.title}`} onClick={onOpen}><h3 title={group.title}>{group.title}</h3></button><span className="group-badge">{group.archived ? '已移入垃圾桶' : '群聊'} · {live.length}</span></div>
         <div className="card-prompt"><p title={preview}>{preview}</p></div>
       </div>
       {status && <span className="card-state"><span className={`status-badge ${errors ? 'error' : approvals ? 'waiting' : 'running'}`} title={status}>{status}</span></span>}
     </div>
     <div className="card-activity"><time dateTime={group.lastMessage?.at ?? group.updatedAt}>{relativeTime(group.lastMessage?.at ?? group.updatedAt)}</time>
       <span className="card-menu-anchor" ref={menuRef}><button className="icon-button" aria-label={`${group.title} 的更多操作`} aria-expanded={menu} onClick={() => setMenu(!menu)}><Ellipsis size={15} /></button>
-        {menu && <div className="dropdown-menu"><button onClick={() => { setMenu(false); onPin(); }}>{group.pinned ? <PinOff size={14} /> : <Pin size={14} />}{group.pinned ? '取消置顶' : '置顶群聊'}</button><button onClick={() => { setMenu(false); onEdit(); }}><Settings2 size={14} />群设置</button><span /><button title={group.archived ? '从垃圾桶恢复群聊' : '移入垃圾桶；消息和成员保留，可恢复'} onClick={() => { setMenu(false); onArchive(); }}>{group.archived ? <ArchiveRestore size={14} /> : <Trash2 size={14} />}{group.archived ? '恢复群聊' : '删除群聊'}</button></div>}
+        {menu && <div className="dropdown-menu"><button onClick={() => { setMenu(false); onPin(); }}>{group.pinned ? <PinOff size={14} /> : <Pin size={14} />}{group.pinned ? '取消置顶' : '置顶群聊'}</button><button onClick={() => { setMenu(false); onEdit(); }}><Settings2 size={14} />群设置</button><span /><button title={group.archived ? '从垃圾桶恢复群聊' : '移入垃圾桶；消息和成员保留，可恢复'} onClick={() => { setMenu(false); onArchive(); }}>{group.archived ? <ArchiveRestore size={14} /> : <Trash2 size={14} />}{group.archived ? '恢复群聊' : '移入垃圾桶'}</button></div>}
       </span>
     </div>
   </article>;

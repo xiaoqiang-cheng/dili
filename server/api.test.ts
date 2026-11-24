@@ -262,7 +262,7 @@ test('local HTTP and real demo PTYs complete the contact, fork and group flow', 
     const state = await request<AppState>('/api/state');
     assert.equal(state.sessions.find(s => s.id === reviewer.id)?.running, true);
     assert.equal(state.sessions.find(s => s.id === member.id)?.archived, true);
-    await request(`/api/groups/${group.id}/messages`, 'POST', { kind: 'task', text: '已删除成员不可接收', recipientIds: [member.id] }, 400);
+    await request(`/api/groups/${group.id}/messages`, 'POST', { kind: 'task', text: '已移入垃圾桶成员不可接收', recipientIds: [member.id] }, 400);
     await request(`/api/sessions/${member.id}`, 'PATCH', { archived: true });
     const restored = await request<Session>(`/api/sessions/${member.id}`, 'PATCH', { archived: false });
     assert.equal(restored.archived, false);

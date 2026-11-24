@@ -367,7 +367,7 @@ test('groups can be archived and restored without losing history or members', as
   await page.goto('/#/contacts');
   const card = page.locator('.group-card').filter({ hasText: group.title });
   await card.getByRole('button', { name: `${group.title} 的更多操作` }).click();
-  await card.getByRole('button', { name: '删除群聊', exact: true }).click();
+  await card.getByRole('button', { name: '移入垃圾桶', exact: true }).click();
   await expect(card).toHaveCount(0);
   await page.goto('/#/archive');
   await expect(card).toBeVisible();

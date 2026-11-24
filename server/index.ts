@@ -1534,7 +1534,7 @@ async function deliverNow(id: string, options: { autoStart?: boolean } = {}) {
   const delivery = store.delivery(id) || fail('投递记录不存在', 404);
   if (delivery.status !== 'pending' || deliveryLocks.has(id)) fail('消息已处理或正在处理');
   let target = session(delivery.sessionId);
-  if (target.archived) fail('目标成员已删除，请先从垃圾桶恢复');
+  if (target.archived) fail('目标成员已移入垃圾桶，请先恢复');
   if (!target.running && options.autoStart && !demo && info(target.backend).capabilities.graphicalChat && !starting.has(target.id)) target = await startSession(target.id, { mode: 'chat' });
   if (!target.running) fail('请先进入并启动目标会话');
   if (stopping.has(target.id) || terminals.isStopping(target.id)) fail('目标会话正在停止');

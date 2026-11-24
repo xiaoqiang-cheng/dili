@@ -113,7 +113,7 @@ function MemberPlacement({ member, workspace, busy, onChanged, onError }: { memb
     {status && <small>{status.merged && !status.ahead ? '已合并' : `领先 ${status.ahead} 个提交`}{status.uncommitted ? ` · ${status.uncommitted} 处未提交` : ''}{status.behind ? ` · 落后 ${status.behind}` : ''}</small>}
     <span>
       <button className="text-button" disabled={busy || working || !status?.ahead || !!status?.uncommitted} title={status?.uncommitted ? '成员还有未提交改动' : !status?.ahead ? '没有新的提交' : '合并到群工作区'} onClick={() => void act('merge', `已将 ${member.title} 的分支合并到群工作区`, `将 ${worktree.branch} 合并到群工作区当前分支？发生冲突时会自动撤销，不改动群工作区。`)}><GitMerge size={13} />合并</button>
-      <button className="text-button" disabled={busy || working || member.running} title={member.running ? '先停止这个成员' : '删除成员并删除工作树目录，保留分支'} onClick={() => void act('remove', `已清理 ${member.title} 的工作树`, `清理后成员会移入垃圾桶，工作树目录删除，分支 ${worktree.branch} 保留。${status && !status.merged ? '分支还没有合并，提交仍保存在分支里。' : ''}继续？`)}><Trash2 size={13} />清理</button>
+      <button className="text-button" disabled={busy || working || member.running} title={member.running ? '先停止这个成员' : '移入垃圾桶并删除工作树目录，保留分支'} onClick={() => void act('remove', `已清理 ${member.title} 的工作树`, `清理后成员会移入垃圾桶，工作树目录删除，分支 ${worktree.branch} 保留。${status && !status.merged ? '分支还没有合并，提交仍保存在分支里。' : ''}继续？`)}><Trash2 size={13} />清理</button>
     </span>
   </div>;
 }
@@ -405,7 +405,7 @@ export default function GroupChat({ active = true, onShare, group, detail, membe
           <div className="message-heading"><strong>{message.senderName || '我'}</strong><span className="message-kind">{message.kind === 'task' ? '任务' : message.failed ? '回复失败' : message.briefing ? '入群招呼' : message.pending ? '仍在工作…' : message.kind === 'reply' ? '回复' : message.kind === 'result' ? '结果' : '记录'}</span><time>{relativeTime(message.createdAt)}</time></div>
           <div className="bubble">
             {message.sourceMessageId && <button className="message-source-link" onClick={() => jumpToMessage(message.sourceMessageId!)}><ArrowRight size={12} />{message.kind === 'reply' ? '回复' : '来源'}：{messagesById.get(message.sourceMessageId)?.senderName || '原消息'}<span>查看原消息</span></button>}
-            {message.recipientIds.length > 0 && <div className="message-recipients">{message.recipientIds.map(id => <button key={id} onClick={() => open(id)}>@{membersById.get(id)?.title || '已删除成员'}</button>)}</div>}
+            {message.recipientIds.length > 0 && <div className="message-recipients">{message.recipientIds.map(id => <button key={id} onClick={() => open(id)}>@{membersById.get(id)?.title || '已移入垃圾桶的成员'}</button>)}</div>}
             {!!message.references?.length && <div className="message-references">{message.references.map(id => <button key={id} className="text-button" onClick={() => jumpToMessage(id)}><Quote size={12} />引用 {messagesById.get(id)?.senderName || '回答'}</button>)}</div>}
             <GroupImages groupId={group.id} items={message.attachments} />
             {message.kind === 'reply'
