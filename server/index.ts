@@ -228,6 +228,19 @@ function state(): AppState {
 }
 function broadcast() {
   if (closing) return;
+  // Hard deletion cannot be represented as an upsert patch; send a full state
+  // once so every connected client drops the removed contact.
+  const full = publisher.takeFull();
+  if (full) {
+    const revision = full.state.revision ?? 0;
+    const chunk = `id: ${revision}\nevent: state\ndata: ${JSON.stringify(full.state)}\n\n`;
+    replay.push(revision, full.baseRevision, chunk);
+    for (const [client, viewer] of sse) {
+      if (client.destroyed || client.writableLength > 2_097_152) { sse.delete(client); client.destroy(); }
+      else client.write(viewer.principal.kind === 'share' ? `event: state\ndata: ${JSON.stringify(viewState(viewer.principal))}\n\n` : chunk);
+    }
+    return;
+  }
   const patch = publisher.takePatch();
   if (!patch) return;
   const chunk = `id: ${patch.revision}\nevent: patch\ndata: ${JSON.stringify(patch)}\n\n`;
@@ -1071,6 +1084,20 @@ app.patch('/api/sessions/:id', async (req, res) => {
   const updated = store.updateSession(item.id, patch); broadcast(); res.json(updated);
 });
 app.post('/api/sessions/:id/read', (req, res) => { const item = store.updateSession(session(String(req.params.id)).id, { unread: 0 }); broadcast(); res.json(item); });
+/** Empty one trashed contact from Dili. Native history, group messages and
+ * worktree files are intentionally outside this hard-delete boundary. */
+app.delete('/api/sessions/:id', (req, res) => {
+  const item = session(String(req.params.id));
+  if (!item.archived) fail('请先移入垃圾桶，再清理会话', 409);
+  if (item.running || starting.has(item.id) || stopping.has(item.id) || terminals.isStopping(item.id)) fail('会话正在运行或停止，请稍后再清理', 409);
+  auth.revokeSessionShares(item.id);
+  chatApi.forget(item.id);
+  store.removeSession(item.id);
+  store.activity(null, 'purge', `清理了 ${item.title}`);
+  revalidateViewers();
+  broadcast();
+  res.json({ ok: true });
+});
 
 // Append only: revoking a native permission cannot be promised by simply
 // removing it from our metadata (the native session may already retain it).

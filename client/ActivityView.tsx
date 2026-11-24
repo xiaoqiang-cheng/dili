@@ -4,7 +4,7 @@ import type { Activity, Session } from '../shared/types';
 
 const activityLabels: Record<string, string> = {
   create: '新建联系人', import: '导入会话', fork: 'Fork 会话', start: '进入原生会话',
-  status: '状态变化', group: '群组', delivery: '任务投递',
+  status: '状态变化', group: '群组', delivery: '任务投递', purge: '清理会话',
 };
 const localDate = (value: string) => new Date(value).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
 const dateLabel = (value: string) => {

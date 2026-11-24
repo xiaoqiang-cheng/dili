@@ -105,6 +105,7 @@ export const ROUTES: Route[] = [
   { method: 'POST', path: '/api/import', access: 'owner' },
   { method: 'POST', path: '/api/sessions', access: 'owner' },
   { method: 'PATCH', path: '/api/sessions/:id', access: 'owner' },
+  { method: 'DELETE', path: '/api/sessions/:id', access: 'owner' },
   { method: 'POST', path: '/api/sessions/:id/fork', access: 'owner' },
   { method: 'POST', path: '/api/sessions/:id/handoff', access: 'owner' },
   { method: 'GET', path: '/api/sessions/:id/worktree', access: 'owner' },

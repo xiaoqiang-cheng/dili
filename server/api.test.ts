@@ -123,6 +123,14 @@ test('local HTTP and real demo PTYs complete the contact, fork and group flow', 
     assert.match(exported.error, /演示模式/);
   });
 
+  await t.test('only trashed contacts can be purged from Dili', async () => {
+    const created = await request<Session>('/api/sessions', 'POST', { backend: 'codex', title: '待清理', cwd: directory }, 201);
+    await request(`/api/sessions/${created.id}`, 'DELETE', {}, 409);
+    await request(`/api/sessions/${created.id}`, 'PATCH', { archived: true });
+    await request(`/api/sessions/${created.id}`, 'DELETE', {});
+    assert.ok(!(await request<AppState>('/api/state')).sessions.some(item => item.id === created.id));
+  });
+
   let group: Group;
   let member: Session;
   let reviewer: Session;

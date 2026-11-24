@@ -159,7 +159,7 @@ export function registerAgentChat(app: express.Express, options: Dependencies) {
     // older users. Saved native history owns previews; successful local sends
     // update immediately below, without letting late snapshot hydration regress them.
   }));
-  const offStore = store.onChange(change => { if (change.table === 'sessions' && !!options.adapters[change.data.backend]) queue(change.data.id); });
+  const offStore = store.onChange(change => { if (change.table === 'sessions' && !('removed' in change) && !!options.adapters[change.data.backend]) queue(change.data.id); });
 
   app.get('/api/sessions/:id/chat', async (req, res) => {
     const id = String(req.params.id), item = session(id);
@@ -282,6 +282,10 @@ export function registerAgentChat(app: express.Express, options: Dependencies) {
   return { revalidate(valid: (device: string) => boolean) {
     // Revoked share devices stop receiving the native chat stream immediately.
     for (const set of viewers.values()) for (const viewer of set) if (viewer.device && !valid(viewer.device)) viewer.response.end();
+  }, forget(id: string) {
+    const timer = scheduled.get(id); if (timer) { clearTimeout(timer); scheduled.delete(id); }
+    for (const viewer of viewers.get(id) ?? []) viewer.response.end();
+    viewers.delete(id); snapshots.delete(id); snapshotIdentity.delete(id);
   }, close() {
     offChats.forEach(off => off()); offStore();
     for (const timer of scheduled.values()) clearTimeout(timer);

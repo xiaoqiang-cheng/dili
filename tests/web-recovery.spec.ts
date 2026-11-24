@@ -186,6 +186,18 @@ for (const backend of ['codex', 'claude', 'dsh'] as const) test(`${backend} runn
   } finally { await mutate(page.request, `/sessions/${session.id}/stop`); }
 });
 
+test('a trashed session can be permanently cleaned from Dili after confirmation', async ({ page }) => {
+  const state = await readState(page.request);
+  const session = await mutate<Session>(page.request, '/sessions', { backend: 'codex', title: '清理回归', cwd: state.defaultCwd });
+  await mutate(page.request, `/sessions/${session.id}`, { archived: true }, 'PATCH');
+  page.on('dialog', dialog => dialog.accept());
+  await page.goto('/#/archive');
+  await page.getByRole('button', { name: `${session.title} 的更多操作`, exact: true }).click();
+  await page.getByRole('button', { name: '清理', exact: true }).click();
+  await expect(page.getByRole('button', { name: `进入 ${session.title} 的会话`, exact: true })).not.toBeVisible();
+  expect((await readState(page.request)).sessions.some(item => item.id === session.id)).toBe(false);
+});
+
 test('directed group delivery stays pending on failure, retries once, and cancellation updates the board', async ({ page }) => {
   await readState(page.request);
   await installTransportHandles(page);
