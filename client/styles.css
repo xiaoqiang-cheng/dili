@@ -67,7 +67,7 @@ select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--line-stro
 .rail { position: relative; z-index: 20; display: flex; flex-shrink: 0; flex-direction: column; width: 64px; padding: 10px 8px calc(10px + var(--safe-bottom)); background: var(--rail-bg); border-right: 1px solid var(--line); transition: width .16s ease; }
 .rail.expanded { width: 208px; }
 .rail .brand, .rail-primary, .rail-groups { overflow: hidden; }
-.rail-head { display: flex; align-items: center; margin: 0 0 6px 4px; }
+.rail-head { display: flex; align-items: center; justify-content: center; margin: 0 0 6px; }
 .rail-head .rail-toggle { width: 40px; height: 40px; padding: 0; justify-content: center; border-radius: 10px; flex-shrink: 0; }
 .rail .brand { margin: 0 0 12px 4px; }
 .rail-primary, .rail-groups { display: flex; flex-direction: column; gap: 2px; }
