@@ -441,11 +441,11 @@ export default function GroupChat({ active = true, onShare, group, detail, membe
     else if (event.key === 'Enter' && event.shiftKey && (event.ctrlKey || event.metaKey)) { event.preventDefault(); setFullscreen(value => !value); }
   }}>
     <header className="group-chat-header">
-      <button className="icon-button group-chat-back" aria-label="返回联系人列表" onClick={back}><ArrowLeft size={18} /></button>
+      <button className="icon-button group-chat-back" aria-label="返回会话列表" onClick={back}><ArrowLeft size={18} /></button>
       <div className="group-chat-title"><strong title={group.title}>{group.title}</strong>{group.goal && <p className="group-goal-line" title={group.goal}>目标：{group.goal}</p>}</div>
       <div className="group-member-strip" role="toolbar" aria-label="群成员与只看">
         {activeMembers.map(member => <button key={member.id} className={`group-member-chip${only === member.id ? ' selected' : ''}`} aria-pressed={only === member.id} title={`只看 ${member.title}`} aria-label={`只看 ${member.title}`} onClick={() => { setOnly(current => current === member.id ? null : member.id); setSplit(false); }}><BackendAvatar backend={member.backend} small />{member.status === 'running' && <i className="group-member-running" />}</button>)}
-        <button className="icon-button" aria-label="添加成员" title="新建成员或 Fork 联系人入群" onClick={addMember}><Plus size={15} /></button>
+        <button className="icon-button" aria-label="添加成员" title="新建成员或 Fork 会话入群" onClick={addMember}><Plus size={15} /></button>
       </div>
       <div className="group-chat-actions">
         {onShare && <button className="icon-button" aria-label="分享群聊" title="分享群聊" onClick={onShare}><Share2 size={16} /></button>}
@@ -458,7 +458,7 @@ export default function GroupChat({ active = true, onShare, group, detail, membe
       {membersOpen && <div className="group-members-panel" role="dialog" aria-label="群成员">
         {editWorkspacePermissions && <button className="text-button" onClick={() => { setMembersOpen(false); editWorkspacePermissions(); }}><FolderPlus size={14} />群工作区权限</button>}
         {group.workspace && <div className="group-workspace-line" title={group.workspace}><FolderOpen size={13} />群工作区：{tail(group.workspace)}</div>}
-        {activeMembers.map(member => <div className="group-members-row" key={member.id}><button className="member-avatar-link" aria-label={`打开 ${member.title} 的私聊`} onClick={() => { setMembersOpen(false); open(member.id, true); }}><BackendAvatar backend={member.backend} small /></button><div className="group-members-info"><div><strong>{member.title}</strong><StatusBadge session={member} /></div><MemberPlacement member={member} workspace={group.workspace} busy={!!busy} onChanged={notify} onError={setLocalError} /></div><button className="icon-button" aria-label={`打开 ${member.title} 的工作区`} title="在资源管理器中查看文件与改动" onClick={() => openWorkspace(member)}><FolderOpen size={14} /></button><button className="text-button" onClick={() => { setMembersOpen(false); open(member.id, true); }}>私聊</button><button className="icon-button" aria-label={`将 ${member.title} 移出群聊`} title="移出群聊（保留联系人）" onClick={() => removeMember(member)}><UserMinus size={14} /></button></div>)}
+        {activeMembers.map(member => <div className="group-members-row" key={member.id}><button className="member-avatar-link" aria-label={`打开 ${member.title} 的私聊`} onClick={() => { setMembersOpen(false); open(member.id, true); }}><BackendAvatar backend={member.backend} small /></button><div className="group-members-info"><div><strong>{member.title}</strong><StatusBadge session={member} /></div><MemberPlacement member={member} workspace={group.workspace} busy={!!busy} onChanged={notify} onError={setLocalError} /></div><button className="icon-button" aria-label={`打开 ${member.title} 的工作区`} title="在资源管理器中查看文件与改动" onClick={() => openWorkspace(member)}><FolderOpen size={14} /></button><button className="text-button" onClick={() => { setMembersOpen(false); open(member.id, true); }}>私聊</button><button className="icon-button" aria-label={`将 ${member.title} 移出群聊`} title="移出群聊（保留会话）" onClick={() => removeMember(member)}><UserMinus size={14} /></button></div>)}
         <button className="text-button" onClick={() => { setMembersOpen(false); addMember(); }}><Plus size={14} />添加成员</button>
       </div>}
     </header>

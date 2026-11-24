@@ -32,7 +32,7 @@ export default function GroupWorkspacePermissions({ group, members, backends, cl
       const response = await api<GroupDirectoryResponse>(`/groups/${group.id}/directories`, { path, sessionIds: ids });
       setPath(response.path);
       setResults(previous => [...previous.filter(result => !ids.includes(result.sessionId)), ...response.results]);
-      await refresh().catch(() => setError('授权结果已返回，但联系人列表刷新失败，请稍后刷新。'));
+      await refresh().catch(() => setError('授权结果已返回，但会话列表刷新失败，请稍后刷新。'));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '无法完成批量授权');
       await refresh().catch(() => {});
@@ -53,7 +53,7 @@ export default function GroupWorkspacePermissions({ group, members, backends, cl
             <span className="workspace-member-info"><strong>{member.title}</strong><small title={member.cwd}>{member.cwd}</small>{reason && <small>{reason}</small>}{result && <small className={result.status === 'failed' ? 'form-error' : 'workspace-member-result'} role="status">{result.error || resultLabels[result.status]}</small>}</span>
           </label>;
         })}
-        {!members.length && <p className="form-note">群组暂无成员，请先添加联系人。</p>}
+        {!members.length && <p className="form-note">群组暂无成员，请先添加会话。</p>}
       </div>
       <p className="form-note">Codex 空闲时立即生效；Claude 与兼容终端在下次恢复时生效。不会停止正在执行的任务；忙碌而无法应用的成员可稍后重试。</p>
       {!!results.length && <p className="form-note" role="status">授权结果：{results.filter(result => result.status !== 'failed').length} 位已处理，{results.filter(result => result.status === 'failed').length} 位失败。</p>}

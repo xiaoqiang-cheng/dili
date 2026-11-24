@@ -59,14 +59,14 @@ test('Codex imports resume moved projects through native cwd override without ch
     const session = await bridge.createSession(original, 'Moved project probe');
     bridge.releaseSession(session.nativeSessionId);
     await rename(original, moved);
-    await assert.rejects(bridge.openSession(session.nativeSessionId, moved), /工作目录与联系人不一致/);
+    await assert.rejects(bridge.openSession(session.nativeSessionId, moved), /工作目录与会话记录不一致/);
     const resumed = await bridge.openSession(session.nativeSessionId, moved, { allowCwdChange: true });
     assert.equal(resumed.nativeSessionId, session.nativeSessionId);
     // Native metadata must agree after reconnect, not just the local card.
     bridge.releaseSession(session.nativeSessionId);
     await bridge.openSession(session.nativeSessionId, moved);
     bridge.releaseSession(session.nativeSessionId);
-    await assert.rejects(bridge.openSession(session.nativeSessionId, original), /工作目录与联系人不一致/);
+    await assert.rejects(bridge.openSession(session.nativeSessionId, original), /工作目录与会话记录不一致/);
   } finally {
     await bridge.close();
     await rm(root, { recursive: true, force: true });

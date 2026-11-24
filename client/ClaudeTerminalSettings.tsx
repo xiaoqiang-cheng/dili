@@ -18,7 +18,7 @@ export default function ClaudeTerminalSettings({ session, readOnly }: { session:
   // Contact settings also change from the graphical view or the TUI's Shift+Tab.
   useEffect(() => { void read(); }, [read, saved]);
   const restart = async () => {
-    if (!window.confirm('重启将退出当前 Claude 终端进程，并用联系人设置恢复同一份已保存会话。当前任务和审批必须先处理完成。继续重启？')) return;
+    if (!window.confirm('重启将退出当前 Claude 终端进程，并用会话设置恢复同一份已保存会话。当前任务和审批必须先处理完成。继续重启？')) return;
     setRestarting(true); setError('');
     try { await api(`/sessions/${session.id}/start`, { mode: 'terminal', restart: true, handoff: true }); await read(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : '重启失败'); }

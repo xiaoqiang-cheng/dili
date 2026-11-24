@@ -606,7 +606,7 @@ export class DshBridge {
     const result = await this.rpc<{ items: DshSummary[] }>('session.list', {});
     if (!Array.isArray(result.items) || !result.items.some(item => item.sessionId === id)) {
       throw Object.assign(new Error(isLegacyDshId(id)
-        ? '这个联系人的原生会话 ID 是 dsh 0.1 的 `session-<uuid>` 形式，当前 DeepSeek Harness 无法恢复。请重建这个会话。'
+        ? '这个会话的原生会话 ID 是 dsh 0.1 的 `session-<uuid>` 形式，当前 DeepSeek Harness 无法恢复。请重建这个会话。'
         : '未找到对应的 DeepSeek Harness 会话'), { status: 409, ...(isLegacyDshId(id) ? { code: 'NATIVE_SESSION_LEGACY' as const } : {}) });
     }
     return this.reference(id);

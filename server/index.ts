@@ -1111,7 +1111,7 @@ async function appendSessionDirectory(id: string, path: string): Promise<{ sessi
   if ([item.cwd, ...directories].some(value => {
     try { return realpathSync(value) === path; } catch { return value === path; }
   })) return { session: item, status: 'unchanged' };
-  if (directories.length >= 20) fail('每个联系人最多添加 20 个附加工作区');
+  if (directories.length >= 20) fail('每个会话最多添加 20 个附加工作区');
   starting.add(item.id);
   try {
     const additionalDirectories = [...directories, path];
@@ -1187,7 +1187,7 @@ app.post('/api/sessions/:id/handoff', async (req, res) => {
   const cwd = req.body?.cwd ? directory(req.body.cwd) : parent.cwd;
   const transcript = demo ? { messages: [], truncated: false } : await conversations.read(parent);
   const prompt = handoffPrompt(parent, transcript, target, typeof req.body?.summary === 'string' ? req.body.summary : undefined);
-  const child = store.addSession({ backend: target, title, cwd, groupId: parent.groupId, parentId: parent.id, origin: 'handoff', statusDetail: '已创建跨平台交接联系人，等待继续工作' });
+  const child = store.addSession({ backend: target, title, cwd, groupId: parent.groupId, parentId: parent.id, origin: 'handoff', statusDetail: '已创建跨平台交接会话，等待继续工作' });
   store.activity(child.id, 'handoff', `从 ${parent.title} 交接到 ${info(target).label}`); broadcast();
   res.status(201).json({ session: child, prompt, source: parent.id, target: target });
 });
@@ -1221,7 +1221,7 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
     }
     const snapshot = structured ? claudeBridge.chatSnapshot(item.nativeSessionId!) : undefined;
     if (!['idle', 'waiting_input'].includes(item.status) || snapshot?.activeTurnId || snapshot?.requests.length || terminals.isSubmitting(item.id)) fail('请先完成或停止当前任务，并处理审批后再切换执行方式', 409);
-    if (body.handoff !== true) fail(body.restart === true ? '重启将退出当前 Claude 进程，并用联系人设置恢复同一份已保存的会话；需要确认' : '切换将退出当前 Claude 进程，并恢复同一份已保存的会话；需要确认交接', 409);
+    if (body.handoff !== true) fail(body.restart === true ? '重启将退出当前 Claude 进程，并用会话设置恢复同一份已保存的会话；需要确认' : '切换将退出当前 Claude 进程，并恢复同一份已保存的会话；需要确认交接', 409);
     starting.add(item.id); stopping.add(item.id);
     try {
       if (structured) await claudeBridge.closeSession(item.nativeSessionId!);
@@ -1282,7 +1282,7 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
       const native = resumed.native;
       if (resumed.replacedLegacy) {
         // Never carry two contacts on one native writer.
-        if (store.sessions().some(other => other.backend === 'dsh' && other.id !== item.id && other.nativeSessionId === native.nativeSessionId)) fail('新建的 DeepSeek Harness 会话与其他联系人冲突，请重新尝试', 409);
+        if (store.sessions().some(other => other.backend === 'dsh' && other.id !== item.id && other.nativeSessionId === native.nativeSessionId)) fail('新建的 DeepSeek Harness 会话与其他会话冲突，请重新尝试', 409);
         store.updateSession(item.id, { nativeSessionId: native.nativeSessionId, forkPending: false });
       }
       status(item.id, { ...native, nativeSessionId: native.nativeSessionId, forkPending: false, running: true, interactionMode: 'chat', executionTransport: 'web', status: 'idle', statusSource: 'native', statusDetail: [resumed.replacedLegacy ? '已把 dsh 0.1 的旧会话 ID 替换为新的原生会话；图形对话已就绪' : 'DeepSeek Harness 图形对话已就绪；输入现在归网页会话所有', dshAutoNote].filter(Boolean).join('；') });
@@ -1307,7 +1307,7 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
       const resumed = await dsh.openOrCreateSession(item.nativeSessionId, item.cwd, item.title);
       const native = resumed.native;
       if (resumed.replacedLegacy) {
-        if (store.sessions().some(other => other.backend === 'dsh' && other.id !== item.id && other.nativeSessionId === native.nativeSessionId)) fail('新建的 DeepSeek Harness 会话与其他联系人冲突，请重新尝试', 409);
+        if (store.sessions().some(other => other.backend === 'dsh' && other.id !== item.id && other.nativeSessionId === native.nativeSessionId)) fail('新建的 DeepSeek Harness 会话与其他会话冲突，请重新尝试', 409);
         store.updateSession(item.id, { nativeSessionId: native.nativeSessionId, forkPending: false });
       }
       // Keep the identity even if the native permission command is unavailable.
@@ -1930,7 +1930,7 @@ app.post('/api/web-proxy', (req, res) => {
 app.get('/api/sessions/:id/native-proxy', (req, res) => {
   if (principalOf(res).kind !== 'owner') fail('仅所有者可以打开原生界面', 403);
   const item = session(String(req.params.id));
-  if (item.backend !== 'dsh' || !item.nativeUrl) fail('这个联系人没有可转发的原生界面', 404);
+  if (item.backend !== 'dsh' || !item.nativeUrl) fail('这个会话没有可转发的原生界面', 404);
   const url = parseProxyTarget(item.nativeUrl);
   const target = webProxy.register(url, {
     label: item.title,

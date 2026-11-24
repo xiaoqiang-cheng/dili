@@ -16,14 +16,14 @@ for (const width of [1440, 412, 390]) test(`machine launcher pairs, persists and
   await page.getByLabel('机器链接').fill(baseURL!);
   await page.getByLabel('名称（可选）').fill('工作电脑');
   await page.getByRole('button', { name: '下一步：验证机器' }).click();
-  await expect(page.getByRole('main', { name: '联系人列表' })).toBeVisible();
+  await expect(page.getByRole('main', { name: '会话列表' })).toBeVisible();
   await page.getByRole('link', { name: '返回机器列表', exact: true }).click();
   await expect(page.locator('.machine-card')).toContainText('工作电脑');
   await page.reload();
   await expect(page.locator('.machine-card')).toHaveCount(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole('link', { name: /工作电脑/ }).click();
-  await expect(page.getByRole('main', { name: '联系人列表' })).toBeVisible();
+  await expect(page.getByRole('main', { name: '会话列表' })).toBeVisible();
   await page.getByRole('link', { name: '返回机器列表', exact: true }).click();
   await expect(page.locator('.machine-card')).toHaveCount(1);
   page.once('dialog', dialog => dialog.accept());
@@ -89,7 +89,7 @@ test('pairing prompts for the target password without persisting it and supports
   await page.getByLabel('所有者密码').fill('test-only-machine-secret');
   await page.getByRole('button', { name: '登录', exact: true }).click();
   expect(password).toBe('test-only-machine-secret');
-  await expect(page.getByRole('main', { name: '联系人列表' })).toBeVisible();
+  await expect(page.getByRole('main', { name: '会话列表' })).toBeVisible();
   await page.getByRole('link', { name: '返回机器列表', exact: true }).click();
   await expect(page.locator('.machine-card')).toHaveCount(2);
   expect(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }))).not.toContain(password);
@@ -113,12 +113,12 @@ test('a machine on another origin returns to the launcher and opens its own cont
     await page.getByLabel('机器链接').fill(target);
     await page.getByLabel('名称（可选）').fill('远程机器');
     await page.getByRole('button', { name: '下一步：验证机器' }).click();
-    await expect(page.getByRole('main', { name: '联系人列表' })).toBeVisible();
+    await expect(page.getByRole('main', { name: '会话列表' })).toBeVisible();
     await page.getByRole('link', { name: '返回机器列表', exact: true }).click();
     await expect(page.locator('.machine-card')).toContainText('远程机器');
     expect(new URL(page.url()).origin).toBe(new URL(baseURL!).origin);
     await page.getByRole('link', { name: /远程机器/ }).click();
-    await expect(page.getByRole('main', { name: '联系人列表' })).toBeVisible();
+    await expect(page.getByRole('main', { name: '会话列表' })).toBeVisible();
     expect(new URL(page.url()).origin).toBe(new URL(target).origin);
   } finally { proxy.closeAllConnections(); await new Promise<void>(resolve => proxy.close(() => resolve())); }
 });
@@ -131,7 +131,7 @@ test('install entry explains platform steps and return uses existing workspace n
   await expect(page.getByRole('navigation', { name: '机器导航' })).toHaveCount(0);
   const navigation = page.getByRole('navigation', { name: '工作空间导航' });
   await expect(navigation.getByRole('link', { name: '返回机器列表' })).toBeVisible();
-  await expect(page.getByRole('main', { name: '联系人列表' })).toBeVisible();
+  await expect(page.getByRole('main', { name: '会话列表' })).toBeVisible();
 });
 
 test.describe('machine card remote pairing', () => {
@@ -155,7 +155,7 @@ test.describe('machine card remote pairing', () => {
       await page.goto('/#/machines');
       await page.locator('.machine-current-card').getByLabel('远程连接邀请码').fill(invite);
       await page.locator('.machine-current-card').getByRole('button', { name: '转为远程连接' }).click();
-      await expect(page.getByRole('main', { name: '联系人列表' })).toBeVisible();
+      await expect(page.getByRole('main', { name: '会话列表' })).toBeVisible();
       expect(new URL(page.url()).origin).toBe(new URL(remote).origin);
       await page.getByRole('link', { name: '返回机器列表' }).click();
       await expect(page.locator('.machine-card')).toHaveCount(1);
@@ -262,7 +262,7 @@ test('permanent installation guide and tag/build update prompts preserve the cur
   await expect(version.getByRole('button', { name: '加载新版界面' })).toBeVisible();
   page.once('dialog', dialog => dialog.dismiss());
   await version.getByRole('button', { name: '加载新版界面' }).click();
-  await expect(page.getByRole('main', { name: '联系人列表' })).toBeVisible();
+  await expect(page.getByRole('main', { name: '会话列表' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
   await page.route('https://api.github.com/repos/xiaoqiang-cheng/dili/tags?per_page=100', route => route.fulfill({ status: 429, headers: { 'Access-Control-Allow-Origin': '*' }, json: {} }));
   await version.getByRole('button', { name: '检查更新', exact: true }).click();

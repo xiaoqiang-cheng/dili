@@ -89,7 +89,7 @@ test('mobile scratchpad opens as a page and returns to the contact list without 
   await expect(panel.getByRole('status')).toHaveText('已保存');
   await page.screenshot({ path: 'artifacts/scratchpad-mobile.png' });
   await panel.getByRole('button', { name: '关闭随手记' }).click();
-  await expect(page.getByRole('main', { name: '联系人列表' })).toBeVisible();
+  await expect(page.getByRole('main', { name: '会话列表' })).toBeVisible();
   await page.locator('.rail').getByRole('button', { name: '更多', exact: true }).click();
   await page.getByRole('menuitem', { name: '随手记', exact: true }).click();
   await expect(editor).toHaveValue('# 手机待办\n\n- [ ] 明天继续');

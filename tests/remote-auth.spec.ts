@@ -169,7 +169,7 @@ test('remote owner logs in, shares a session read-only, and revocation closes th
   // A manually opened remote listener has no paired device identity. The
   // contact-list title is intentionally empty until an invite device name is
   // available, so multiple device links remain distinguishable by name.
-  await expect(remotePage.getByRole('heading', { name: '会话联系人', exact: true })).toBeHidden();
+  await expect(remotePage.getByRole('heading', { name: '会话列表', exact: true })).toBeHidden();
   await expect(remotePage.getByRole('dialog', { name: `${target.title} 的私聊` })).toBeVisible();
   await remotePage.goto(`${remote}/#/backends`);
   await expect(remotePage.getByRole('region', { name: '远程访问与安全' })).toContainText('只能在运行 Dili 的电脑上修改');

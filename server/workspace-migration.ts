@@ -92,7 +92,7 @@ export function relocateStoredWorkspaces(
     options.log?.(`未能记录安装目录 ${options.root}：${error instanceof Error ? error.message : String(error)}`);
   }
   if (report.sessions || report.groups) {
-    options.log?.(`项目目录已移动：已把 ${report.sessions} 个联系人、${report.groups} 个群组的工作目录改写为 ${options.root}`);
+    options.log?.(`项目目录已移动：已把 ${report.sessions} 个会话、${report.groups} 个群组的工作目录改写为 ${options.root}`);
   }
   if (report.skipped.length) {
     options.log?.(`${report.skipped.length} 个目录在 ${options.root} 下找不到对应位置，保留原路径；可运行 npm run repair:workspaces 查看`);

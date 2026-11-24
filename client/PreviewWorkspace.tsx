@@ -28,7 +28,7 @@ function WorkspaceTabContent({ tab, sessions, controller, close }: {
   const [choosing, setChoosing] = useState(false);
   const session = sessions.find(item => item.id === tab.sessionId);
   if (!session || (!tab.custom && session.cwd !== tab.cwd)) return <div className="preview-unavailable">
-    <Folder size={26} /><p>原工作区已移除或目录已改变。</p><p>请从当前联系人重新打开文件。</p>
+    <Folder size={26} /><p>原工作区已移除或目录已改变。</p><p>请从当前会话重新打开文件。</p>
   </div>;
   const picker = <div className="workspace-directory-controls">
     <select aria-label="资源管理器工作区" value={tab.custom ? '__custom__' : session.id} onChange={event => {
