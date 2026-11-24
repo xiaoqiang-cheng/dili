@@ -14,7 +14,7 @@ const resultLabels: Record<GroupDirectoryResult['status'], string> = {
 export default function GroupWorkspacePermissions({ group, members, backends, close, refresh }: {
   group: Group; members: Session[]; backends: BackendInfo[]; close: () => void; refresh: () => Promise<unknown>;
 }) {
-  const unavailable = (member: Session) => member.archived ? '已归档，请先恢复联系人' : member.backend === 'dsh'
+  const unavailable = (member: Session) => member.archived ? '已归档，请先恢复会话' : member.backend === 'dsh'
     ? 'DeepSeek 原生沙箱暂不支持追加目录' : !backends.find(item => item.id === member.backend)?.capabilities.additionalDirectories
       ? '当前 CLI 不支持追加目录，请升级后刷新检测' : '';
   const [path, setPath] = useState(group.workspace ?? '');

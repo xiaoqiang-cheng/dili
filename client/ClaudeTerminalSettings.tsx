@@ -25,7 +25,7 @@ export default function ClaudeTerminalSettings({ session, readOnly }: { session:
     finally { setRestarting(false); }
   };
   return <div className="claude-terminal-settings">
-    <AgentChatQuickSettings controller={controller} blockedReason={session.archived ? '恢复联系人后可修改设置。' : readOnly ? '只读访问不能修改设置。' : undefined} />
+    <AgentChatQuickSettings controller={controller} blockedReason={session.archived ? '恢复会话后可修改设置。' : readOnly ? '只读访问不能修改设置。' : undefined} />
     {settings?.restartRequired && session.running && !readOnly && <button type="button" className="agent-chat-quick-button claude-terminal-restart" disabled={restarting} title="终端仍按启动时的设置运行" onClick={() => void restart()}>{restarting ? <LoaderCircle size={13} className="spin" /> : <RotateCcw size={13} />}<span>重启以应用</span></button>}
     {error && <span role="alert" className="claude-terminal-settings-error" title={error}>{error}</span>}
   </div>;

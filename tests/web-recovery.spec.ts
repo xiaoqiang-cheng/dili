@@ -167,15 +167,18 @@ for (const backend of ['codex', 'claude', 'dsh'] as const) test(`${backend} runn
   try {
     await page.goto('/');
     await page.getByRole('button', { name: `${session.title} 的更多操作`, exact: true }).click();
-    await page.getByRole('button', { name: '归档联系人', exact: true }).click();
+    await expect(page.getByRole('button', { name: '置顶会话', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Fork 会话', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '分享会话', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '归档会话', exact: true }).click();
     await expect(page.getByRole('button', { name: `进入 ${session.title} 的会话`, exact: true })).not.toBeVisible();
     let current = (await readState(page.request)).sessions.find(item => item.id === session.id)!;
     expect(current.archived).toBe(true); expect(current.running).toBe(false); expect(current.status).toBe('stopped');
     const nativeSessionId = current.nativeSessionId;
     await page.goto(`/#/archive?session=${session.id}`);
-    await expect(page.getByRole('button', { name: '已归档 · 恢复联系人', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '已归档 · 恢复会话', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '启动原生会话', exact: true })).toBeDisabled();
-    await page.getByRole('button', { name: '已归档 · 恢复联系人', exact: true }).click();
+    await page.getByRole('button', { name: '已归档 · 恢复会话', exact: true }).click();
     await expect(page.getByRole('button', { name: '启动原生会话', exact: true })).toBeEnabled();
     current = (await readState(page.request)).sessions.find(item => item.id === session.id)!;
     expect(current.archived).toBe(false); expect(current.running).toBe(false);
