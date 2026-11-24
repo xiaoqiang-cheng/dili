@@ -68,7 +68,7 @@ test('recipient validation rejects missing, foreign and archived contacts withou
   const { store, group, member, message } = groupFixture(t);
   const otherGroup = store.addGroup('其他群组', '另一个目标');
   const foreign = store.addSession({ backend: 'dsh', title: '其他成员', cwd: '/tmp', groupId: otherGroup.id });
-  const archived = store.addSession({ backend: 'claude', title: '已归档', cwd: '/tmp', groupId: group.id, archived: true });
+  const archived = store.addSession({ backend: 'claude', title: '已移入垃圾桶', cwd: '/tmp', groupId: group.id, archived: true });
   const originalGroup = store.group(group.id);
 
   for (const invalidId of ['missing-session', foreign.id, archived.id]) {
@@ -77,6 +77,25 @@ test('recipient validation rejects missing, foreign and archived contacts withou
     assert.equal(store.deliveries().length, 0);
     assert.deepEqual(store.group(group.id), originalGroup);
   }
+});
+
+test('removing a session drops undelivered tasks but keeps group history', t => {
+  const { store, group, member, message } = groupFixture(t);
+  const sentMessage = store.addMessage({ ...message, text: '已投递任务', recipientIds: [member.id] });
+  const sent = store.deliveries().find(item => item.messageId === sentMessage.id)!;
+  store.updateDelivery(sent.id, 'sent');
+  const pendingMessage = store.addMessage({ ...message, text: '未投递任务', recipientIds: [member.id] });
+  assert.equal(store.deliveries().find(item => item.messageId === pendingMessage.id)?.status, 'pending');
+
+  store.removeSession(member.id);
+
+  assert.equal(store.session(member.id), undefined);
+  assert.equal(store.deliveries().some(item => item.sessionId === member.id && item.status === 'sent'), true);
+  assert.equal(store.deliveries().some(item => item.sessionId === member.id && item.status === 'pending'), false);
+  // The group keeps the historical task messages even though the contact is gone.
+  assert.equal(store.groupDetail(group.id).messages.length, 2);
+  assert.equal(store.groupDetail(group.id).deliveries.length, 1);
+  assert.throws(() => store.removeSession(member.id), /会话不存在/);
 });
 
 test('sender must belong to the group before a result can be attributed to it', t => {

@@ -27,13 +27,13 @@ async function openTerminal(page: Page, request: APIRequestContext, session: Ses
 
 test('touch screens keep every editable field at 16px so iOS never zooms on focus', async ({ page }) => {
   await page.goto('/#/contacts');
-  const search = page.getByLabel('搜索联系人');
+  const search = page.getByLabel('搜索会话');
   await search.focus();
   expect(await search.evaluate(node => parseFloat(getComputedStyle(node).fontSize))).toBeGreaterThanOrEqual(16);
   await page.getByRole('button', { name: '新建', exact: true }).click();
-  await page.getByRole('menuitem', { name: '新建联系人', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: '新建会话联系人' });
-  const name = dialog.getByLabel('联系人名称');
+  await page.getByRole('menuitem', { name: '新建会话', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '新建会话' });
+  const name = dialog.getByLabel('会话名称');
   await name.focus();
   const sizes = await dialog.locator('input:visible, textarea:visible, select:visible').evaluateAll(nodes => nodes.map(node => ({
     tag: node.tagName.toLowerCase(),

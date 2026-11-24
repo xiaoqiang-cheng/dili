@@ -39,8 +39,8 @@ const TOOLS: LlmTool[] = [
   { name: 'read_participant_history', description: '读取某个参与者自己会话里最近的对话（含用户直接在它会话里说的话），用于了解它的进度和上下文。', parameters: { type: 'object', properties: { participant_id: { type: 'string' }, limit: { type: 'integer', description: '条数，默认 12，最多 30' } }, required: ['participant_id'] } },
   { name: 'list_topics', description: '列出用户的其他话题（标题、参与者、最近消息），用于回答跨话题的问题。', parameters: { type: 'object', properties: { query: { type: 'string', description: '按标题或内容筛选，可省略' } } } },
   { name: 'dispatch_task', description: '把一项工作派给当前话题里的参与者（只在用户要求或同意时使用）。参与者完成后，你会收到通知并负责汇总。', parameters: { type: 'object', properties: { participant_ids: { type: 'array', items: { type: 'string' } }, text: { type: 'string', description: '任务说明：要做什么、验收标准' }, reference_ns: { type: 'array', items: { type: 'integer' }, description: '要一并发给参与者的回答编号 [#n]' } }, required: ['participant_ids', 'text'] } },
-  { name: 'propose_participant', description: '提议让一个现有联系人分叉加入话题（contact_id），或新建一个 AI 参与者（backend + title）。需要用户批准后才生效。', parameters: { type: 'object', properties: { contact_id: { type: 'string' }, backend: { type: 'string', enum: ['claude', 'codex', 'dsh', 'pi'] }, title: { type: 'string' }, reason: { type: 'string' } }, required: ['reason'] } },
-  { name: 'list_contacts', description: '列出可以拉进话题的现有联系人（id、名称、后端、工作目录）。', parameters: { type: 'object', properties: { query: { type: 'string' } } } },
+  { name: 'propose_participant', description: '提议让一个现有会话分叉加入话题（contact_id），或新建一个 AI 参与者（backend + title）。需要用户批准后才生效。', parameters: { type: 'object', properties: { contact_id: { type: 'string' }, backend: { type: 'string', enum: ['claude', 'codex', 'dsh', 'pi'] }, title: { type: 'string' }, reason: { type: 'string' } }, required: ['reason'] } },
+  { name: 'list_contacts', description: '列出可以拉进话题的现有会话（id、名称、后端、工作目录）。', parameters: { type: 'object', properties: { query: { type: 'string' } } } },
 ];
 
 /** Dili's own topic coordinator: a thin tool-calling loop over Dili's topic
@@ -212,8 +212,8 @@ export class Coordinator {
         let proposal: TopicProposal;
         if (typeof args.contact_id === 'string' && args.contact_id) {
           const contact = store.session(args.contact_id);
-          if (!contact || contact.archived) return '没有这个联系人（用 list_contacts 查 id）';
-          if (contact.groupId === groupId) return '这个联系人已经在话题里';
+          if (!contact || contact.archived) return '没有这个会话（用 list_contacts 查 id）';
+          if (contact.groupId === groupId) return '这个会话已经在话题里';
           const backend = this.options.backends().find(item => item.id === contact.backend);
           if (!backend?.capabilities.fork || !contact.nativeSessionId || contact.forkPending) return `${contact.title} 目前无法分叉（后端不支持或会话尚未启动过），可以改为新建 AI`;
           proposal = { id: proposalId(), status: 'pending', reason, fork: { contactId: contact.id, title: contact.title } };

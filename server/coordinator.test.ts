@@ -111,7 +111,7 @@ test('proposals wait for the user; only real contacts and installed backends qua
       { id: 'b', function: { name: 'propose_participant', arguments: JSON.stringify({ backend: 'claude', title: '设计', reason: 'r' }) } },
       { id: 'c', function: { name: 'propose_participant', arguments: JSON.stringify({ backend: 'codex', title: '后端', reason: '需要写接口' }) } },
     ] }),
-    body => { const results = body.messages.filter(item => item.role === 'tool').map(item => String(item.content)); assert.match(results[0]!, /没有这个联系人/); assert.match(results[1]!, /后端无效或未安装/); assert.match(results[2]!, /已创建提议 P-[0-9a-f]{4}/); return { content: '我提议新建「后端」，请批准。' }; },
+    body => { const results = body.messages.filter(item => item.role === 'tool').map(item => String(item.content)); assert.match(results[0]!, /没有这个会话/); assert.match(results[1]!, /后端无效或未安装/); assert.match(results[2]!, /已创建提议 P-[0-9a-f]{4}/); return { content: '我提议新建「后端」，请批准。' }; },
   ]);
   t.after(() => store.close());
   const topic = store.addGroup('T', '', 'topic');

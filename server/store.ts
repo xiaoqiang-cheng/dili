@@ -12,7 +12,7 @@ export const needsAction = (member: Pick<Session, 'status' | 'unread' | 'archive
 
 const now = () => new Date().toISOString();
 type Table = 'sessions' | 'groups' | 'messages' | 'deliveries' | 'activities';
-export type StoreChange = { table: 'sessions'; data: Session } | { table: 'groups'; data: Group } | { table: 'activities'; data: Activity };
+export type StoreChange = { table: 'sessions'; data: Session } | { table: 'sessions'; removed: string } | { table: 'groups'; data: Group } | { table: 'activities'; data: Activity };
 
 export class Store {
   readonly db: DatabaseSync;
@@ -55,13 +55,13 @@ export class Store {
     const row = this.db.prepare(`SELECT data FROM ${table} WHERE id = ?`).get(id);
     return row ? JSON.parse(String(row.data)) as T : undefined;
   }
+  private emit(change: StoreChange) {
+    if (this.changes) this.changes.push(change);
+    else for (const listener of this.listeners) listener(change);
+  }
   private put<T extends { id: string }>(table: Table, data: T): T {
     this.db.prepare(`INSERT INTO ${table}(id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`).run(data.id, JSON.stringify(data));
-    if (table === 'sessions' || table === 'groups' || table === 'activities') {
-      const change = { table, data } as unknown as StoreChange;
-      if (this.changes) this.changes.push(change);
-      else for (const listener of this.listeners) listener(change);
-    }
+    if (table === 'sessions' || table === 'groups' || table === 'activities') this.emit({ table, data } as unknown as StoreChange);
     return data;
   }
   transaction<T>(fn: () => T): T {
@@ -95,6 +95,20 @@ export class Store {
     const session = this.session(id);
     if (!session) throw new Error('会话不存在');
     return this.put('sessions', { ...session, ...patch, id, updatedAt: now() });
+  }
+  /** Permanently remove Dili's own session record. Native history, group
+   * messages and worktree files stay where they are; only undelivered tasks
+   * targeting this session are discarded. */
+  removeSession(id: string): Session {
+    return this.transaction(() => {
+      const session = this.session(id);
+      if (!session) throw new Error('会话不存在');
+      this.db.prepare(`DELETE FROM deliveries WHERE json_extract(data, '$.sessionId') = ?
+        AND json_extract(data, '$.status') IN ('pending', 'sending', 'unknown')`).run(id);
+      this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+      this.emit({ table: 'sessions', removed: id });
+      return session;
+    });
   }
   addGroup(title: string, goal: string, kind?: Group['kind']): Group {
     const date = now();
@@ -146,7 +160,7 @@ export class Store {
         return quoted;
       });
       for (const id of recipientIds) {
-        if (this.session(id)?.groupId !== input.groupId || this.session(id)?.archived) throw new Error('接收成员无效或已归档');
+        if (this.session(id)?.groupId !== input.groupId || this.session(id)?.archived) throw new Error('接收成员无效或已移入垃圾桶');
       }
       const preview = replyPreview(input.text || (input.attachments?.length ? '[图片]' : ''));
       // The coordinator's placeholder while it thinks is neither news nor a preview;

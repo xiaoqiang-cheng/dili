@@ -319,7 +319,7 @@ test('a slow shell creation follows the latest contact directory and reconnect p
     await expect(dock.locator('.terminal-connection.connected')).toHaveCount(1);
     await command(dock, `printf 'CWD_RESULT:%s\\n' "$PWD"`);
     await expect(dock.locator('.xterm-rows')).toContainText(`CWD_RESULT:${secondCwd}`);
-    const search = page.getByLabel('搜索联系人', { exact: true });
+    const search = page.getByLabel('搜索会话', { exact: true });
     await search.fill('正在编辑');
     const count = await page.evaluate(() => {
       const sockets = (window as unknown as { panelSockets: WebSocket[] }).panelSockets;

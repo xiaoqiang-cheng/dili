@@ -53,9 +53,9 @@ function claudeEfforts(models: ClaudeModelChoice[], model: string | null): { eff
   return efforts.length ? { efforts } : { efforts, effortReason: '当前模型不支持调整推理强度' };
 }
 
-const LIVE_SCOPE = '保存到当前联系人，并立即作用于图形执行器；切换到原生终端或重新启动时沿用同一设置。';
-const TERMINAL_SCOPE = '保存到当前联系人。原生终端按启动时的设置运行，重启终端后生效；在终端内用 Shift+Tab 切换的权限会同步回联系人。';
-const STOPPED_SCOPE = '保存到当前联系人，下次启动图形对话或原生终端时生效。';
+const LIVE_SCOPE = '保存到当前会话，并立即作用于图形执行器；切换到原生终端或重新启动时沿用同一设置。';
+const TERMINAL_SCOPE = '保存到当前会话。原生终端按启动时的设置运行，重启终端后生效；在终端内用 Shift+Tab 切换的权限会同步回会话。';
+const STOPPED_SCOPE = '保存到当前会话，下次启动图形对话或原生终端时生效。';
 
 /** Claude's own stream-json protocol. No TUI scraping, API credentials or SDK
  * dependency: the installed CLI still owns tools, auth, permissions and history. */

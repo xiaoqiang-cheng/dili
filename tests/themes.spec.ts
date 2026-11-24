@@ -185,7 +185,7 @@ test('interface zoom slider applies 100–200%, persists and synchronizes withou
   expect(await terminal!.evaluate(element => element.isConnected)).toBe(true);
   expect(connections).toBe(count);
   expect((await page.locator('.xterm-screen').boundingBox())!.width).toBeLessThanOrEqual(originalWidth + 20);
-  const separator = page.getByRole('separator', { name: '调整联系人列表宽度', exact: true });
+  const separator = page.getByRole('separator', { name: '调整会话列表宽度', exact: true });
   const beforeWidth = Number(await separator.getAttribute('aria-valuenow'));
   const bounds = (await separator.boundingBox())!;
   await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + 30);

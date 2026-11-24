@@ -14,7 +14,7 @@ const resultLabels: Record<GroupDirectoryResult['status'], string> = {
 export default function GroupWorkspacePermissions({ group, members, backends, close, refresh }: {
   group: Group; members: Session[]; backends: BackendInfo[]; close: () => void; refresh: () => Promise<unknown>;
 }) {
-  const unavailable = (member: Session) => member.archived ? '已归档，请先恢复联系人' : member.backend === 'dsh'
+  const unavailable = (member: Session) => member.archived ? '已移入垃圾桶，请先恢复会话' : member.backend === 'dsh'
     ? 'DeepSeek 原生沙箱暂不支持追加目录' : member.backend === 'pi'
     ? 'Pi 目录由原生工具配置决定，Dili 未接入 --add-dir' : !backends.find(item => item.id === member.backend)?.capabilities.additionalDirectories
       ? '当前 CLI 不支持追加目录，请升级后刷新检测' : '';
@@ -33,7 +33,7 @@ export default function GroupWorkspacePermissions({ group, members, backends, cl
       const response = await api<GroupDirectoryResponse>(`/groups/${group.id}/directories`, { path, sessionIds: ids });
       setPath(response.path);
       setResults(previous => [...previous.filter(result => !ids.includes(result.sessionId)), ...response.results]);
-      await refresh().catch(() => setError('授权结果已返回，但联系人列表刷新失败，请稍后刷新。'));
+      await refresh().catch(() => setError('授权结果已返回，但会话列表刷新失败，请稍后刷新。'));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '无法完成批量授权');
       await refresh().catch(() => {});
@@ -54,12 +54,12 @@ export default function GroupWorkspacePermissions({ group, members, backends, cl
             <span className="workspace-member-info"><strong>{member.title}</strong><small title={member.cwd}>{member.cwd}</small>{reason && <small>{reason}</small>}{result && <small className={result.status === 'failed' ? 'form-error' : 'workspace-member-result'} role="status">{result.error || resultLabels[result.status]}</small>}</span>
           </label>;
         })}
-        {!members.length && <p className="form-note">群组暂无成员，请先添加联系人。</p>}
+        {!members.length && <p className="form-note">群组暂无成员，请先添加会话。</p>}
       </div>
       <p className="form-note">Codex 空闲时立即生效；Claude 与兼容终端在下次恢复时生效。不会停止正在执行的任务；忙碌而无法应用的成员可稍后重试。</p>
       {!!results.length && <p className="form-note" role="status">授权结果：{results.filter(result => result.status !== 'failed').length} 位已处理，{results.filter(result => result.status === 'failed').length} 位失败。</p>}
       {chosen.length > 100 && <p className="form-error">每次最多选择 100 位成员。</p>}
-      {group.archived && <p className="form-error">请先恢复归档群组。</p>}
+      {group.archived && <p className="form-error">请先从垃圾桶恢复群组。</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
     </div><div className="modal-footer workspace-permissions-footer">
       <button className="button secondary" type="button" disabled={busy} onClick={close}>完成</button>

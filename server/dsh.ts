@@ -587,8 +587,9 @@ export class DshBridge {
 
   async createSession(cwd: string, _title?: string): Promise<NativeSession> {
     await this.start();
-    // dsh 0.2 ids are bare UUIDs. The 0.1 `session-<uuid>` form creates a
-    // session dir that dsh-tui then refuses to resume.
+    // Dili mints a bare UUID for new sessions: current Harness accepts it, and
+    // it avoids handing dsh-tui a `session-<uuid>` form it may reject. Native
+    // Harness builds may also create the prefixed form; resume by membership.
     const result = await this.rpc<{ sessionId: string }>('session.create', { cwd, sessionId: randomUUID() });
     return this.reference(result.sessionId);
   }
@@ -612,10 +613,25 @@ export class DshBridge {
     const result = await this.rpc<{ items: DshSummary[] }>('session.list', {});
     if (!Array.isArray(result.items) || !result.items.some(item => item.sessionId === id)) {
       throw Object.assign(new Error(isLegacyDshId(id)
-        ? '这个联系人的原生会话 ID 是 dsh 0.1 的 `session-<uuid>` 形式，DeepSeek Harness 0.2 无法恢复。请重建这个会话。'
+        ? '这个会话的原生会话 ID 是 dsh 0.1 的 `session-<uuid>` 形式，当前 DeepSeek Harness 无法恢复。请重建这个会话。'
         : '未找到对应的 DeepSeek Harness 会话'), { status: 409, ...(isLegacyDshId(id) ? { code: 'NATIVE_SESSION_LEGACY' as const } : {}) });
     }
     return this.reference(id);
+  }
+
+  /** Resume the native session when it is listed, and only fall back to a new
+   * session for an old `session-<uuid>` id this Harness no longer knows. The
+   * prefix alone is not legacy: dsh 0.2.2 itself mints and lists that form, so
+   * native membership is the authority. */
+  async openOrCreateSession(id: string | null | undefined, cwd: string, title?: string): Promise<{ native: NativeSession; replacedLegacy: boolean }> {
+    if (!id) return { native: await this.createSession(cwd, title), replacedLegacy: false };
+    try {
+      return { native: await this.openSession(id), replacedLegacy: false };
+    } catch (error) {
+      const legacy = isLegacyDshId(id) && !!error && typeof error === 'object' && 'code' in error && error.code === 'NATIVE_SESSION_LEGACY';
+      if (!legacy) throw error;
+      return { native: await this.createSession(cwd, title), replacedLegacy: true };
+    }
   }
 
   async prompt(id: string, text: string): Promise<void> {

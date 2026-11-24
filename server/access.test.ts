@@ -47,6 +47,12 @@ test('the export and usage routes are read-only and require a session share matc
   }
 });
 
+test('purging a trashed session is owner-only', () => {
+  assert.equal(allowed(owner, 'DELETE', '/api/sessions/s1').allowed, true);
+  assert.deepEqual(allowed(share({ mode: 'write' }), 'DELETE', '/api/sessions/s1'), { allowed: false, status: 403, error: '分享链接无权执行此操作' });
+  assert.deepEqual(allowed(null, 'DELETE', '/api/sessions/s1'), { allowed: false, status: 401, error: '请先登录' });
+});
+
 test('handing a workspace to a desktop editor is owner-only', () => {
   for (const path of ['/api/sessions/s1/workspace/open-editor', '/api/groups/g1/workspace/open-editor', '/api/workspaces/w1/workspace/open-editor']) {
     assert.equal(allowed(owner, 'POST', path).allowed, true);

@@ -58,7 +58,7 @@ export function useAgentChatSettings(sessionId: string, identity: string, busy: 
     setSaving(true); setError(''); setNotice('');
     try {
       const next = await api<AgentChatSettings>(path, { version: settings.version, field, value: selection[field] });
-      if (current()) { accept(next); setNotice(next.apply === 'restart' ? next.restartRequired ? '已保存到联系人。重启终端后生效。' : '已保存到联系人，下次启动时生效。' : '原生设置已确认，将用于后续任务。'); }
+      if (current()) { accept(next); setNotice(next.apply === 'restart' ? next.restartRequired ? '已保存到会话。重启终端后生效。' : '已保存到会话，下次启动时生效。' : '原生设置已确认，将用于后续任务。'); }
     } catch (cause) {
       // An uncertain write may have applied. Require native readback before retrying.
       if (current()) { setSettings(null); setError(cause instanceof Error ? cause.message : '修改失败，请刷新确认'); }

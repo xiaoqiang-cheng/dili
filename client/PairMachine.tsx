@@ -47,6 +47,6 @@ export default function PairMachine({ local }: { local: boolean }) {
     return () => { active = false; };
   }, [returnUrl, target, remote, local, attempt]);
   return <main className="machines-page"><h1>{remote ? '连接远程机器' : '正在进入机器'}</h1>
-    {!back ? <p role="alert">返回地址无效，请从机器列表重新添加。</p> : error ? <><p role="alert">{error}</p>{remote && local && <form onSubmit={event => { event.preventDefault(); request.current = null; setError(''); setAttempt(value => value + 1); }}><label>邀请码<input type="password" autoComplete="off" required maxLength={1600} value={invite} onChange={event => setInvite(event.target.value)} /></label><button className="button primary">重试连接</button></form>}<a href={back.href}>返回机器列表</a></> : <p role="status">{remote ? '正在准备远程连接，首次下载客户端可能需要约 90 秒…' : '验证成功，正在自动保存并进入联系人…'}</p>}
+    {!back ? <p role="alert">返回地址无效，请从机器列表重新添加。</p> : error ? <><p role="alert">{error}</p>{remote && local && <form onSubmit={event => { event.preventDefault(); request.current = null; setError(''); setAttempt(value => value + 1); }}><label>邀请码<input type="password" autoComplete="off" required maxLength={1600} value={invite} onChange={event => setInvite(event.target.value)} /></label><button className="button primary">重试连接</button></form>}<a href={back.href}>返回机器列表</a></> : <p role="status">{remote ? '正在准备远程连接，首次下载客户端可能需要约 90 秒…' : '验证成功，正在自动保存并进入会话列表…'}</p>}
   </main>;
 }

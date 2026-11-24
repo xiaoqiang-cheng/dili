@@ -5,8 +5,8 @@ import type { AppState, DiscoveredSession, Session } from '../shared/types';
 async function openImport(page: Page) {
   await page.goto('/');
   await page.getByRole('button', { name: '新建', exact: true }).click();
-  await page.getByRole('menuitem', { name: '导入会话', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: '导入已有会话', exact: true });
+  await page.getByRole('menuitem', { name: '导入已有对话', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '导入已有对话', exact: true });
   await dialog.getByRole('button', { name: /Codex/ }).click();
   return dialog;
 }
@@ -23,8 +23,8 @@ for (const availability of [false, undefined]) {
     await page.route('**/api/discover?backend=*', route => route.fulfill({ json: { sessions: [candidate] } }));
     page.on('request', request => { if (request.url().endsWith('/api/import') && request.method() === 'POST') imports.push(request.postDataJSON()); });
     const dialog = await openImport(page);
-    await dialog.getByLabel('搜索可导入会话').fill('迁移会话');
-    await dialog.getByLabel('搜索可导入会话').press('Enter');
+    await dialog.getByLabel('搜索可导入对话').fill('迁移会话');
+    await dialog.getByLabel('搜索可导入对话').press('Enter');
     expect(imports).toHaveLength(0);
     await dialog.getByRole('button', { name: availability === false ? '选择目录' : '添加', exact: true }).click();
     await expect(dialog.getByLabel('导入工作目录', { exact: true })).toBeVisible();
@@ -88,7 +88,7 @@ test('an imported Codex owned by another client offers native fork and resume re
   await expect.poll(() => retries).toBe(1);
   await drawer.getByRole('button', { name: 'Fork 后继续', exact: true }).click();
   const fork = page.getByRole('dialog', { name: 'Fork 会话', exact: true });
-  await fork.getByLabel('联系人名称').fill('独立继续导入上下文');
+  await fork.getByLabel('会话名称').fill('独立继续导入上下文');
   await fork.getByRole('button', { name: '创建 Fork', exact: true }).click();
   await expect(page.getByRole('dialog', { name: '独立继续导入上下文 的私聊' })).toBeVisible();
   const after = (await (await page.request.get('/api/state')).json() as AppState).sessions;

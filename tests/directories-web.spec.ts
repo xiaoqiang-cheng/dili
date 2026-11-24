@@ -13,12 +13,12 @@ test('create and Fork accept copied directory links containing spaces and Chines
   try {
     await mkdir(project); await mkdir(forkDirectory);
     await page.goto('/');
-    await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建联系人', exact: true }).click();
-    const create = page.getByRole('dialog', { name: '新建会话联系人', exact: true });
-    await create.getByLabel('联系人名称').fill('目录链接创建验收');
+    await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建会话', exact: true }).click();
+    const create = page.getByRole('dialog', { name: '新建会话', exact: true });
+    await create.getByLabel('会话名称').fill('目录链接创建验收');
     await create.getByRole('button', { name: /Codex/ }).click();
     await create.getByLabel('工作目录', { exact: true }).fill(pathToFileURL(project).href);
-    await create.getByRole('button', { name: '创建联系人', exact: true }).click();
+    await create.getByRole('button', { name: '创建会话', exact: true }).click();
     await expect(page.getByRole('dialog', { name: '目录链接创建验收 的私聊', exact: true })).toBeVisible();
     const afterCreate = await (await request.get('/api/state')).json() as AppState;
     expect(afterCreate.sessions.find(session => session.title === '目录链接创建验收')?.cwd).toBe(project);
@@ -26,7 +26,7 @@ test('create and Fork accept copied directory links containing spaces and Chines
     await page.getByRole('button', { name: 'Dili · 开发笔记 的更多操作', exact: true }).click();
     await page.getByRole('button', { name: 'Fork 会话', exact: true }).click();
     const fork = page.getByRole('dialog', { name: 'Fork 会话', exact: true });
-    await fork.getByLabel('联系人名称').fill('目录链接 Fork 验收');
+    await fork.getByLabel('会话名称').fill('目录链接 Fork 验收');
     await fork.getByLabel('新的工作目录', { exact: true }).fill(pathToFileURL(forkDirectory).href);
     await fork.getByRole('button', { name: '创建 Fork', exact: true }).click();
     await expect(page.getByRole('dialog', { name: '目录链接 Fork 验收 的私聊', exact: true })).toBeVisible();
@@ -44,15 +44,15 @@ test('directory explorer navigates real folders, reveals hidden names, selects p
     await mkdir(join(project, '.配置'));
     await writeFile(join(project, 'README.txt'), 'Only directories are shown.');
     await page.goto('/');
-    await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建联系人', exact: true }).click();
-    const create = page.getByRole('dialog', { name: '新建会话联系人', exact: true });
-    await create.getByLabel('联系人名称').fill('浏览目录时保留的名称');
+    await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建会话', exact: true }).click();
+    const create = page.getByRole('dialog', { name: '新建会话', exact: true });
+    await create.getByLabel('会话名称').fill('浏览目录时保留的名称');
     await create.getByLabel('工作目录', { exact: true }).fill(pathToFileURL(root).href);
     const browse = create.getByRole('button', { name: '浏览工作目录', exact: true });
     await browse.click();
     const picker = page.getByRole('dialog', { name: '选择工作目录', exact: true });
     await expect(picker.locator('.directory-current code')).toHaveText(root);
-    await expect(page.locator('.modal[aria-label="新建会话联系人"]')).toHaveAttribute('inert', '');
+    await expect(page.locator('.modal[aria-label="新建会话"]')).toHaveAttribute('inert', '');
     await picker.getByRole('button', { name: '中文 项目', exact: true }).click();
     await expect(picker.locator('.directory-current code')).toHaveText(project);
     await expect(picker.getByRole('button', { name: '.配置', exact: true })).toHaveCount(0);
@@ -68,7 +68,7 @@ test('directory explorer navigates real folders, reveals hidden names, selects p
     await picker.getByRole('button', { name: '选择此目录', exact: true }).click();
     await expect(picker).not.toBeVisible();
     await expect(create.getByLabel('工作目录', { exact: true })).toHaveValue(project);
-    await expect(create.getByLabel('联系人名称')).toHaveValue('浏览目录时保留的名称');
+    await expect(create.getByLabel('会话名称')).toHaveValue('浏览目录时保留的名称');
     await expect(browse).toBeFocused();
 
     await browse.click();
@@ -133,8 +133,8 @@ test('directory explorer fits a 390px viewport with long folder names and paths'
     await mkdir(join(project, '很长的子目录名字 用来检查目录资源管理器不发生横向溢出'));
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto('/');
-    await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建联系人', exact: true }).click();
-    const create = page.getByRole('dialog', { name: '新建会话联系人', exact: true });
+    await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建会话', exact: true }).click();
+    const create = page.getByRole('dialog', { name: '新建会话', exact: true });
     await create.getByLabel('工作目录', { exact: true }).fill(project);
     await create.getByRole('button', { name: '浏览工作目录', exact: true }).click();
     const picker = page.getByRole('dialog', { name: '选择工作目录', exact: true });
@@ -158,7 +158,7 @@ test('contact cards expose and search the latest prompt without overflowing narr
   await page.route('**/api/state', route => route.fulfill({ json: state }));
   await page.route('**/api/events', route => route.fulfill({ contentType: 'text/event-stream', body: `retry: 60000\nevent: state\ndata: ${JSON.stringify(state)}\n\n` }));
   await page.goto('/');
-  await page.getByLabel('搜索联系人', { exact: true }).fill('目录验收索引');
+  await page.getByLabel('搜索会话', { exact: true }).fill('目录验收索引');
   await expect(page.locator('.session-card')).toHaveCount(1);
   const card = page.getByRole('article').filter({ has: page.getByRole('heading', { name: contact.title, exact: true }) });
   await expect(card.locator('.card-prompt p')).toHaveText(latestPrompt);
@@ -182,8 +182,8 @@ test('a delayed directory response preserves a newer pasted path until the user 
       await route.continue();
     });
     await page.goto('/');
-    await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建联系人', exact: true }).click();
-    const create = page.getByRole('dialog', { name: '新建会话联系人', exact: true });
+    await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建会话', exact: true }).click();
+    const create = page.getByRole('dialog', { name: '新建会话', exact: true });
     await create.getByLabel('工作目录', { exact: true }).fill(root);
     await create.getByRole('button', { name: '浏览工作目录', exact: true }).click();
     const picker = page.getByRole('dialog', { name: '选择工作目录', exact: true });

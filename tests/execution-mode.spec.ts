@@ -5,8 +5,8 @@ import type { AppState } from '../shared/types';
 test('new contacts on all platforms choose their native permission preset, persisted across page reloads', async ({ page, request }) => {
   for (const backend of ['claude', 'codex', 'dsh'] as const) {
     await page.goto('/#/contacts');
-    await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建联系人', exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: '新建会话联系人' });
+    await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建会话', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: '新建会话' });
     await dialog.getByRole('button', { name: backend === 'claude' ? /Claude/ : backend === 'codex' ? /Codex/ : /DeepSeek/ }).click();
     if (backend === 'claude') {
       // Claude offers every mode its CLI reports, bypass included.
@@ -26,8 +26,8 @@ test('new contacts on all platforms choose their native permission preset, persi
       await expect(mode.locator('option[value="auto"]')).toHaveAttribute('disabled', '');
       await expect(dialog).toContainText('尚未检测到 Auto 支持');
     }
-    await dialog.getByLabel('联系人名称').fill(`${backend === 'dsh' ? 'Default' : 'Auto'} ${backend}`);
-    await dialog.getByRole('button', { name: '创建联系人', exact: true }).click();
+    await dialog.getByLabel('会话名称').fill(`${backend === 'dsh' ? 'Default' : 'Auto'} ${backend}`);
+    await dialog.getByRole('button', { name: '创建会话', exact: true }).click();
     await expect(page.locator('.terminal-connection.connected')).toHaveCount(1);
     const state = await (await request.get('/api/state')).json() as AppState;
     const contact = state.sessions.find(item => item.title === `${backend === 'dsh' ? 'Default' : 'Auto'} ${backend}`)!;

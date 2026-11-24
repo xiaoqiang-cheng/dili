@@ -429,6 +429,29 @@ test('dsh creates 0.2 sessions with a bare UUID and reports a legacy 0.1 id inst
   await bridge.close();
 });
 
+test('a session- id listed by native Harness resumes instead of losing its history', { timeout: 15_000 }, async t => {
+  const { bridge, directory, id } = await fixture(t, { modern: true });
+  await bridge.start();
+  // dsh 0.2.2 itself mints `session-<uuid>`; the fixture's session.list includes one.
+  assert.equal(isCurrentDshId(id), false);
+  const resumed = await bridge.openOrCreateSession(id, directory, 'existing');
+  assert.equal(resumed.replacedLegacy, false);
+  assert.equal(resumed.native.nativeSessionId, id);
+  assert.equal(await readFile(join(directory, 'native-create'), 'utf8').catch(() => ''), '', 'resuming must not create a replacement session');
+
+  // Only a prefixed id absent from session.list is the old 0.1 form.
+  const missing = `session-${randomUUID()}`;
+  const replaced = await bridge.openOrCreateSession(missing, directory, 'replacement');
+  assert.equal(replaced.replacedLegacy, true);
+  assert.equal(isCurrentDshId(replaced.native.nativeSessionId), true);
+  assert.notEqual(replaced.native.nativeSessionId, missing);
+  assert.match(await readFile(join(directory, 'native-create'), 'utf8'), new RegExp(replaced.native.nativeSessionId));
+
+  // An unknown bare UUID is a hard error, never a silent new session.
+  await assert.rejects(bridge.openOrCreateSession(randomUUID(), directory, 'unknown'), /未找到/);
+  await bridge.close();
+});
+
 test('slow successful readiness probes share one deadline and cannot create a native session after it expires', { timeout: 5000 }, async t => {
   const { bridge, directory } = await fixture(t, { probeDelayMs: 350, startupTimeoutMs: 650 });
   const started = Date.now();

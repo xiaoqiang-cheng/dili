@@ -249,7 +249,7 @@ for (const phone of [false, true]) {
       await card.getByRole('button', { name: `进入群聊 ${group.title}` }).click();
       await expect(page.getByLabel('群组消息')).toBeVisible();
       if (unread) await expect.poll(() => reads).toBeGreaterThan(0);
-      if (phone) await page.getByRole('button', { name: '返回联系人列表', exact: true }).click();
+      if (phone) await page.getByRole('button', { name: '返回会话列表', exact: true }).click();
       await expect(card.locator('.unread-badge')).toHaveCount(0);
       // Unresolved native actions remain visible as status, never as unread messages.
       await expect(status).toHaveText('异常 1 · 待审批 1');
@@ -277,7 +277,7 @@ test.describe('phone group chat', () => {
     await page.getByRole('button', { name: '一键分栏' }).click();
     await expect(page.getByRole('tab')).toHaveCount(3);
     await expect(page.locator('.group-split-pane')).toHaveCount(1);
-    await page.getByRole('button', { name: '返回联系人列表' }).click();
+    await page.getByRole('button', { name: '返回会话列表' }).click();
     await expect(page.locator('.group-card').filter({ hasText: '手机群聊' })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
@@ -363,11 +363,11 @@ test('member avatars open private chat and unmentioned messages follow the last 
 });
 
 test('groups can be archived and restored without losing history or members', async ({ page, request }) => {
-  const { group, members } = await createGroup(request, '归档群聊验收');
+  const { group, members } = await createGroup(request, '垃圾桶群聊验收');
   await page.goto('/#/contacts');
   const card = page.locator('.group-card').filter({ hasText: group.title });
   await card.getByRole('button', { name: `${group.title} 的更多操作` }).click();
-  await card.getByRole('button', { name: '归档群聊', exact: true }).click();
+  await card.getByRole('button', { name: '移入垃圾桶', exact: true }).click();
   await expect(card).toHaveCount(0);
   await page.goto('/#/archive');
   await expect(card).toBeVisible();

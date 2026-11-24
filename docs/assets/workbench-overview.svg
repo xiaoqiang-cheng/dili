@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
 <title id="title">Dili · 给 AI 会话一个工作台</title>
-<desc id="desc">布局示意，非实机截图。左侧是带状态的会话联系人，中间是图形对话，右侧是带标签的文件与笔记预览，底部是交互式终端。</desc>
+<desc id="desc">布局示意，非实机截图。左侧是带状态的会话列表，中间是图形对话，右侧是带标签的文件与笔记预览，底部是交互式终端。</desc>
 <defs>
   <linearGradient id="backdrop" x2="1" y2="1"><stop stop-color="#f0f5ff"/><stop offset="1" stop-color="#faf8f3"/></linearGradient>
   <filter id="shadow" x="-10%" y="-10%" width="120%" height="135%"><feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#22385c" flood-opacity=".09"/></filter>
@@ -22,7 +22,7 @@
 <rect x="40" y="174" width="1360" height="52" rx="0" fill="#ffffff"/>
 <g transform="translate(54 182) scale(0.32)"><g transform="rotate(-8 50 50)"><path d="M14 14H44V29L29 44H14Z" fill="#3370ff"/><path d="M56 14H86V44H71L56 29Z" fill="#252b35"/><path d="M86 56V86H56V71L71 56Z" fill="#3370ff"/><path d="M44 86H14V56H29L44 71Z" fill="#747d8c"/></g></g>
 <text x="99" y="208" font-size="21" font-weight="700">dili</text>
-<text x="177" y="207" font-size="16" fill="#3370ff" style="fill:#3370ff" font-weight="700">联系人</text>
+<text x="177" y="207" font-size="16" fill="#3370ff" style="fill:#3370ff" font-weight="700">会话列表</text>
 <text x="257" y="207" font-size="16" fill="#747d8c" style="fill:#747d8c">群组</text>
 <text x="1046" y="207" font-size="16" fill="#65728a" style="fill:#65728a">文件</text>
 <text x="1110" y="207" font-size="16" fill="#65728a" style="fill:#65728a">随手记</text>
@@ -30,7 +30,7 @@
 <text x="1284" y="207" font-size="16" fill="#65728a" style="fill:#65728a">外观</text>
 <path d="M40 226H1400" stroke="#e8ecf2"/>
 <rect x="40" y="227" width="270" height="589" rx="0" fill="#f7f9fc"/>
-<text x="60" y="264" font-size="17" font-weight="700">会话联系人</text>
+<text x="60" y="264" font-size="17" font-weight="700">会话列表</text>
 <text x="260" y="264" font-size="21" fill="#747d8c" style="fill:#747d8c">＋</text>
 <rect x="58" y="284" width="234" height="34" rx="8" fill="#edf0f5"/>
 <text x="72" y="307" font-size="15" fill="#929aa8" style="fill:#929aa8">搜索会话、目录…</text>
@@ -121,5 +121,5 @@
 <text x="335" y="800" font-size="15" fill="#9eb3cf" style="fill:#9eb3cf" class="mono">M src/auth.ts</text>
 </g>
 <text x="48" y="862" font-size="16" fill="#747d8c" style="fill:#747d8c">布局示意 · 非实机截图</text>
-<text x="956" y="862" font-size="17" fill="#65728a" style="fill:#65728a">联系人 / 对话 / 预览 / 终端，在一个页面。</text>
+<text x="956" y="862" font-size="17" fill="#65728a" style="fill:#65728a">会话列表 / 对话 / 预览 / 终端，在一个页面。</text>
 </svg>

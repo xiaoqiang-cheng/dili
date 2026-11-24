@@ -41,7 +41,7 @@ import { remoteBase, remoteHtml, remoteManifest } from './remote-base.ts';
 import { caddyConfig, DEFAULT_REMOTE, normalizeRemote, SecretBox, secretKey, Tunnel } from './remote.ts';
 import type { AuthStatus, RemoteSettings, RemoteStatus, ShareMode } from '../shared/auth.ts';
 import { demoBackends, seedDemo, demoCommand } from './demo.ts';
-import { getBackendInfo, buildLaunch, discoverSessions, resolveNativeSessionId, validateNativeId, findExecutable, effectiveClaudeSettings, isLegacyDshId } from './adapters.ts';
+import { getBackendInfo, buildLaunch, discoverSessions, resolveNativeSessionId, validateNativeId, findExecutable, effectiveClaudeSettings } from './adapters.ts';
 import { DshBridge } from './dsh.ts';
 import { DshChatAdapter } from './agents/dsh-chat.ts';
 import { PiBridge } from './pi.ts';
@@ -296,6 +296,19 @@ function state(): AppState {
 }
 function broadcast() {
   if (closing) return;
+  // Hard deletion cannot be represented as an upsert patch; send a full state
+  // once so every connected client drops the removed contact.
+  const full = publisher.takeFull();
+  if (full) {
+    const revision = full.state.revision ?? 0;
+    const chunk = `id: ${revision}\nevent: state\ndata: ${JSON.stringify(full.state)}\n\n`;
+    replay.push(revision, full.baseRevision, chunk);
+    for (const [client, viewer] of sse) {
+      if (client.destroyed || client.writableLength > 2_097_152) { sse.delete(client); client.destroy(); }
+      else client.write(viewer.principal.kind === 'share' ? `event: state\ndata: ${JSON.stringify(viewState(viewer.principal))}\n\n` : chunk);
+    }
+    return;
+  }
   const patch = publisher.takePatch();
   if (!patch) return;
   const chunk = `id: ${patch.revision}\nevent: patch\ndata: ${JSON.stringify(patch)}\n\n`;
@@ -1169,7 +1182,7 @@ app.patch('/api/sessions/:id', async (req, res) => {
     // must never slip between native shutdown and the archived flag.
     return res.json(await stopSession(item.id, () => store.updateSession(item.id, {
       ...patch, status: 'stopped', running: false, errorCode: null,
-      statusSource: 'process', statusDetail: '已停止并归档，原生会话历史保留',
+      statusSource: 'process', statusDetail: '已停止并移入垃圾桶，原生会话历史保留',
     })));
   }
   if ('archived' in patch && (starting.has(item.id) || stopping.has(item.id))) fail('会话正在连接或停止，请稍后重试', 409);
@@ -1180,21 +1193,35 @@ app.patch('/api/sessions/:id', async (req, res) => {
   broadcast(); res.json(updated);
 });
 app.post('/api/sessions/:id/read', (req, res) => { const item = store.updateSession(session(String(req.params.id)).id, { unread: 0 }); broadcast(); res.json(item); });
+/** Empty one trashed contact from Dili. Native history, group messages and
+ * worktree files are intentionally outside this hard-delete boundary. */
+app.delete('/api/sessions/:id', (req, res) => {
+  const item = session(String(req.params.id));
+  if (!item.archived) fail('请先移入垃圾桶，再清理会话', 409);
+  if (item.running || starting.has(item.id) || stopping.has(item.id) || terminals.isStopping(item.id)) fail('会话正在运行或停止，请稍后再清理', 409);
+  auth.revokeSessionShares(item.id);
+  chatApi.forget(item.id);
+  store.removeSession(item.id);
+  store.activity(null, 'purge', `清理了 ${item.title}`);
+  revalidateViewers();
+  broadcast();
+  res.json({ ok: true });
+});
 
 // Append only: revoking a native permission cannot be promised by simply
 // removing it from our metadata (the native session may already retain it).
 async function appendSessionDirectory(id: string, path: string): Promise<{ session: Session; status: GroupDirectoryResult['status'] }> {
   const item = session(id);
   if (item.backend === 'dsh') fail('当前 DeepSeek Harness 原生沙箱只支持单工作区，暂不支持追加目录权限', 409);
-  if (item.backend === 'pi') fail('Pi 当前没有在 Dili 中接入 --add-dir；请使用 Pi 原生工具配置或在目标目录新建联系人', 409);
+  if (item.backend === 'pi') fail('Pi 当前没有在 Dili 中接入 --add-dir；请使用 Pi 原生工具配置或在目标目录新建会话', 409);
   if (!info(item.backend).capabilities.additionalDirectories) fail('当前 CLI 不支持附加目录，请更新后刷新后端检测', 409);
-  if (item.archived) fail('请先恢复归档联系人', 409);
+  if (item.archived) fail('请先从垃圾桶恢复会话', 409);
   if (starting.has(item.id) || stopping.has(item.id) || terminals.isStopping(item.id)) fail('会话正在连接或停止，请稍后重试', 409);
   const directories = item.additionalDirectories ?? [];
   if ([item.cwd, ...directories].some(value => {
     try { return realpathSync(value) === path; } catch { return value === path; }
   })) return { session: item, status: 'unchanged' };
-  if (directories.length >= 20) fail('每个联系人最多添加 20 个附加工作区');
+  if (directories.length >= 20) fail('每个会话最多添加 20 个附加工作区');
   starting.add(item.id);
   try {
     const additionalDirectories = [...directories, path];
@@ -1273,7 +1300,7 @@ app.post('/api/sessions/:id/handoff', async (req, res) => {
   const cwd = req.body?.cwd ? directory(req.body.cwd) : parent.cwd;
   const transcript = demo ? { messages: [], truncated: false } : await conversations.read(parent);
   const prompt = handoffPrompt(parent, transcript, target, typeof req.body?.summary === 'string' ? req.body.summary : undefined);
-  const child = store.addSession({ backend: target, title, cwd, groupId: parent.groupId, parentId: parent.id, origin: 'handoff', statusDetail: '已创建跨平台交接联系人，等待继续工作' });
+  const child = store.addSession({ backend: target, title, cwd, groupId: parent.groupId, parentId: parent.id, origin: 'handoff', statusDetail: '已创建跨平台交接会话，等待继续工作' });
   store.activity(child.id, 'handoff', `从 ${parent.title} 交接到 ${info(target).label}`); broadcast();
   res.status(201).json({ session: child, prompt, source: parent.id, target: target });
 });
@@ -1297,7 +1324,7 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
   if (requested !== 'terminal' && requested !== 'chat') fail('未知会话交互方式');
   const mode = requested as 'terminal' | 'chat';
   if (mode === 'chat' && (demo || !info(item.backend).capabilities.graphicalChat)) fail('这个后端目前不支持原生图形化聊天');
-  if (item.archived) fail('请先恢复归档联系人');
+  if (item.archived) fail('请先从垃圾桶恢复会话');
   if (stopping.has(item.id) || terminals.isStopping(item.id)) fail('会话正在停止，请稍后再启动', 409);
   if (starting.has(item.id)) fail('会话正在连接，请稍后重试', 409);
   // Claude cannot attach its TUI to stream-json. A confirmed, idle handoff
@@ -1310,7 +1337,7 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
     }
     const snapshot = structured ? claudeBridge.chatSnapshot(item.nativeSessionId!) : undefined;
     if (!['idle', 'waiting_input'].includes(item.status) || snapshot?.activeTurnId || snapshot?.requests.length || terminals.isSubmitting(item.id)) fail('请先完成或停止当前任务，并处理审批后再切换执行方式', 409);
-    if (body.handoff !== true) fail(body.restart === true ? '重启将退出当前 Claude 进程，并用联系人设置恢复同一份已保存的会话；需要确认' : '切换将退出当前 Claude 进程，并恢复同一份已保存的会话；需要确认交接', 409);
+    if (body.handoff !== true) fail(body.restart === true ? '重启将退出当前 Claude 进程，并用会话设置恢复同一份已保存的会话；需要确认' : '切换将退出当前 Claude 进程，并恢复同一份已保存的会话；需要确认交接', 409);
     starting.add(item.id); stopping.add(item.id);
     try {
       if (structured) await claudeBridge.closeSession(item.nativeSessionId!);
@@ -1335,7 +1362,7 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
     // the chat side still requires a provably idle RPC snapshot.
     const terminalStateUnknown = !structured && item.status === 'unknown';
     if ((!terminalStateUnknown && !['idle', 'waiting_input'].includes(item.status)) || snapshot?.activeTurnId || snapshot?.requests.length || terminals.isSubmitting(item.id)) fail('请先完成或停止当前任务，并处理 Pi 的确认后再切换执行方式', 409);
-    if (body.handoff !== true) fail(body.restart === true ? '重启将退出当前 Pi 进程，并用联系人设置恢复同一份已保存的会话；需要确认' : '切换将退出当前 Pi 进程，并恢复同一份已保存的会话；需要确认交接', 409);
+    if (body.handoff !== true) fail(body.restart === true ? '重启将退出当前 Pi 进程，并用会话设置恢复同一份已保存的会话；需要确认' : '切换将退出当前 Pi 进程，并恢复同一份已保存的会话；需要确认交接', 409);
     starting.add(item.id); stopping.add(item.id);
     try {
       if (structured) await piBridge.close(item.nativeSessionId!);
@@ -1371,23 +1398,20 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
       if (starting.has(item.id)) fail('会话正在连接，请稍后重试', 409);
       if (!item.nativeSessionId) fail('DeepSeek Harness 会话标识尚未就绪', 409);
       const nativeSessionId = item.nativeSessionId;
-      // A dsh 0.1 `session-<uuid>` id cannot be resumed by dsh 0.2. Replacing the
-      // dead id keeps the contact and its settings while giving it a live session.
-      const replaceLegacy = isLegacyDshId(nativeSessionId);
       // dsh-tui owns the session writer. Reading through the web bridge is
       // safe, but sending/settings would be rejected with session/writer-held.
-      if (replaceLegacy || item.executionTransport !== 'web') {
-        if (!replaceLegacy && body.handoff !== true) fail('接管图形对话会退出当前 dsh-tui，并从同一份已保存会话恢复；需要确认交接', 409);
+      // An old `session-<uuid>` id is not enough to assume it is dead: dsh 0.2.2
+      // also mints that form, so membership in session.list decides later.
+      if (item.executionTransport !== 'web') {
+        if (body.handoff !== true) fail('接管图形对话会退出当前 dsh-tui，并从同一份已保存会话恢复；需要确认交接', 409);
         if (item.status === 'running' || item.status === 'waiting_approval') fail('请先等待当前 dsh-tui 任务结束，再接管图形对话', 409);
         // dsh-tui may not report a hook transition while idle. Read the native
         // observer before killing it so an active turn is never silently lost.
         if (!dsh.readyState) await dsh.start();
         const nativeStatus = await dsh.getStatus(nativeSessionId);
         if (nativeStatus.status === 'running') fail('请先等待当前 dsh-tui 任务结束，再接管图形对话', 409);
-        if (!replaceLegacy) {
-          const pending = dsh.pendingRequests(nativeSessionId);
-          if (pending.questions.length || pending.approvals.length) fail('请先处理原生待回答问题或审批，再接管图形对话', 409);
-        }
+        const pending = dsh.pendingRequests(nativeSessionId);
+        if (pending.questions.length || pending.approvals.length) fail('请先处理原生待回答问题或审批，再接管图形对话', 409);
         starting.add(item.id); stopping.add(item.id);
         try {
           await terminals.stop(item.id);
@@ -1396,14 +1420,14 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
           item = session(item.id);
         } finally { starting.delete(item.id); stopping.delete(item.id); }
       }
-      if (!dsh.readyState) await dsh.start();
-      const native = replaceLegacy ? await dsh.createSession(item.cwd, item.title) : await dsh.openSession(nativeSessionId);
-      if (replaceLegacy) {
+      const resumed = await dsh.openOrCreateSession(nativeSessionId, item.cwd, item.title);
+      const native = resumed.native;
+      if (resumed.replacedLegacy) {
         // Never carry two contacts on one native writer.
-        if (store.sessions().some(other => other.backend === 'dsh' && other.id !== item.id && other.nativeSessionId === native.nativeSessionId)) fail('新建的 DeepSeek Harness 会话与其他联系人冲突，请重新尝试', 409);
+        if (store.sessions().some(other => other.backend === 'dsh' && other.id !== item.id && other.nativeSessionId === native.nativeSessionId)) fail('新建的 DeepSeek Harness 会话与其他会话冲突，请重新尝试', 409);
         store.updateSession(item.id, { nativeSessionId: native.nativeSessionId, forkPending: false });
       }
-      status(item.id, { ...native, nativeSessionId: native.nativeSessionId, forkPending: false, running: true, interactionMode: 'chat', executionTransport: 'web', status: 'idle', statusSource: 'native', statusDetail: [replaceLegacy ? '已把 dsh 0.1 的旧会话 ID 替换为新的原生会话；图形对话已就绪' : 'DeepSeek Harness 图形对话已就绪；输入现在归网页会话所有', dshAutoNote].filter(Boolean).join('；') });
+      status(item.id, { ...native, nativeSessionId: native.nativeSessionId, forkPending: false, running: true, interactionMode: 'chat', executionTransport: 'web', status: 'idle', statusSource: 'native', statusDetail: [resumed.replacedLegacy ? '已把 dsh 0.1 的旧会话 ID 替换为新的原生会话；图形对话已就绪' : 'DeepSeek Harness 图形对话已就绪；输入现在归网页会话所有', dshAutoNote].filter(Boolean).join('；') });
       broadcast(); return session(item.id);
     }
     // The terminal view is a client-side attachment to the same native session;
@@ -1431,18 +1455,22 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
       piOpened = native.nativeSessionId;
       if (item.forkPending && publisher.sessions().some(other => other.id !== item.id && other.backend === 'pi' && !other.forkPending && other.nativeSessionId === native.nativeSessionId)) {
         await piBridge.close(native.nativeSessionId);
-        fail('Pi Fork 生成的原生会话与其他联系人冲突，请重试', 409);
+        fail('Pi Fork 生成的原生会话与其他会话冲突，请重试', 409);
       }
       store.updateSession(item.id, { nativeSessionId: native.nativeSessionId, forkPending: false, directoriesPending: false });
       status(item.id, { nativeSessionId: native.nativeSessionId, forkPending: false, running: true, interactionMode: 'chat', executionTransport: 'structured', status: 'idle', statusSource: 'native', statusDetail: 'Pi 图形对话已就绪；可切换原生终端，两者通过同一份已保存会话交接', lastActivity: new Date().toISOString() });
       store.activity(item.id, 'start', `打开了 ${item.title}`); broadcast(); return session(item.id);
     }
     if (dshWeb(item) || (item.backend === 'dsh' && mode === 'chat')) {
-      const legacy = !!item.nativeSessionId && isLegacyDshId(item.nativeSessionId);
-      const native = item.nativeSessionId && !legacy ? await dsh.openSession(item.nativeSessionId) : await dsh.createSession(item.cwd, item.title);
+      const resumed = await dsh.openOrCreateSession(item.nativeSessionId, item.cwd, item.title);
+      const native = resumed.native;
+      if (resumed.replacedLegacy) {
+        if (store.sessions().some(other => other.backend === 'dsh' && other.id !== item.id && other.nativeSessionId === native.nativeSessionId)) fail('新建的 DeepSeek Harness 会话与其他会话冲突，请重新尝试', 409);
+        store.updateSession(item.id, { nativeSessionId: native.nativeSessionId, forkPending: false });
+      }
       // Keep the identity even if the native permission command is unavailable.
       status(item.id, { ...native, forkPending: false });
-      status(item.id, { ...native, running: true, interactionMode: mode, executionTransport: 'web', status: 'idle', statusSource: 'native', statusDetail: [mode === 'chat' ? 'DeepSeek Harness 图形对话已就绪' : '原生 Web 会话已就绪', dshAutoNote].filter(Boolean).join('；'), forkPending: false, lastActivity: new Date().toISOString() });
+      status(item.id, { ...native, running: true, interactionMode: mode, executionTransport: 'web', status: 'idle', statusSource: 'native', statusDetail: [mode === 'chat' ? 'DeepSeek Harness 图形对话已就绪' : '原生 Web 会话已就绪', resumed.replacedLegacy ? '已把当前 DeepSeek Harness 不认识的原生会话 ID 替换为新的原生会话；旧会话记录仍保留在本机' : '', dshAutoNote].filter(Boolean).join('；'), forkPending: false, lastActivity: new Date().toISOString() });
     } else if (item.backend === 'codex' && !demo && info('codex').capabilities.nativeControl) {
         const bridge = await ensureCodexBridge();
         const executable = await findExecutable('codex');
@@ -1624,7 +1652,7 @@ app.post('/api/groups/:id/directories', async (req, res) => {
   const groupId = String(req.params.id);
   const group = store.group(groupId);
   if (!group) fail('群组不存在', 404);
-  if (group!.archived) fail('请先恢复归档群组', 409);
+  if (group!.archived) fail('请先从垃圾桶恢复群组', 409);
   const path = realpathSync(directory(req.body?.path));
   const ids: unknown = req.body?.sessionIds;
   if (!Array.isArray(ids) || !ids.length || ids.length > 100 || ids.some(id => typeof id !== 'string' || !id)) fail('请选择 1–100 个群成员');
@@ -1790,7 +1818,7 @@ async function deliverNow(id: string, options: { autoStart?: boolean } = {}) {
   const delivery = store.delivery(id) || fail('投递记录不存在', 404);
   if (delivery.status !== 'pending' || deliveryLocks.has(id)) fail('消息已处理或正在处理');
   let target = session(delivery.sessionId);
-  if (target.archived) fail('目标成员已归档');
+  if (target.archived) fail('目标成员已移入垃圾桶，请先恢复');
   if (!target.running && options.autoStart && !demo && info(target.backend).capabilities.graphicalChat && !starting.has(target.id)) target = await startSession(target.id, { mode: 'chat' });
   if (!target.running) fail('请先进入并启动目标会话');
   if (stopping.has(target.id) || terminals.isStopping(target.id)) fail('目标会话正在停止');
@@ -2163,7 +2191,7 @@ app.post('/api/web-proxy', (req, res) => {
 app.get('/api/sessions/:id/native-proxy', (req, res) => {
   if (principalOf(res).kind !== 'owner') fail('仅所有者可以打开原生界面', 403);
   const item = session(String(req.params.id));
-  if (item.backend !== 'dsh' || !item.nativeUrl) fail('这个联系人没有可转发的原生界面', 404);
+  if (item.backend !== 'dsh' || !item.nativeUrl) fail('这个会话没有可转发的原生界面', 404);
   const url = parseProxyTarget(item.nativeUrl);
   const target = webProxy.register(url, {
     label: item.title,

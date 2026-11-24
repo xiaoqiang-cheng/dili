@@ -2,23 +2,23 @@
 
 ## 结论
 
-Pi 是第四个一等后端，但不是第二套网页。Dili 是唯一的 UI 和控制平面，Pi 是可替换的原生执行器：`server/pi.ts` 用 Pi 官方的 `pi --mode rpc` JSONL 协议连接原生进程，`server/agents/pi-chat.ts` 把它映射到共享的 `AgentChatAdapter`，与 Claude/Codex/dsh 共用联系人、`AgentChatPane`、群聊投递、原生终端、历史、导出和设置入口。
+Pi 是第四个一等后端，但不是第二套网页。Dili 是唯一的 UI 和控制平面，Pi 是可替换的原生执行器：`server/pi.ts` 用 Pi 官方的 `pi --mode rpc` JSONL 协议连接原生进程，`server/agents/pi-chat.ts` 把它映射到共享的 `AgentChatAdapter`，与 Claude/Codex/dsh 共用会话、`AgentChatPane`、群聊投递、原生终端、历史、导出和设置入口。
 
 不嵌入 iframe，不复用 `@earendil-works/pi-web-ui` 组件，也不启动另一份 Pi Web UI。pi-web 只作为能力对照；未对齐的能力见下方“能力边界”。
 
 ## 进程与会话身份
 
-- 每个图形联系人对应一个独立的 `pi` 子进程（stdio JSONL），由 `OwnedProcess` 托管；停止/关闭只结束本轮确认拥有的进程，不按端口或宽泛进程名清理。
+- 每个图形会话对应一个独立的 `pi` 子进程（stdio JSONL），由 `OwnedProcess` 托管；停止/关闭只结束本轮确认拥有的进程，不按端口或宽泛进程名清理。
 - 新建使用 `--session-id <uuid> --name <title>`；恢复使用 `--session-id <uuid>`。**不要用 `--session <file>` 恢复空会话**：Pi 在第一条消息前不会创建 session 文件，`--session` 会报 `No session found`；`--session-id` 在当前目录复用已有会话，否则创建同 ID 的新会话。
 - Pi 新建会话使用 UUIDv7；接受所有 UUID 版本，不要退回 v4-only 正则。
 - session 文件位于 `$PI_CODING_AGENT_SESSION_DIR`（若设置）或 `$PI_CODING_AGENT_DIR/sessions`；不同 Pi 版本可能在根目录或项目子目录下写成 `<ISO>_<uuid>.jsonl`。文件头 `{type:'session', version:3, id, timestamp, cwd}` 是身份与 cwd 的权威来源；`session_info` 标题只用于显示。
 - Fork 走原生 `--fork <parent-id> --session-id <new-id>`。**来源会话还没有产生 session 文件时无法原生 Fork**；先发一条消息，或使用跨平台交接。
-- 图形对话的“停止生成”发送 `abort`，只结束当前轮次并保留 RPC 进程；联系人“停止/归档”才关闭进程。关闭 Pi 进程不会删除原生会话；下一次 `--session-id` 可恢复。
+- 图形对话的“停止生成”发送 `abort`，只结束当前轮次并保留 RPC 进程；会话“停止/移入垃圾桶”才关闭进程。关闭 Pi 进程不会删除原生会话；下一次 `--session-id` 可恢复。
 - “转向”：生成中继续发送会带 `streamingBehavior:'followUp'`，由 Pi 排到当前轮次之后，不打断正在生成的回答；合并后的 follow-up 会在下一个 `turn_start` 绑定自己的原生 turn id。需要立即中断时用“停止生成”，不要假装 follow-up 会改写当前回答。
 
 ## 图形对话映射
 
-- `get_state` 校验返回的 `sessionId` 与期望一致；不一致时拒绝启动，不能把另一个会话当成当前联系人。
+- `get_state` 校验返回的 `sessionId` 与期望一致；不一致时拒绝启动，不能把另一个会话当成当前会话。
 - 初次加载优先读取 session 文件尾部（最多 2 MiB、1000 条），避免长会话的 `get_entries` 单帧过大；之后用 `get_entries {since: lastId}` 增量刷新。文件头 `id` 是 session UUID，**不能作为 `since` 游标**。
 - 用户文本、assistant 文本、`toolCall` + `toolResult` 合并为共享的 user/assistant/tool 卡；工具参数和结果显示在折叠卡中。历史最多 250 项，超出时明确标记“只显示最近窗口”，完整历史留在原生会话/终端。
 - 用量读取 `message.usage` 的 `input`/`output`/`cacheRead`/`cacheWrite`/`totalTokens` 和 `message.model`；没有上下文窗口或压缩信息时保持“原生未提供”，不估算。
@@ -37,7 +37,7 @@ Pi 是第四个一等后端，但不是第二套网页。Dili 是唯一的 UI �
 
 ## 与 pi-web 的差距（当前未授权）
 
-已对齐或超过：联系人/群聊/多会话管理、流式文本与工具卡、原生会话恢复/Fork/导入、原生终端交接、图片输入、模型/思考强度、扩展确认与问题、用量、导出、远程/移动端沿用 Dili 外壳。
+已对齐或超过：会话/群聊/多会话管理、流式文本与工具卡、原生会话恢复/Fork/导入、原生终端交接、图片输入、模型/思考强度、扩展确认与问题、用量、导出、远程/移动端沿用 Dili 外壳。
 
 尚未对齐：网页内维护内置 provider 的 OAuth/账号（当前只保存 Dili 托管的 OpenAI 兼容 provider）、会话树按消息分支/切换分支、PDF/DOCX/XLSX 预览、Pi 插件/技能专用面板、Pi 的 widget/status 组件、Pi Web 的完整 slash 命令面板。缺口不应通过 iframe 或复制一套 Pi Web 来掩盖；优先按共享适配器能力逐步补齐。
 

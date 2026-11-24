@@ -23,16 +23,16 @@ test('contacts, native terminal, fork and directed group collaboration work in t
   page.on('websocket', socket => { if (socket.url().includes('/api/terminal/')) socket.on('framereceived', ({ payload }) => { const message = JSON.parse(String(payload)); if (message.type === 'data') terminalOutput.push(message.data); }); });
   page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: '会话联系人', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '会话列表', exact: true })).toBeVisible();
   await expect(page.locator('.demo-badge')).toHaveAttribute('title', '演示模式 · 示例数据');
   await mkdir('artifacts', { recursive: true });
   await page.screenshot({ path: 'artifacts/contacts.png', fullPage: true });
 
-  await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建联系人', exact: true }).click();
-  const create = page.getByRole('dialog', { name: '新建会话联系人' });
-  await create.getByLabel('联系人名称').fill('浏览器验收联系人');
+  await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建会话', exact: true }).click();
+  const create = page.getByRole('dialog', { name: '新建会话' });
+  await create.getByLabel('会话名称').fill('浏览器验收联系人');
   await create.getByRole('button', { name: /Codex/ }).click();
-  await create.getByRole('button', { name: '创建联系人', exact: true }).click();
+  await create.getByRole('button', { name: '创建会话', exact: true }).click();
   await expect(page.getByRole('dialog', { name: '浏览器验收联系人 的私聊' })).toBeVisible();
   // Opening a contact starts its native session without a second click.
   await expect(page.getByRole('button', { name: '停止进程', exact: true })).toBeVisible();
@@ -44,7 +44,7 @@ test('contacts, native terminal, fork and directed group collaboration work in t
 
   await page.getByRole('button', { name: '浏览器验收联系人 的更多操作' }).click();
   await page.getByRole('button', { name: '改名', exact: true }).click();
-  await page.getByRole('dialog').getByLabel('联系人名称').fill('浏览器验收 · 已改名');
+  await page.getByRole('dialog').getByLabel('会话名称').fill('浏览器验收 · 已改名');
   await page.getByRole('button', { name: '保存修改', exact: true }).click();
   await page.reload();
   await expect(page.getByRole('heading', { name: '浏览器验收 · 已改名', exact: true })).toBeVisible();
@@ -54,9 +54,9 @@ test('contacts, native terminal, fork and directed group collaboration work in t
   await page.getByRole('dialog').getByLabel('共同目标').fill('验证联系人 Fork、单独纠正与结果共享。');
   await page.getByRole('dialog').getByRole('button', { name: '创建群组', exact: true }).click();
   await page.getByRole('button', { name: '添加成员', exact: true }).first().click();
-  await page.getByRole('button', { name: '从已有联系人 Fork', exact: true }).click();
-  await page.getByRole('combobox', { name: '来源联系人' }).selectOption({ label: 'Dili · 开发笔记 · Codex' });
-  await page.getByRole('dialog').getByLabel('联系人名称').fill('群组实现成员');
+  await page.getByRole('button', { name: '从已有会话 Fork', exact: true }).click();
+  await page.getByRole('combobox', { name: '来源会话' }).selectOption({ label: 'Dili · 开发笔记 · Codex' });
+  await page.getByRole('dialog').getByLabel('会话名称').fill('群组实现成员');
   await page.getByRole('button', { name: 'Fork 入群', exact: true }).click();
   await expect(page.getByRole('dialog', { name: '群组实现成员 的私聊' })).toBeVisible();
   await expect(page.getByRole('button', { name: '停止进程', exact: true })).toBeVisible();
@@ -83,7 +83,7 @@ test('contacts, native terminal, fork and directed group collaboration work in t
 test('mobile layout keeps contacts and navigation usable without horizontal overflow', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: '会话联系人', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '会话列表', exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
   await page.screenshot({ path: 'artifacts/mobile.png', fullPage: true });
 });
@@ -103,14 +103,14 @@ async function openGroup(page: import('@playwright/test').Page, title: string) {
 
 test('keyboard navigation keeps modal focus, leaves the workbench interactive, and Escape never closes the session', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: '会话联系人', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '会话列表', exact: true })).toBeVisible();
   await page.keyboard.press('Control+k');
-  await expect(page.getByLabel('搜索联系人', { exact: true })).toBeFocused();
+  await expect(page.getByLabel('搜索会话', { exact: true })).toBeFocused();
   const createButton = page.getByRole('button', { name: '新建', exact: true });
-  await createButton.click(); await page.getByRole('menuitem', { name: '新建联系人', exact: true }).click();
-  const create = page.getByRole('dialog', { name: '新建会话联系人' });
-  await expect(create.getByLabel('联系人名称')).toBeFocused();
-  await create.getByRole('button', { name: '创建联系人', exact: true }).focus();
+  await createButton.click(); await page.getByRole('menuitem', { name: '新建会话', exact: true }).click();
+  const create = page.getByRole('dialog', { name: '新建会话' });
+  await expect(create.getByLabel('会话名称')).toBeFocused();
+  await create.getByRole('button', { name: '创建会话', exact: true }).focus();
   await page.keyboard.press('Tab');
   await expect(create.getByRole('button', { name: '关闭', exact: true })).toBeFocused();
   await page.keyboard.press('Escape');
@@ -123,7 +123,7 @@ test('keyboard navigation keeps modal focus, leaves the workbench interactive, a
   await expect(drawer).toBeVisible();
   // Contacts remain alongside the nonmodal conversation on desktop.
   await expect(page.locator('main')).not.toHaveAttribute('inert');
-  await expect(page.getByRole('main', { name: '联系人列表' })).toBeVisible();
+  await expect(page.getByRole('main', { name: '会话列表' })).toBeVisible();
   await expect(drawer).toHaveAttribute('aria-modal', 'false');
   await expect(card).toHaveAttribute('aria-current', 'true');
   await expect(page.getByRole('tablist', { name: '打开的会话' })).toHaveCount(0);
@@ -131,9 +131,9 @@ test('keyboard navigation keeps modal focus, leaves the workbench interactive, a
   await page.keyboard.press('Escape');
   await expect(drawer).toBeVisible();
   await drawer.getByRole('button', { name: '改名', exact: true }).click();
-  const rename = page.getByRole('dialog', { name: '给联系人改个名字' });
+  const rename = page.getByRole('dialog', { name: '给会话改个名字' });
   await expect(drawer).toHaveAttribute('inert', '');
-  await expect(rename.getByLabel('联系人名称')).toBeFocused();
+  await expect(rename.getByLabel('会话名称')).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(rename).not.toBeVisible();
   await expect(drawer).toBeVisible();
@@ -197,14 +197,14 @@ test('mobile navigation and the dialog stay usable at narrow widths', async ({ p
   await page.getByRole('navigation', { name: '工作空间导航' }).getByRole('button', { name: '运行中', exact: true }).click();
   await expect(page.getByRole('heading', { name: '正在运行', exact: true })).toBeVisible();
   await expect(page.getByText('目前没有正在执行的任务')).toBeVisible();
-  await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建联系人', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: '新建会话联系人' });
-  await expect(dialog.getByLabel('联系人名称')).toBeVisible();
+  await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建会话', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '新建会话' });
+  await expect(dialog.getByLabel('会话名称')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
   await dialog.getByRole('button', { name: '取消', exact: true }).click();
   // On a phone the primary tabs sit in a bottom bar and "+" stays reachable;
   // groups appear as cards in the contact list.
-  await expect(page.getByRole('navigation', { name: '工作空间导航' }).getByRole('button', { name: '联系人', exact: true })).toBeInViewport();
+  await expect(page.getByRole('navigation', { name: '工作空间导航' }).getByRole('button', { name: '会话列表', exact: true })).toBeInViewport();
   await expect(page.getByRole('button', { name: '新建', exact: true })).toBeInViewport();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 });
@@ -250,13 +250,13 @@ test('group bookmarks preserve members and unknown route IDs recover without tra
 
   await page.goto('/#/groups/missing-group?session=missing-session');
   await expect(page).toHaveURL(/#\/contacts$/);
-  await expect(page.getByText('链接中的联系人已不存在，已返回会话列表')).toBeVisible();
+  await expect(page.getByText('链接中的会话已不存在，已返回会话列表')).toBeVisible();
   await expect(page.getByRole('button', { name: '新建', exact: true })).toBeEnabled();
   await expect(page.locator('main')).not.toHaveAttribute('inert', '');
   expect(await page.evaluate(() => document.body.style.overflow)).not.toBe('hidden');
   await page.goto('/#/groups/%E0%A4%A?session=%20');
   await expect(page).toHaveURL(/#\/contacts$/);
-  await expect(page.getByRole('heading', { name: '会话联系人', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '会话列表', exact: true })).toBeVisible();
 });
 
 test('session info copies native identity and workspace path, with links back to the fork source', async ({ page, context }) => {
@@ -322,7 +322,7 @@ test('desktop contacts switch the conversation beside the list and preserve resi
   const processMutations: string[] = [];
   page.on('request', request => { if (/\/sessions\/[^/]+\/(start|stop)$/.test(request.url())) processMutations.push(request.url()); });
   await page.goto('/');
-  const list = page.getByRole('main', { name: '联系人列表' });
+  const list = page.getByRole('main', { name: '会话列表' });
   await list.getByRole('button', { name: `进入 ${first.title} 的会话`, exact: true }).click();
   const conversation = page.getByRole('dialog', { name: `${first.title} 的私聊` });
   await expect(list).toBeVisible();
@@ -336,7 +336,7 @@ test('desktop contacts switch the conversation beside the list and preserve resi
   await list.getByRole('button', { name: `进入 ${second.title} 的会话`, exact: true }).click();
   await expect(page.getByRole('dialog', { name: `${second.title} 的私聊` })).toBeVisible();
   await expect(list.getByRole('button', { name: `进入 ${second.title} 的会话`, exact: true })).toHaveAttribute('aria-current', 'true');
-  const splitter = page.getByRole('separator', { name: '调整联系人列表宽度' });
+  const splitter = page.getByRole('separator', { name: '调整会话列表宽度' });
   const initial = Number(await splitter.getAttribute('aria-valuenow'));
   const box = (await splitter.boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -363,14 +363,14 @@ test('phones show only the selected conversation and back or close always return
   const [first, second] = state.sessions;
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');
-  const list = page.getByRole('main', { name: '联系人列表' });
+  const list = page.getByRole('main', { name: '会话列表' });
   await list.getByRole('button', { name: `进入 ${first.title} 的会话`, exact: true }).click();
   await expect(list).toBeHidden();
   await expect(page.getByRole('dialog', { name: `${first.title} 的私聊` })).toBeVisible();
-  await expect(page.getByRole('button', { name: '返回联系人列表' })).toBeInViewport();
+  await expect(page.getByRole('button', { name: '返回会话列表' })).toBeInViewport();
   await expectSingleRowHeader(page.getByRole('dialog', { name: `${first.title} 的私聊` }));
   await page.screenshot({ path: 'artifacts/contacts-mobile-conversation.png', animations: 'disabled' });
-  await page.getByRole('button', { name: '返回联系人列表' }).click();
+  await page.getByRole('button', { name: '返回会话列表' }).click();
   await expect(list).toBeVisible();
   await list.getByRole('button', { name: `进入 ${second.title} 的会话`, exact: true }).click();
   await page.getByRole('button', { name: '关闭会话', exact: true }).click();
@@ -408,33 +408,33 @@ test('contact sorting and filters persist across reload with separate filters fo
     ];
   });
   await page.goto('/');
-  await page.getByLabel('搜索联系人', { exact: true }).fill('排序');
+  await page.getByLabel('搜索会话', { exact: true }).fill('排序');
   await page.getByRole('button', { name: '筛选与排序', exact: true }).click();
   await page.locator('.backend-tabs').getByRole('button', { name: 'Codex', exact: true }).click();
   await page.getByLabel('按状态筛选').selectOption('idle');
-  await expect(page.getByLabel('联系人排序')).toHaveValue('input');
+  await expect(page.getByLabel('会话排序')).toHaveValue('input');
   await expect(page.locator('.session-card:not(.group-card) h3')).toHaveText(['Z 排序置顶', 'A 排序联系人', 'B 排序联系人']);
-  await page.getByLabel('联系人排序').selectOption('name');
+  await page.getByLabel('会话排序').selectOption('name');
   await expect(page.locator('.session-card:not(.group-card) h3')).toHaveText(['Z 排序置顶', 'A 排序联系人', 'B 排序联系人']);
-  await page.getByLabel('联系人排序').selectOption('created');
+  await page.getByLabel('会话排序').selectOption('created');
   await expect(page.locator('.session-card:not(.group-card) h3')).toHaveText(['Z 排序置顶', 'B 排序联系人', 'A 排序联系人']);
   await page.reload();
   await page.getByRole('button', { name: '筛选与排序', exact: true }).click();
-  await expect(page.getByLabel('联系人排序')).toHaveValue('created');
-  await expect(page.getByLabel('搜索联系人', { exact: true })).toHaveValue('排序');
+  await expect(page.getByLabel('会话排序')).toHaveValue('created');
+  await expect(page.getByLabel('搜索会话', { exact: true })).toHaveValue('排序');
   await expect(page.getByLabel('按状态筛选')).toHaveValue('idle');
   await expect(page.locator('.backend-tabs').getByRole('button', { name: 'Codex', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Escape');
   await page.getByRole('navigation', { name: '工作空间导航' }).getByRole('button', { name: /^待处理/ }).click();
-  await expect(page.getByLabel('搜索联系人', { exact: true })).toHaveValue('');
-  await page.getByRole('navigation', { name: '工作空间导航' }).getByRole('button', { name: /^联系人/ }).click();
-  await expect(page.getByLabel('搜索联系人', { exact: true })).toHaveValue('排序');
-  await page.getByLabel('搜索联系人', { exact: true }).fill('查无结果 xyz');
-  await expect(page.getByText('没有找到匹配的联系人')).toBeVisible();
+  await expect(page.getByLabel('搜索会话', { exact: true })).toHaveValue('');
+  await page.getByRole('navigation', { name: '工作空间导航' }).getByRole('button', { name: /^会话列表/ }).click();
+  await expect(page.getByLabel('搜索会话', { exact: true })).toHaveValue('排序');
+  await page.getByLabel('搜索会话', { exact: true }).fill('查无结果 xyz');
+  await expect(page.getByText('没有找到匹配的会话')).toBeVisible();
   await page.getByRole('button', { name: '清除筛选', exact: true }).click();
   await expect(page.locator('.session-card:not(.group-card)')).toHaveCount(4);
   await page.reload();
-  await expect(page.getByLabel('搜索联系人', { exact: true })).toHaveValue('');
+  await expect(page.getByLabel('搜索会话', { exact: true })).toHaveValue('');
   await page.getByRole('button', { name: '筛选与排序', exact: true }).click();
   await expect(page.getByLabel('按状态筛选')).toHaveValue('all');
 });
@@ -450,7 +450,7 @@ test('keyboard help is discoverable and workspace shortcuts do not steal typing 
   await page.keyboard.press('?');
   await expect(help).toBeVisible();
   await help.getByRole('button', { name: '知道了', exact: true }).click();
-  const search = page.getByLabel('搜索联系人', { exact: true });
+  const search = page.getByLabel('搜索会话', { exact: true });
   await search.focus();
   await page.keyboard.press('?');
   await expect(help).not.toBeVisible();
@@ -472,14 +472,14 @@ test('first contact guidance offers import and backend setup when no tools are i
     state.backends = state.backends.map(backend => ({ ...backend, installed: false, version: null }));
   });
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: '还没有联系人' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '还没有会话' })).toBeVisible();
   await expect(page.getByText(/尚未检测到本机 Agent/)).toBeVisible();
-  await page.getByRole('button', { name: '导入已有会话', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: '导入已有会话' })).toBeVisible();
+  await page.getByRole('button', { name: '导入已有对话', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '导入已有对话' })).toBeVisible();
   await page.getByRole('dialog').getByRole('button', { name: '完成', exact: true }).click();
   await page.getByRole('button', { name: '查看后端安装情况', exact: true }).click();
   await expect(page.getByRole('heading', { name: '连接与能力', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: '创建 Claude 联系人', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '创建 Claude 会话', exact: true })).toBeDisabled();
 });
 
 test('many cards and long names, paths and group titles remain within desktop and mobile viewports', async ({ page }) => {
@@ -615,12 +615,12 @@ test('execution filters distinguish an attached idle process from an active task
   });
   await page.goto('/');
   await page.getByRole('button', { name: '筛选与排序', exact: true }).click();
-  await page.getByLabel('联系人排序').selectOption('name');
+  await page.getByLabel('会话排序').selectOption('name');
   await expect(page.locator('.session-card:not(.group-card) h3')).toHaveText(['置顶空闲', '红点等待输入', '红点异常', '真正执行任务', '已读等待输入', '保留未读提醒', '已读异常', '已连接但空闲']);
   await page.keyboard.press('Escape');
   await page.goto('/#/running');
   await expect(page.locator('.session-card:not(.group-card) h3')).toHaveText(['真正执行任务']);
-  await page.getByRole('navigation', { name: '工作空间导航' }).getByRole('button', { name: /^联系人/ }).click();
+  await page.getByRole('navigation', { name: '工作空间导航' }).getByRole('button', { name: /^会话列表/ }).click();
   await page.getByRole('button', { name: '筛选与排序', exact: true }).click();
   await page.getByLabel('按状态筛选').selectOption('unread');
   await expect(page.locator('.session-card:not(.group-card) h3')).toHaveText(['红点等待输入', '红点异常', '保留未读提醒']);
@@ -650,7 +650,7 @@ test('card actions are reachable with keyboard and menu direction keys open a re
   await expect(page.getByRole('button', { name: '取消置顶', exact: true })).toBeFocused();
   await page.keyboard.press('Home');
   await page.keyboard.press('Enter');
-  await expect(page.getByRole('dialog', { name: '给联系人改个名字' })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: '给会话改个名字' })).toBeVisible();
   await page.keyboard.press('Escape');
 });
 
@@ -673,14 +673,14 @@ test('new group members inherit the group directory, while recent paths require 
   await member.getByLabel('工作目录', { exact: true }).fill('/projects/user-edited');
   await member.getByRole('button', { name: /Codex/ }).click();
   await expect(member.getByLabel('工作目录', { exact: true })).toHaveValue('/projects/user-edited');
-  await member.getByRole('button', { name: '从已有联系人 Fork', exact: true }).click();
+  await member.getByRole('button', { name: '从已有会话 Fork', exact: true }).click();
   await member.getByRole('button', { name: '新建会话', exact: true }).click();
   await expect(member.getByLabel('工作目录', { exact: true })).toHaveValue('/projects/user-edited');
   await member.getByRole('button', { name: '取消', exact: true }).click();
 
-  await page.getByRole('navigation', { name: '工作空间导航' }).getByRole('button', { name: /^联系人/ }).click();
-  await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建联系人', exact: true }).click();
-  const create = page.getByRole('dialog', { name: '新建会话联系人' });
+  await page.getByRole('navigation', { name: '工作空间导航' }).getByRole('button', { name: /^会话列表/ }).click();
+  await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建会话', exact: true }).click();
+  const create = page.getByRole('dialog', { name: '新建会话' });
   await expect(create.getByLabel('工作目录', { exact: true })).toHaveValue('/default/workspace');
   await create.getByText('最近使用的目录', { exact: true }).click();
   await expect(create.locator('.recent-directories button')).toHaveCount(5);
@@ -694,7 +694,7 @@ test('new group members inherit the group directory, while recent paths require 
 
   state.sessions = [];
   await page.reload();
-  await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建联系人', exact: true }).click();
+  await page.getByRole('button', { name: '新建', exact: true }).click(); await page.getByRole('menuitem', { name: '新建会话', exact: true }).click();
   await expect(page.getByRole('dialog').getByLabel('工作目录', { exact: true })).toHaveValue('/default/workspace');
   await expect(page.locator('.recent-directories')).not.toBeVisible();
 });
@@ -710,7 +710,7 @@ test('the "需要你处理" badge counts unread reminders, matching the red badg
       { ...seed, id: 'seen-waiting', title: '已看过但仍在等待', groupId: null, archived: false, pinned: false, running: true, status: 'waiting_input', unread: 0, lastActivity: '2026-01-04T00:00:00Z' },
       { ...seed, id: 'stale-running', title: '曾提醒但已在运行', groupId: null, archived: false, pinned: true, running: true, status: 'running', unread: 1, lastActivity: '2026-01-01T00:00:00Z' },
       { ...seed, id: 'unseen-waiting', title: '等待且未读', groupId: null, archived: false, pinned: false, running: true, status: 'waiting_approval', unread: 2, lastActivity: '2026-01-02T00:00:00Z' },
-      { ...seed, id: 'archived-unseen', title: '已归档的未读', groupId: null, archived: true, pinned: false, running: false, status: 'error', unread: 1, lastActivity: '2026-01-03T00:00:00Z' },
+      { ...seed, id: 'archived-unseen', title: '垃圾桶中的未读', groupId: null, archived: true, pinned: false, running: false, status: 'error', unread: 1, lastActivity: '2026-01-03T00:00:00Z' },
     ];
   });
   await page.goto('/');

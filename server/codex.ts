@@ -903,7 +903,7 @@ export class CodexBridge {
     const thread = result.thread;
     if (thread?.id !== id) throw new Error('Codex 返回了不匹配的原生会话');
     const changedCwd = cwd && thread.cwd && !await sameDirectory(thread.cwd, cwd);
-    if (changedCwd && !options.allowCwdChange) throw new Error('Codex 会话工作目录与联系人不一致');
+    if (changedCwd && !options.allowCwdChange) throw new Error('Codex 会话工作目录与会话记录不一致');
     if (changedCwd && (this.observers.has(id) || this.observing.has(id))) throw new Error('Codex 会话已连接，请先停止再更换工作目录');
     if (options.executionMode) this.executionModes.set(id, options.executionMode);
     await this.observe(id, changedCwd ? cwd : undefined, options.executionMode);

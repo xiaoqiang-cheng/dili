@@ -87,7 +87,7 @@ function SessionShareApp({ status }: { status: ShareStatus }) {
   const logout = async () => { await api('/auth/logout', {}).catch(() => {}); location.replace(`${location.pathname}#/`); location.reload(); };
 
   if (!state) return <div className="auth-page">{error ? <p className="form-error">{error}</p> : <LoaderCircle className="spin" size={22} />}</div>;
-  if (!session) return <div className="auth-page"><main className="auth-card"><h1>会话不可用</h1><p className="auth-subtitle">这个会话已被归档或删除。请联系分享者。</p><button className="button secondary" onClick={() => void logout()}><LogOut size={14} />退出</button></main></div>;
+  if (!session) return <div className="auth-page"><main className="auth-card"><h1>会话不可用</h1><p className="auth-subtitle">这个会话已被删除或不可用。请联系分享者。</p><button className="button secondary" onClick={() => void logout()}><LogOut size={14} />退出</button></main></div>;
 
   const conversationLabel = chatAvailable && writable ? '图形对话' : '对话记录';
   return <div className={`app-shell share-shell ${status.mode !== 'full' ? 'share-no-terminal' : ''}`}>
