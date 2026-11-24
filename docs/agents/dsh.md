@@ -12,8 +12,8 @@
 
 ## 身份与服务
 
-- dsh 0.1 的会话 ID 是 `session-<uuid>`，0.2 / dsh-tui 是裸 UUID；`DSH_ID` 两者都接受，但**新建必须用裸 UUID**：带前缀的目录会让 dsh-tui `--resume` 报“log unreadable or corrupt”。
-- 旧 `session-<uuid>` 联系人无法在当前 dsh 0.2 上恢复；`/start mode chat` 会新建一个裸 UUID 会话、写回联系人，并保留联系人本身。不要静默复用坏 ID。
+- dsh 0.1 使用 `session-<uuid>`；0.2 的不同版本既可能使用裸 UUID，也可能继续生成 `session-<uuid>`（0.2.2-rc.1 的原生 Web 控制器就是后者）。`DSH_ID` 两种都接受，新建仍用裸 UUID。
+- **不要用前缀判断会话是否可恢复。** 以原生 `session.list` 是否列出该 ID 为准：列出就恢复原会话；只有前缀形式且原生列表不认识时，才视为 0.1 遗留，经 `/start mode chat` 新建裸 UUID 会话并写回联系人（联系人保留，旧历史仍在本机）。仅凭 `session-<uuid>` 直接替换会丢掉 0.2.2 原生会话的上下文。
 - 原生 Web 服务按需启动，端口由 `SESSIONDECK_DSH_PORT` 指定；未指定时每次选空闲端口。
 - 服务只监听本机；不要把它当成可远程访问的入口。
 - dsh 0.2 的原生权限目录只有 `read-only`、`workspace-write`、`danger-full-access`，没有 `auto`。Dili 不再为 dsh 提供 Auto，也不注入启动覆盖层；历史 Auto 联系人在启动时归一为原生默认，并在状态里说明原因。

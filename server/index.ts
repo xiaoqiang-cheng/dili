@@ -38,7 +38,7 @@ import { remoteBase, remoteHtml, remoteManifest } from './remote-base.ts';
 import { caddyConfig, DEFAULT_REMOTE, normalizeRemote, SecretBox, secretKey, Tunnel } from './remote.ts';
 import type { AuthStatus, RemoteSettings, RemoteStatus, ShareMode } from '../shared/auth.ts';
 import { demoBackends, seedDemo, demoCommand } from './demo.ts';
-import { getBackendInfo, buildLaunch, discoverSessions, resolveNativeSessionId, validateNativeId, findExecutable, effectiveClaudeSettings, isLegacyDshId } from './adapters.ts';
+import { getBackendInfo, buildLaunch, discoverSessions, resolveNativeSessionId, validateNativeId, findExecutable, effectiveClaudeSettings } from './adapters.ts';
 import { DshBridge } from './dsh.ts';
 import { DshChatAdapter } from './agents/dsh-chat.ts';
 import { submitDshInject } from './dsh-inject.ts';
@@ -1229,23 +1229,20 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
       if (starting.has(item.id)) fail('会话正在连接，请稍后重试', 409);
       if (!item.nativeSessionId) fail('DeepSeek Harness 会话标识尚未就绪', 409);
       const nativeSessionId = item.nativeSessionId;
-      // A dsh 0.1 `session-<uuid>` id cannot be resumed by dsh 0.2. Replacing the
-      // dead id keeps the contact and its settings while giving it a live session.
-      const replaceLegacy = isLegacyDshId(nativeSessionId);
       // dsh-tui owns the session writer. Reading through the web bridge is
       // safe, but sending/settings would be rejected with session/writer-held.
-      if (replaceLegacy || item.executionTransport !== 'web') {
-        if (!replaceLegacy && body.handoff !== true) fail('接管图形对话会退出当前 dsh-tui，并从同一份已保存会话恢复；需要确认交接', 409);
+      // An old `session-<uuid>` id is not enough to assume it is dead: dsh 0.2.2
+      // also mints that form, so membership in session.list decides later.
+      if (item.executionTransport !== 'web') {
+        if (body.handoff !== true) fail('接管图形对话会退出当前 dsh-tui，并从同一份已保存会话恢复；需要确认交接', 409);
         if (item.status === 'running' || item.status === 'waiting_approval') fail('请先等待当前 dsh-tui 任务结束，再接管图形对话', 409);
         // dsh-tui may not report a hook transition while idle. Read the native
         // observer before killing it so an active turn is never silently lost.
         if (!dsh.readyState) await dsh.start();
         const nativeStatus = await dsh.getStatus(nativeSessionId);
         if (nativeStatus.status === 'running') fail('请先等待当前 dsh-tui 任务结束，再接管图形对话', 409);
-        if (!replaceLegacy) {
-          const pending = dsh.pendingRequests(nativeSessionId);
-          if (pending.questions.length || pending.approvals.length) fail('请先处理原生待回答问题或审批，再接管图形对话', 409);
-        }
+        const pending = dsh.pendingRequests(nativeSessionId);
+        if (pending.questions.length || pending.approvals.length) fail('请先处理原生待回答问题或审批，再接管图形对话', 409);
         starting.add(item.id); stopping.add(item.id);
         try {
           await terminals.stop(item.id);
@@ -1254,14 +1251,14 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
           item = session(item.id);
         } finally { starting.delete(item.id); stopping.delete(item.id); }
       }
-      if (!dsh.readyState) await dsh.start();
-      const native = replaceLegacy ? await dsh.createSession(item.cwd, item.title) : await dsh.openSession(nativeSessionId);
-      if (replaceLegacy) {
+      const resumed = await dsh.openOrCreateSession(nativeSessionId, item.cwd, item.title);
+      const native = resumed.native;
+      if (resumed.replacedLegacy) {
         // Never carry two contacts on one native writer.
         if (store.sessions().some(other => other.backend === 'dsh' && other.id !== item.id && other.nativeSessionId === native.nativeSessionId)) fail('新建的 DeepSeek Harness 会话与其他联系人冲突，请重新尝试', 409);
         store.updateSession(item.id, { nativeSessionId: native.nativeSessionId, forkPending: false });
       }
-      status(item.id, { ...native, nativeSessionId: native.nativeSessionId, forkPending: false, running: true, interactionMode: 'chat', executionTransport: 'web', status: 'idle', statusSource: 'native', statusDetail: [replaceLegacy ? '已把 dsh 0.1 的旧会话 ID 替换为新的原生会话；图形对话已就绪' : 'DeepSeek Harness 图形对话已就绪；输入现在归网页会话所有', dshAutoNote].filter(Boolean).join('；') });
+      status(item.id, { ...native, nativeSessionId: native.nativeSessionId, forkPending: false, running: true, interactionMode: 'chat', executionTransport: 'web', status: 'idle', statusSource: 'native', statusDetail: [resumed.replacedLegacy ? '已把 dsh 0.1 的旧会话 ID 替换为新的原生会话；图形对话已就绪' : 'DeepSeek Harness 图形对话已就绪；输入现在归网页会话所有', dshAutoNote].filter(Boolean).join('；') });
       broadcast(); return session(item.id);
     }
     // The terminal view is a client-side attachment to the same native session;
@@ -1280,11 +1277,15 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
   expectedNativeIds.delete(item.id);
   try {
     if (dshWeb(item) || (item.backend === 'dsh' && mode === 'chat')) {
-      const legacy = !!item.nativeSessionId && isLegacyDshId(item.nativeSessionId);
-      const native = item.nativeSessionId && !legacy ? await dsh.openSession(item.nativeSessionId) : await dsh.createSession(item.cwd, item.title);
+      const resumed = await dsh.openOrCreateSession(item.nativeSessionId, item.cwd, item.title);
+      const native = resumed.native;
+      if (resumed.replacedLegacy) {
+        if (store.sessions().some(other => other.backend === 'dsh' && other.id !== item.id && other.nativeSessionId === native.nativeSessionId)) fail('新建的 DeepSeek Harness 会话与其他联系人冲突，请重新尝试', 409);
+        store.updateSession(item.id, { nativeSessionId: native.nativeSessionId, forkPending: false });
+      }
       // Keep the identity even if the native permission command is unavailable.
       status(item.id, { ...native, forkPending: false });
-      status(item.id, { ...native, running: true, interactionMode: mode, executionTransport: 'web', status: 'idle', statusSource: 'native', statusDetail: [mode === 'chat' ? 'DeepSeek Harness 图形对话已就绪' : '原生 Web 会话已就绪', dshAutoNote].filter(Boolean).join('；'), forkPending: false, lastActivity: new Date().toISOString() });
+      status(item.id, { ...native, running: true, interactionMode: mode, executionTransport: 'web', status: 'idle', statusSource: 'native', statusDetail: [mode === 'chat' ? 'DeepSeek Harness 图形对话已就绪' : '原生 Web 会话已就绪', resumed.replacedLegacy ? '已把当前 DeepSeek Harness 不认识的原生会话 ID 替换为新的原生会话；旧会话记录仍保留在本机' : '', dshAutoNote].filter(Boolean).join('；'), forkPending: false, lastActivity: new Date().toISOString() });
     } else if (item.backend === 'codex' && !demo && info('codex').capabilities.nativeControl) {
         const bridge = await ensureCodexBridge();
         const executable = await findExecutable('codex');
