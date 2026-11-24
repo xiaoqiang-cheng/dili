@@ -15,7 +15,7 @@ test('phone top bar is two IM rows and panel tools move to the bottom menu', asy
   expect(searchBox!.width).toBeGreaterThan(250);
   for (const name of ['打开预览面板', '打开资源管理器', '打开网页服务', '打开终端', '打开随手记', '切换主题', '导入已有对话']) await expect(page.getByRole('button', { name, exact: true })).toBeHidden();
   await page.locator('.rail').getByRole('button', { name: '更多', exact: true }).click();
-  for (const name of ['底部终端', '网页服务', '随手记', '外观主题']) await expect(page.getByRole('menuitem', { name, exact: true })).toBeVisible();
+  for (const name of ['终端', '网页服务', '随手记', '外观主题']) await expect(page.getByRole('menuitem', { name, exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
   await add.click();
   await expect(page.getByRole('menuitem', { name: '导入已有对话', exact: true })).toBeVisible();

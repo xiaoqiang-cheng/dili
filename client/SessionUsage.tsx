@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from './api';
-import { formatTokens, type SessionUsage } from '../shared/usage';
+import { contextIsTight, contextShare, costSummary, formatTokens, type SessionUsage } from '../shared/usage';
 import { t } from '../shared/i18n';
 
 export interface UsageResult { usage: SessionUsage | null; note?: string }
@@ -39,9 +39,11 @@ export function useSessionUsage(session: UsageSession | null): UsageResult | nul
 }
 
 export function usageText(usage: SessionUsage): string {
-  const parts = [t('usage.turns', { n: usage.turns }), t('usage.input', { value: formatTokens(usage.inputTokens) }), t('usage.output', { value: formatTokens(usage.outputTokens) })];
-  if (usage.cacheReadTokens > 0) parts.push(t('usage.cacheRead', { value: formatTokens(usage.cacheReadTokens) }));
+  const parts = [t('usage.turns', { n: usage.turns })];
   if (usage.lastTurnInputTokens !== null && usage.lastTurnInputTokens > 0) parts.push(t('usage.context', { value: formatTokens(usage.lastTurnInputTokens) }));
+  if (usage.compactions) parts.push(t('usage.compactions', { n: usage.compactions }));
+  parts.push(t('usage.input', { value: formatTokens(usage.inputTokens) }), t('usage.output', { value: formatTokens(usage.outputTokens) }));
+  if (usage.cacheReadTokens > 0) parts.push(t('usage.cacheRead', { value: formatTokens(usage.cacheReadTokens) }));
   if (usage.partial) parts.push(t('usage.partial'));
   return parts.join(' · ');
 }
@@ -50,5 +52,11 @@ export default function SessionUsageLine({ session }: { session: UsageSession })
   const result = useSessionUsage(session);
   if (!result) return <div><span>{t('usage.title')}</span><small className="usage-pending">{t('usage.pending')}</small></div>;
   if (!result.usage) return <div><span>{t('usage.title')}</span><small className="usage-missing" title={result.note}>{t('usage.unknown')}</small></div>;
-  return <div><span>{t('usage.title')}</span><small className="usage-value" title={`${result.note ?? '来自本地原生历史'}${result.usage.partial ? '；仅统计最近读取的历史窗口，累计值以原生界面为准' : ''}`}>{usageText(result.usage)}</small></div>;
+  const usage = result.usage;
+  const share = contextShare(usage, usage.contextWindow);
+  const tight = contextIsTight(usage);
+  const hint = tight
+    ? `${t('usage.tightHint', { percent: Math.round((share ?? 0) * 100) })}`
+    : '';
+  return <div><span>{t('usage.title')}</span><small className={`usage-value${tight ? ' usage-tight' : ''}`} title={`${costSummary(usage)}；${result.note ?? '来自本地原生历史'}${usage.contextWindow === null ? '；原生记录未提供上下文上限' : ''}${usage.partial ? '；仅统计最近读取的历史窗口，累计值以原生界面为准' : ''}`}>{usageText(usage)}</small>{hint && <small className="usage-hint">{hint}</small>}</div>;
 }

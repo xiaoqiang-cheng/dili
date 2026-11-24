@@ -1,11 +1,13 @@
 import { useLayoutEffect, useId, useState, type RefObject } from 'react';
-import { BrainCircuit, ChevronRight, Settings2, ShieldCheck } from 'lucide-react';
+import { BrainCircuit, ChevronRight, Gauge, Settings2, ShieldCheck } from 'lucide-react';
 import AgentChatPopover from './AgentChatPopover';
+import { t } from '../shared/i18n';
 
 const commands = [
   { id: 'settings', label: '会话设置', description: '查看当前 Agent 的原生设置', icon: Settings2 },
   { id: 'model', label: '模型', description: '选择当前会话使用的模型', icon: BrainCircuit },
   { id: 'permissions', label: '权限', description: '调整当前会话的权限模式', icon: ShieldCheck },
+  { id: 'effort', label: t('settings.effort'), description: t('settings.effortCommand'), icon: Gauge },
 ] as const;
 export type ChatCommand = typeof commands[number]['id'];
 

@@ -8,6 +8,7 @@ import { claudePermissionChoices, claudePermissionLabel } from '../shared/permis
 import { DEFAULT_GROUP_PROMPT } from '../shared/group-prompt';
 import { t } from '../shared/i18n';
 import PullToRefresh from './PullToRefresh';
+import ImSettings from './ImSettings';
 import ClaudeTerminalSettings from './ClaudeTerminalSettings';
 import { appUrl } from './urls';
 import { machineHome } from './machine-links';
@@ -17,8 +18,8 @@ import {
   CircleHelp, Clock3, Command, Copy, Ellipsis, ExternalLink, Folder,
   GitFork, Globe2, LoaderCircle, MessageSquare, Pencil, Pin, PinOff, Play, Plus,
   Radio, Search, Settings2, Share2, SlidersHorizontal, Square, UsersRound, X,
-  PanelBottomOpen, Volume2, VolumeX, TerminalSquare, Link2, PanelLeftOpen, PanelLeftClose,
-  FilePenLine, Palette, Maximize2, Minimize2, PanelRightOpen, Activity, Download,
+  Volume2, VolumeX, TerminalSquare, Link2, PanelLeftOpen, PanelLeftClose,
+  FilePenLine, Palette, Maximize2, Minimize2, PanelRightOpen, Activity, Download, Hash,
 } from 'lucide-react';
 import type { AppState, StatePatch, Backend, DiscoveredSession, Group, GroupReadReceipt, GroupMessage, Session, SessionStatus } from '../shared/types';
 import { applyGroupRead, applyPendingGroupReads, applyStatePatch } from './state';
@@ -47,9 +48,11 @@ import InterfaceZoom from './InterfaceZoom';
 import BackendLogo from './BackendLogo';
 import { SessionChrome, SessionToolbarHost } from './SessionToolbar';
 import { useContactFilters, useContactSort } from './preferences';
-import { CONTACT_RENDER_STEP, attention, buildContacts, pending, visibleContacts, type ContactSort, type ListMode } from './contact-order';
+import { CONTACT_RENDER_STEP, attention, buildContacts, isTopic, pending, visibleContacts, type ContactSort, type ListMode } from './contact-order';
+import { TopicDialog, TopicList, type TopicDialogMode } from './TopicBoard';
+import { forkTitle } from './topics';
 import { relativeTime, shortPath } from './format';
-import { readLocalPreference, writeLocalPreference, useDialog } from './ui';
+import { readLocalPreference, writeLocalPreference } from './ui';
 import ModalShell from './Modal';
 import GroupChat from './GroupChat';
 import GroupCard from './GroupCard';
@@ -62,6 +65,7 @@ export const BACKEND: Record<Backend, { name: string; short: string; color: stri
   claude: { name: 'Claude Code', short: 'Claude', color: 'coral' },
   codex: { name: 'Codex', short: 'Codex', color: 'green' },
   dsh: { name: 'DeepSeek Harness', short: 'DeepSeek', color: 'blue' },
+  pi: { name: 'Pi', short: 'Pi', color: 'purple' },
 };
 export const STATUS: Record<SessionStatus, { label: string; className: string }> = {
   idle: { label: '空闲', className: 'idle' }, running: { label: '运行中', className: 'running' },
@@ -70,7 +74,7 @@ export const STATUS: Record<SessionStatus, { label: string; className: string }>
 };
 type Modal = { type: 'create'; groupId?: string; backend?: Backend } | { type: 'import' } | { type: 'rename'; session: Session }
   | { type: 'directories'; session: Session } | { type: 'groupDirectories'; group: Group }
-  | { type: 'fork'; session: Session; groupId?: string } | { type: 'handoff'; session: Session } | { type: 'group'; group?: Group }
+  | { type: 'fork'; session: Session; groupId?: string } | { type: 'handoff'; session: Session } | { type: 'group'; group?: Group } | { type: 'topic'; mode: TopicDialogMode }
   | { type: 'replaceDraft'; draft: string; sourceName: string; proceed: () => void } | { type: 'help' } | { type: 'appearance' } | { type: 'debug' } | { type: 'shareLink'; session?: Session; group?: Group } | { type: 'addMember'; groupId: string } | { type: 'share'; session: Session; text: string } | null;
 
 /** Four independent sessions gather around a shared task; colors follow the theme. */
@@ -116,6 +120,8 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   const [selection, setSelection] = useState('');
   const [workspaceSessionId, setWorkspaceSessionId] = useState<string | null>(null);
   const preview = usePreviewWorkspace();
+  // The terminal lives as a tab of the right-hand panel; it is open while that tab shows.
+  const terminalPanelOpen = preview.open && preview.activeId === 'terminal';
   const activePreview = preview.tabs.find(tab => tab.id === preview.activeId);
   const workspaceOpen = preview.open && activePreview?.kind === 'explorer';
   const scratchpadOpen = preview.open && activePreview?.kind === 'note';
@@ -151,7 +157,6 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   // contact. A previous native click must not turn every later contact native.
   const privateViewKey = (id: string) => `sessiondeck.private-view.${id}`;
   const [privateViews, setPrivateViews] = useState<Record<string, 'conversation' | 'terminal' | 'chat'>>({});
-  const [terminalPanelOpen, setTerminalPanelOpen] = useState(false);
   const [setupShellId, setSetupShellId] = useState<string>();
   const [terminalSessionId, setTerminalSessionId] = useState<string | undefined>();
   const savedPrivateView = (session: Session | null | undefined): 'conversation' | 'terminal' | 'chat' | undefined => {
@@ -193,16 +198,18 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   const sessionInvokersRef = useRef(new Map<string, HTMLElement>());
   const focusedSessionIdRef = useRef<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const groupId = view.startsWith('group:') ? view.slice(6) : null;
+  // A topic is a group with its own board; both load through the same history.
+  const groupId = view.startsWith('group:') || view.startsWith('topic:') ? view.slice(6) : null;
+  const topicView = view === 'topics' || view.startsWith('topic:');
+  const [showArchivedTopics, setShowArchivedTopics] = useState(false);
   const selected = state?.sessions.find((session) => session.id === selectedId) ?? null;
   const currentGroup = state?.groups.find((group) => group.id === groupId);
   const { detail, error: groupError, loadOlder, loadingOlder, readSource } = useGroupHistory(groupId, currentGroup?.updatedAt, groupReload, state?.instanceId);
   const selectedGroup = state?.groups.find((group) => group.id === selected?.groupId);
   const selectedParent = state?.sessions.find((session) => session.id === selected?.parentId);
-  // The desktop session is an in-flow workbench rather than a modal dialog.
-  // Keep Escape as a lightweight close affordance without trapping focus or
-  // locking the document scroll used by the terminal and preview panes.
-  useDialog(drawerRef, false, () => setSelectedId(null), true);
+  // The desktop session is an in-flow workbench rather than a modal dialog, so
+  // it neither traps focus nor locks the document scroll. Escape does not close
+  // it: a stray Esc meant for a menu, composer or Agent would drop the session.
   useLayoutEffect(() => {
     const previousId = focusedSessionIdRef.current;
     const currentId = selected?.id ?? null;
@@ -223,24 +230,15 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
       invoker.focus({ preventScroll: true });
     }
   }, [selected?.id]);
-  useEffect(() => {
-    if (!selected) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.key !== 'Escape' || (event.target instanceof HTMLElement && event.target.closest('.terminal-pane'))) return;
-      if (modal) return;
-      event.preventDefault();
-      setSelectedId(null);
-    };
-    window.addEventListener('keydown', closeOnEscape);
-    return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [selected, modal, setSelectedId]);
   notificationRef.current = notifications;
   soundRef.current = soundEnabled;
 
   const openTerminalPanel = useCallback((sessionId?: string) => {
     setSetupShellId(undefined);
     if (sessionId) setTerminalSessionId(sessionId);
-    setTerminalPanelOpen(true);
+    preview.openTerminal();
+    // The controller is recreated each render; its setters are stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const notificationSound = useCallback((unlock = false, once = false) => {
@@ -312,7 +310,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
         if (soundRef.current) notificationSound();
         if (!notificationRef.current || typeof Notification === 'undefined' || Notification.permission !== 'granted') continue;
         try {
-          const notification = new Notification(`${group.title} · 新回复`, { body: group.lastMessage ? `${group.lastMessage.senderName}：${group.lastMessage.text}` : '群聊有新消息', tag: `group:${group.id}`, icon: '/favicon.svg?v=shared-centre' });
+          const notification = new Notification(`${isTopic(group) ? '# ' : ''}${group.title} · 新回复`, { body: group.lastMessage ? `${group.lastMessage.senderName}：${group.lastMessage.text}` : isTopic(group) ? '话题有新回复' : '群聊有新消息', tag: `group:${group.id}`, icon: '/favicon.svg?v=shared-centre' });
           notification.onclick = () => { window.focus(); openGroupRef.current(group.id); notification.close(); };
         } catch { setNotifications(false); writeLocalPreference('sessiondeck.notifications', 'off'); }
       }
@@ -344,13 +342,13 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
       const absentGroup = groupId && !next.groups.some((group) => group.id === groupId);
       const absentSession = selectedId && !next.sessions.some((session) => session.id === selectedId);
       if (absentGroup || absentSession) {
-        updateRoute({ view: absentGroup ? 'contacts' : view, selectedId: absentSession ? null : selectedId }, true);
-        notify(absentSession ? '链接中的会话已不存在，已返回会话列表' : '链接中的群组已不存在，已返回会话列表');
+        updateRoute({ view: absentGroup ? (topicView ? 'topics' : 'contacts') : view, selectedId: absentSession ? null : selectedId }, true);
+        notify(absentSession ? '链接中的会话已不存在，已返回会话列表' : absentGroup && topicView ? '链接中的话题已不存在，已返回话题列表' : '链接中的群组已不存在，已返回会话列表');
       }
       acceptState(next);
     }).catch((cause) => { if (live) setConnectionError(`暂时无法打开此链接：${cause.message}`); });
     return () => { live = false; };
-  }, [state, groupId, selectedId, view, updateRoute, notify, acceptState]);
+  }, [state, groupId, selectedId, view, topicView, updateRoute, notify, acceptState]);
   useEffect(() => {
     setModal(null); setSelection('');
   }, [view]);
@@ -473,7 +471,16 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     finally { operationRef.current = false; setBusy(null); }
   };
   const navigate = (next: View) => updateRoute({ view: next, selectedId: null });
-  openGroupRef.current = (id: string) => navigate(`group:${id}`);
+  /** @-mentioning a contact that is not in the topic forks it in. */
+  const inviteToTopic = async (topic: Group, source: Session): Promise<Session | null> => {
+    let joined: Session | null = null;
+    const ok = await run(`invite:${source.id}`, async () => {
+      joined = await api<Session>(`/sessions/${source.id}/fork`, { title: forkTitle(source.title, topic.title), groupId: topic.id, placement: 'directory', briefing: 'none' });
+      await refresh();
+    }, `已分叉「${source.title}」加入话题`);
+    return ok ? joined : null;
+  };
+  openGroupRef.current = (id: string) => navigate(isTopic(stateRef.current?.groups.find(group => group.id === id)) ? `topic:${id}` : `group:${id}`);
   const openSession = (session: Session, invoker?: HTMLElement, mode?: 'terminal' | 'chat') => {
     const source = invoker ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     if (source && source !== document.body && !source.closest('.session-drawer, .modal-overlay')) {
@@ -525,7 +532,10 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   };
 
   const sessions = state?.sessions ?? [];
-  const personal = sessions.filter((session) => !session.archived && !session.groupId);
+  const topics = useMemo(() => (state?.groups ?? []).filter(isTopic), [state?.groups]);
+  const topicIds = useMemo(() => new Set(topics.map(topic => topic.id)), [topics]);
+  const topicUnread = topics.reduce((count, topic) => count + (topic.archived ? 0 : topic.unread ?? 0), 0);
+  const personal = sessions.filter((session) => !session.archived && (!session.groupId || topicIds.has(session.groupId)));
   // Matches the red badge on cards, so the count drops as you read each one.
   const needsAttention = sessions.filter((session) => !session.archived && pending(session));
   const running = sessions.filter((session) => !session.archived && session.status === 'running');
@@ -539,7 +549,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   const [contactLimit, setContactLimit] = useState(CONTACT_RENDER_STEP);
   useEffect(() => { setContactLimit(CONTACT_RENDER_STEP); }, [listMode, backendFilter, statusFilter, query, contactSort]);
   const shownContacts = visibleContacts(visible, contactLimit);
-  const pageTitle = currentGroup?.title ?? ({ contacts: '会话列表', attention: '需要你处理', running: '正在运行', activity: '最近活动', archive: '垃圾桶', backends: '连接与能力' } as Record<string, string>)[view] ?? '会话列表';
+  const pageTitle = currentGroup?.title ?? ({ topics: 'Dili 话题', contacts: '会话列表', attention: '需要你处理', running: '正在运行', activity: '最近活动', archive: '垃圾桶', backends: '连接与能力' } as Record<string, string>)[view] ?? '会话列表';
   // Invite links can point to several Dili devices. The remote auth status
   // carries the paired name; an unnamed/manual remote page leaves this blank.
   const title = auth.remote && view === 'contacts' && !currentGroup ? (auth.deviceName ?? '') : pageTitle;
@@ -547,7 +557,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   const selectedBackend = selected ? state?.backends.find((backend) => backend.id === selected.backend) : undefined;
   const nativeSessionBusy = selected?.backend === 'codex' && !selected.running && selected.status === 'error'
     && (selected.errorCode === 'NATIVE_SESSION_BUSY' || /already has an active writer/i.test(selected.statusDetail));
-  const agentChatAvailable = !!selected && ['codex', 'claude', 'dsh'].includes(selected.backend) && !state?.demo && !!selectedBackend?.capabilities.graphicalChat;
+  const agentChatAvailable = !!selected && ['codex', 'claude', 'dsh', 'pi'].includes(selected.backend) && !state?.demo && !!selectedBackend?.capabilities.graphicalChat;
   // DeepSeek Harness without dsh-tui has no PTY: it shows its native Web UI.
   const dshWebOnly = selected?.backend === 'dsh' && !state?.demo && !selectedBackend?.capabilities.terminal;
   // A dsh chat started without launching dsh-tui owns the same native Web UI;
@@ -560,7 +570,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
   // Every backend defaults to its graphical view. The native view is shown only
   // after this contact's own native-interface click (or when it has no graphical
   // mode at all).
-  const privateView = selected ? selected.backend === 'codex' && agentChatAvailable
+  const privateView = selected ? (selected.backend === 'codex' || selected.backend === 'pi') && agentChatAvailable
     ? viewChoice === 'terminal' ? 'terminal' : 'chat'
     : selected.backend === 'claude' && agentChatAvailable
       ? viewChoice === 'terminal' ? 'terminal' : viewChoice === 'conversation' ? selected.running && selected.executionTransport !== 'structured' ? 'conversation' : 'chat' : 'chat'
@@ -589,7 +599,8 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     const executionView = selected.backend === 'claude' && agentChatAvailable && mode === 'conversation' ? 'chat' : mode;
     if ((executionView === 'terminal' || executionView === 'chat') && agentChatAvailable && selected.running && selected.interactionMode !== executionView) {
       if (selected.backend === 'claude' && !window.confirm('切换将退出当前 Claude 进程，并从同一份已保存会话恢复。当前任务和审批必须先处理完成。继续切换？')) return;
-      void run(`attach:${selected.id}`, async () => { await api(`/sessions/${selected.id}/start`, { mode: executionView, handoff: selected.backend === 'claude' }); selectPrivateView(selected.id, mode); });
+      if (selected.backend === 'pi' && !window.confirm('切换将退出当前 Pi 进程，并从同一份已保存会话恢复。Pi 原生终端不会报告任务状态；请先确认终端已空闲，切换可能中断仍在运行的任务。继续切换？')) return;
+      void run(`attach:${selected.id}`, async () => { await api(`/sessions/${selected.id}/start`, { mode: executionView, handoff: selected.backend === 'claude' || selected.backend === 'pi' }); selectPrivateView(selected.id, mode); });
     } else selectPrivateView(selected.id, mode);
   };
   const startMode = (mode = privateView) => agentChatAvailable && (mode === 'chat' || selected?.backend === 'claude' && mode === 'conversation') ? 'chat' : 'terminal';
@@ -610,7 +621,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id, !!state]);
 
-  const tab = (target: View, icon: ReactNode, label: string, count?: number, alert = false) => <button aria-current={view === target ? 'page' : undefined} className={view === target ? 'active' : ''} onClick={() => navigate(target)}>{icon}<span>{label}</span>{!!count && <b className={alert ? 'alert' : ''}>{count}</b>}</button>;
+  const tab = (target: View, icon: ReactNode, label: string, count?: number, alert = false) => { const current = view === target || (target === 'topics' && topicView); return <button aria-current={current ? 'page' : undefined} className={current ? 'active' : ''} onClick={() => navigate(target)}>{icon}<span>{label}</span>{!!count && <b className={alert ? 'alert' : ''}>{count}</b>}</button>; };
 
   const listView = !!state && view !== 'activity' && view !== 'backends';
   const connectionLabel = connected ? '本地服务已连接' : hasConnected ? '连接中断 · 正在重连' : '正在连接本地服务';
@@ -631,17 +642,18 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
       <a className="brand" href="#" aria-label="Dili 嘀哩工作台" title="Dili 嘀哩工作台" onClick={(event) => { event.preventDefault(); navigate('contacts'); }}><span className="brand-mark"><BrandMark /></span><span className="brand-wordmark">Dili</span></a>
       <div className="rail-primary primary-nav">
         {tab('contacts', <MessageSquare size={18} />, '会话列表', personal.length)}
+        {tab('topics', <Hash size={18} />, '话题', topicUnread, true)}
         {tab('attention', <Bell size={18} />, '待处理', needsAttention.length, true)}
         {tab('running', <Radio size={18} />, '运行中', running.length)}
         {tab('activity', <Clock3 size={18} />, '活动')}
-        {tab('archive', <Trash2 size={18} />, '垃圾桶', archived.length + (state?.groups.filter(group => group.archived).length ?? 0))}
+        {tab('archive', <Trash2 size={18} />, '垃圾桶', archived.length + (state?.groups.filter(group => group.archived && !isTopic(group)).length ?? 0))}
       </div>
       <div className="rail-footer">
         <button className="icon-button rail-toggle" aria-label={railOpen ? '收起侧栏' : '展开侧栏'} title={railOpen ? '收起侧栏' : '展开侧栏'} aria-expanded={railOpen} onClick={toggleRail}>{railOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}</button>
         <span className="connection-indicator" title={connectionLabel}><span className={`connection-dot ${connected ? 'online' : ''}`} /><span className="sr-only">{connectionLabel}</span></span>
         <MoreMenu items={[
           { label: '资源管理器', icon: <Folder size={14} />, phoneOnly: true, disabled: !explorerSession, active: workspaceOpen, onSelect: () => { if (explorerSession) preview.openExplorer(explorerSession); } },
-          { label: '底部终端', icon: <PanelBottomOpen size={14} />, phoneOnly: true, disabled: !state, active: terminalPanelOpen, onSelect: () => openTerminalPanel(selected?.id) },
+          { label: '终端', icon: <TerminalSquare size={14} />, phoneOnly: true, disabled: !state, active: terminalPanelOpen, onSelect: () => openTerminalPanel(selected?.id) },
           { label: '连接与能力', icon: <Settings2 size={14} />, active: view === 'backends', onSelect: () => navigate('backends') },
           { label: '网页服务', icon: <Globe2 size={14} />, active: servicePreviewOpen, onSelect: toggleServicePreview },
           { label: '随手记', icon: <FilePenLine size={14} />, active: scratchpadOpen, onSelect: toggleScratchpad },
@@ -654,24 +666,25 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     <div className="app-column">
     <header className="topbar" inert={!!modal}>
       <div className="topbar-row">
-        <div className="topbar-title"><h1 aria-label={title || pageTitle} title={title || pageTitle}>{title}</h1><AppVersion /><MachineSwitcher />{currentGroup && <button className="icon-button" aria-label="编辑群组" title="编辑群组名称与目标" onClick={() => setModal({ type: 'group', group: currentGroup })}><Pencil size={14} /></button>}{state?.demo && <span className="demo-badge" title="演示模式 · 示例数据">演示</span>}</div>
+        <div className="topbar-title"><h1 aria-label={title || pageTitle} title={title || pageTitle}>{title}</h1><AppVersion /><MachineSwitcher />{currentGroup && <button className="icon-button" aria-label={isTopic(currentGroup) ? '编辑话题' : '编辑群组'} title={isTopic(currentGroup) ? '编辑话题标题与原帖' : '编辑群组名称与目标'} onClick={() => setModal(isTopic(currentGroup) ? { type: 'topic', mode: { type: 'edit', topic: currentGroup } } : { type: 'group', group: currentGroup })}><Pencil size={14} /></button>}{state?.demo && <span className="demo-badge" title="演示模式 · 示例数据">演示</span>}</div>
         <div className="topbar-actions">
-          {listView && <><label className="search-field"><Search size={15} /><input id="session-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索" aria-label="搜索会话" /><kbd>{/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'} K</kbd></label>
-            <FilterMenu active={backendFilter !== 'all' || statusFilter !== 'all'} reset={() => { setBackendFilter('all'); setStatusFilter('all'); }}>
-              <div className="filter-group"><span>后端</span><div className="backend-tabs" aria-label="按后端筛选"><button aria-pressed={backendFilter === 'all'} className={backendFilter === 'all' ? 'selected' : ''} onClick={() => setBackendFilter('all')}>全部</button>{(['claude', 'codex', 'dsh'] as Backend[]).map((backend) => <button key={backend} aria-pressed={backendFilter === backend} className={backendFilter === backend ? 'selected' : ''} onClick={() => setBackendFilter(backend)}>{BACKEND[backend].short}</button>)}</div></div>
+          {listView && <><label className="search-field"><Search size={15} /><input id="session-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={topicView ? '搜索话题' : '搜索'} aria-label={topicView ? '搜索话题' : '搜索会话'} /><kbd>{/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'} K</kbd></label>
+            {!topicView && <FilterMenu active={backendFilter !== 'all' || statusFilter !== 'all'} reset={() => { setBackendFilter('all'); setStatusFilter('all'); }}>
+              <div className="filter-group"><span>后端</span><div className="backend-tabs" aria-label="按后端筛选"><button aria-pressed={backendFilter === 'all'} className={backendFilter === 'all' ? 'selected' : ''} onClick={() => setBackendFilter('all')}>全部</button>{(['claude', 'codex', 'dsh', 'pi'] as Backend[]).map((backend) => <button key={backend} aria-pressed={backendFilter === backend} className={backendFilter === backend ? 'selected' : ''} onClick={() => setBackendFilter(backend)}>{BACKEND[backend].short}</button>)}</div></div>
               <label className="filter-group"><span>状态</span><select aria-label="按状态筛选" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as SessionStatus | 'all' | 'attention' | 'unread')}><option value="all">全部状态</option><option value="attention">需要处理</option><option value="unread">未读提醒</option><option value="running">运行中</option><option value="waiting_input">等待输入</option><option value="waiting_approval">等待审批</option><option value="idle">空闲</option><option value="error">异常</option><option value="stopped">已停止</option><option value="unknown">状态未知</option></select></label>
               <label className="filter-group"><span>排序</span><select aria-label="会话排序" value={contactSort} onChange={(event) => setContactSort(event.target.value as ContactSort)}><option value="input">上次输入时间</option><option value="created">创建时间</option><option value="name">名称</option></select></label>
-            </FilterMenu></>}
+            </FilterMenu>}</>}
           <button className={`icon-button ${preview.open ? 'active' : ''} topbar-tool`} aria-label="打开预览面板" title={preview.open ? '隐藏预览面板' : '打开预览面板'} aria-expanded={preview.open} onClick={() => { if (preview.open) preview.hide(); else if (preview.tabs.length) preview.show(); else if (explorerSession) preview.openExplorer(explorerSession); else preview.openNote(); }}><PanelRightOpen size={17} /></button>
           <button className={`icon-button ${workspaceOpen ? 'active' : ''} topbar-tool`} aria-label="打开资源管理器" title="打开资源管理器" disabled={!explorerSession} onClick={() => { if (explorerSession) preview.openExplorer(explorerSession); }}><Folder size={17} /></button>
           <button className={`icon-button ${servicePreviewOpen ? 'active' : ''} topbar-tool`} aria-label="打开网页服务" title="网页服务预览" aria-expanded={servicePreviewOpen} onClick={toggleServicePreview}><Globe2 size={17} /></button>
-          <button className={`icon-button ${terminalPanelOpen ? 'active' : ''} topbar-tool`} aria-label="打开终端" title={terminalPanelOpen ? '终端面板已打开' : '打开底部终端'} disabled={!state} onClick={() => openTerminalPanel(selected?.id)}><PanelBottomOpen size={17} /></button>
+          <button className={`icon-button ${terminalPanelOpen ? 'active' : ''} topbar-tool`} aria-label="打开终端" title={terminalPanelOpen ? '终端已在右侧打开' : '在右侧面板打开终端'} disabled={!state} onClick={() => openTerminalPanel(selected?.id)}><TerminalSquare size={17} /></button>
           <button className={`icon-button ${scratchpadOpen ? 'active' : ''} topbar-tool`} aria-label="打开随手记" title="随手记" aria-expanded={scratchpadOpen} onClick={toggleScratchpad}><FilePenLine size={17} /></button>
           <button className="icon-button appearance-toggle topbar-tool" aria-label="切换主题" title="外观主题" onClick={() => setModal({ type: 'appearance' })}><Palette size={17} /></button>
           <div className="contact-actions">
             <CreateMenu disabled={!state} items={[
               { label: '新建会话', icon: <MessageSquare size={14} />, onSelect: () => setModal({ type: 'create' }) },
               { label: '发起群聊', icon: <UsersRound size={14} />, onSelect: () => setModal({ type: 'group' }) },
+              { label: '发布话题', icon: <Hash size={14} />, onSelect: () => setModal({ type: 'topic', mode: { type: 'create' } }) },
               { label: '导入已有对话', icon: <ArrowDownToLine size={14} />, onSelect: () => setModal({ type: 'import' }) },
             ]} />
           </div>
@@ -689,7 +702,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
       {error && !selected && <div role="alert" className="error-banner"><span>{error}</span><button className="icon-button" aria-label="关闭错误提示" onClick={() => setError('')}><X size={15} /></button></div>}
 
       {!state && !connectionError && <div className="loading-state"><LoaderCircle className="spin" size={22} /><p>正在连接你的工作空间…</p></div>}
-      {state && view === 'activity' ? <ActivityView activities={state.activities} sessions={state.sessions} open={openSession} /> : state && view === 'backends' ? <><section className="backend-setting-card zoom-settings-card" aria-label="外观设置"><InterfaceZoom /></section><BackendSettings state={state} local={!auth.remote} onTerminal={id => { setTerminalSessionId(undefined); setSetupShellId(id); setTerminalPanelOpen(true); }} refresh={() => void run('refresh', () => api('/backends/refresh', {}), '已重新检测本机后端')} onCreate={(backend) => { setBackendFilter(backend); setModal({ type: 'create', backend }); }} /><div className="backend-settings"><section className="backend-setting-card" aria-label="提醒方式"><div className="backend-setting-title"><Bell size={20} /><div><h2>提醒方式</h2><p>需要你输入、审批或出错时，卡片会亮红点；这里决定是否同时发声和弹系统通知。</p></div></div><div className="notify-toggles"><button className={`button secondary small-button ${soundEnabled ? 'active' : ''}`} aria-label={soundEnabled ? '关闭提示音' : '开启提示音'} aria-pressed={soundEnabled} onClick={() => { const enabled = !soundEnabled; setSoundEnabled(enabled); writeLocalPreference('sessiondeck.sound', enabled ? 'on' : 'off'); if (enabled) notificationSound(); }}>{soundEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}{soundEnabled ? '提示音已开' : '提示音已关'}</button><button className={`button secondary small-button ${notifications ? 'active' : ''}`} aria-label={notifications ? '关闭系统通知' : '开启系统通知'} aria-pressed={notifications} onClick={() => void toggleNotifications()}>{notifications ? <Bell size={14} /> : <BellOff size={14} />}{notifications ? '系统通知已开' : '系统通知已关'}</button></div></section><VoiceSettings local={!auth.remote} demo={state.demo} /><StartupSettings local={!auth.remote} /><SecuritySettings auth={auth} notify={notify} /></div></> : state && <>
+      {state && view === 'activity' ? <ActivityView activities={state.activities} sessions={state.sessions} open={openSession} /> : state && view === 'backends' ? <><section className="backend-setting-card zoom-settings-card" aria-label="外观设置"><InterfaceZoom /></section><BackendSettings state={state} local={!auth.remote} onTerminal={id => { setTerminalSessionId(undefined); setSetupShellId(id); preview.openTerminal(); }} refresh={() => void run('refresh', () => api('/backends/refresh', {}), '已重新检测本机后端')} onCreate={(backend) => { setBackendFilter(backend); setModal({ type: 'create', backend }); }} /><div className="backend-settings"><section className="backend-setting-card" aria-label="提醒方式"><div className="backend-setting-title"><Bell size={20} /><div><h2>提醒方式</h2><p>需要你输入、审批或出错时，卡片会亮红点；这里决定是否同时发声和弹系统通知。</p></div></div><div className="notify-toggles"><button className={`button secondary small-button ${soundEnabled ? 'active' : ''}`} aria-label={soundEnabled ? '关闭提示音' : '开启提示音'} aria-pressed={soundEnabled} onClick={() => { const enabled = !soundEnabled; setSoundEnabled(enabled); writeLocalPreference('sessiondeck.sound', enabled ? 'on' : 'off'); if (enabled) notificationSound(); }}>{soundEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}{soundEnabled ? '提示音已开' : '提示音已关'}</button><button className={`button secondary small-button ${notifications ? 'active' : ''}`} aria-label={notifications ? '关闭系统通知' : '开启系统通知'} aria-pressed={notifications} onClick={() => void toggleNotifications()}>{notifications ? <Bell size={14} /> : <BellOff size={14} />}{notifications ? '系统通知已开' : '系统通知已关'}</button></div></section><VoiceSettings local={!auth.remote} demo={state.demo} /><StartupSettings local={!auth.remote} /><ImSettings local={!auth.remote} notify={notify} /><SecuritySettings auth={auth} notify={notify} /></div></> : state && topicView ? <TopicList topics={topics} sessions={sessions} activeId={groupId} query={query} showArchived={showArchivedTopics} setShowArchived={setShowArchivedTopics} open={(id) => navigate(`topic:${id}`)} openSession={openSessionForInput} publish={() => setModal({ type: 'topic', mode: { type: 'create' } })} pin={(topic) => void run(`pin:${topic.id}`, () => api(`/groups/${topic.id}`, { pinned: !topic.pinned }, 'PATCH'))} archive={(topic) => void run(`archive:${topic.id}`, () => api(`/groups/${topic.id}`, { archived: !topic.archived }, 'PATCH'), topic.archived ? '话题已恢复' : '话题已归档，讨论和参与者都已保留')} /> : state && <>
           {visible.length > 0 ? <><div className="contact-grid">{shownContacts.map((entry) => entry.kind === 'group' ? <GroupCard key={entry.id} group={entry.group} members={entry.members} active={entry.id === groupId} onArchive={() => void run(`archive:${entry.id}`, () => api(`/groups/${entry.id}`, { archived: !entry.group.archived }, 'PATCH'), entry.group.archived ? '群聊已恢复' : '群聊已移入垃圾桶，消息和成员已保留')} onOpen={() => navigate(`group:${entry.id}`)} onPin={() => void run(`pin:${entry.id}`, () => api(`/groups/${entry.id}`, { pinned: !entry.group.pinned }, 'PATCH'))} onEdit={() => setModal({ type: 'group', group: entry.group })} /> : ((session) => <SessionCard key={session.id} session={session} active={session.id === selectedId} onShare={() => setModal({ type: 'shareLink', session })} canFork={state.backends.find((backend) => backend.id === session.backend)?.capabilities.fork && !!session.nativeSessionId && !session.forkPending || false} onOpen={(invoker) => openSession(session, invoker)} onRename={() => setModal({ type: 'rename', session })} onFork={() => setModal({ type: 'fork', session, groupId: session.groupId ?? undefined })} onPin={() => void patch(session, { pinned: !session.pinned })} onArchive={() => void run(`archive:${session.id}`, () => api(`/sessions/${session.id}`, { archived: !session.archived }, 'PATCH'), session.archived ? '已从垃圾桶恢复会话' : '已移入垃圾桶；运行中的任务会停止，可随时恢复')} onPurge={() => purgeSession(session)} onCopyDirectory={() => void copyText(session.cwd, '工作目录')} />)(entry.session))}</div>{shownContacts.length < visible.length && <div className="contact-more"><button className="button secondary" type="button" onClick={() => setContactLimit(value => value + CONTACT_RENDER_STEP)}>显示更多（已显示 {shownContacts.length} / 共 {visible.length}）</button></div>}</> : <EmptyState filtered={filtered} view={view} group={false} backendCount={state.backends.filter((backend) => backend.installed).length} connections={() => navigate('backends')} create={() => setModal({ type: 'create' })} importSessions={() => setModal({ type: 'import' })} clear={clearFilters} />}
 
         </>}
@@ -699,8 +712,8 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
       {currentGroup ? <>
           {currentGroup && groupError && <div className="error-banner" role="alert"><span>群组动态加载失败：{groupError}</span><button className="text-button" onClick={() => setGroupReload((value) => value + 1)}>重试群组动态</button></div>}
           {currentGroup && !groupError && (!detail || detail.group.id !== currentGroup.id) && <div className="loading-state" role="status"><LoaderCircle size={20} className="spin" /><p>正在读取群组动态…</p></div>}
-          {currentGroup && detail && detail.group.id === currentGroup.id && <GroupChat active={!selected && !modal} onShare={() => setModal({ type: 'shareLink', group: currentGroup })} key={currentGroup.id} group={currentGroup} detail={detail} loadOlder={loadOlder} loadingOlder={loadingOlder} readSource={readSource} resolveDelivery={(delivery, resolution) => void run(`resolve:${delivery.id}`, () => api(`/deliveries/${delivery.id}/resolve`, { attemptId: delivery.attempts?.at(-1)?.id, resolution }), '已记录核对结果')} members={sessions.filter((session) => session.groupId === groupId)} demo={state.demo} busy={busy}
-            chatCapable={(member) => !state.demo && ['codex', 'claude'].includes(member.backend) && !!state.backends.find((backend) => backend.id === member.backend)?.capabilities.graphicalChat}
+          {currentGroup && detail && detail.group.id === currentGroup.id && <GroupChat variant={isTopic(currentGroup) ? 'topic' : 'group'} candidates={isTopic(currentGroup) ? sessions.filter(session => !session.archived && session.groupId !== currentGroup.id) : undefined} invite={isTopic(currentGroup) ? (source) => inviteToTopic(currentGroup, source) : undefined} active={!selected && !modal} onShare={isTopic(currentGroup) ? undefined : () => setModal({ type: 'shareLink', group: currentGroup })} key={currentGroup.id} group={currentGroup} detail={detail} loadOlder={loadOlder} loadingOlder={loadingOlder} readSource={readSource} resolveDelivery={(delivery, resolution) => void run(`resolve:${delivery.id}`, () => api(`/deliveries/${delivery.id}/resolve`, { attemptId: delivery.attempts?.at(-1)?.id, resolution }), '已记录核对结果')} members={sessions.filter((session) => session.groupId === groupId)} demo={state.demo} busy={busy}
+            chatCapable={(member) => !state.demo && ['codex', 'claude', 'pi'].includes(member.backend) && !!state.backends.find((backend) => backend.id === member.backend)?.capabilities.graphicalChat}
             confirmReplace={(message, draft, proceed) => setModal({ type: 'replaceDraft', draft, sourceName: message.senderName || '我', proceed })}
             post={async (body) => {
               let failures: { sessionId: string; error: string }[] = [];
@@ -711,12 +724,12 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
             deliver={(id, sessionId) => void run(`deliver:${id}`, async () => { await api(`/deliveries/${id}/send`, {}); const member = sessions.find((session) => session.id === sessionId); if (member) openSessionForInput(member); }, '已处理投递，请在成员私聊中查看')}
             cancel={(id) => void run(`cancel:${id}`, () => api(`/deliveries/${id}/cancel`, {}), '已取消投递')}
             open={(id, interactive) => { const session = sessions.find((item) => item.id === id); if (session) (interactive ? openSessionForInput : openSession)(session); }}
-            addMember={() => setModal({ type: 'addMember', groupId: currentGroup.id })}
-            editGroup={() => setModal({ type: 'group', group: currentGroup })}
+            addMember={() => setModal(isTopic(currentGroup) ? { type: 'topic', mode: { type: 'add', topic: currentGroup } } : { type: 'addMember', groupId: currentGroup.id })}
+            editGroup={() => setModal(isTopic(currentGroup) ? { type: 'topic', mode: { type: 'edit', topic: currentGroup } } : { type: 'group', group: currentGroup })}
             editWorkspacePermissions={() => setModal({ type: 'groupDirectories', group: currentGroup })}
-            removeMember={(member) => { if (window.confirm(`将「${member.title}」移出群聊？会话和私聊记录会保留，回到会话列表。`)) void run(`leave:${member.id}`, () => api(`/sessions/${member.id}`, { groupId: null }, 'PATCH'), '已移出群聊'); }}
-            markRead={markGroupRead} back={() => navigate('contacts')} openWorkspace={(member) => preview.openExplorer(member)} notify={notify} />}
-      </> : <div className="conversation-welcome"><BrandMark size={42} /><h2>选择一个会话，继续工作</h2><p>你的 Agent、上下文和工作目录，都在左侧。</p></div>}
+            removeMember={(member) => { const where = isTopic(currentGroup) ? '话题' : '群聊'; if (window.confirm(`将「${member.title}」移出${where}？会话和私聊记录会保留。`)) void run(`leave:${member.id}`, () => api(`/sessions/${member.id}`, { groupId: null }, 'PATCH'), `已移出${where}`); }}
+            markRead={markGroupRead} back={() => navigate(isTopic(currentGroup) ? 'topics' : 'contacts')} openWorkspace={(member) => preview.openExplorer(member)} notify={notify} />}
+      </> : topicView ? <div className="conversation-welcome"><Hash size={40} strokeWidth={1.5} /><h2>选择一个话题，或发布新话题</h2><p>每个话题是一条独立的讨论线。参与讨论的 Agent 都在你的会话列表里，在话题里回复和在它的会话里对话是一回事。</p><button className="button primary small-button" onClick={() => setModal({ type: 'topic', mode: { type: 'create' } })}><Plus size={14} />发布话题</button></div> : <div className="conversation-welcome"><BrandMark size={42} /><h2>选择一个会话，继续工作</h2><p>你的 Agent、上下文和工作目录，都在左侧。</p></div>}
     </section>}
 
     {selected && state && <SessionChrome fullscreen={fullscreenSessionId === selected.id} toggleFullscreen={() => setFullscreenSessionId(value => value ? null : selected.id)}><section ref={drawerRef} inert={!!modal} className={`session-drawer${fullscreenSessionId === selected.id ? ' session-fullscreen' : ''}`} onKeyDown={event => {
@@ -749,7 +762,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
             <SessionUsageLine session={selected} />
             <div><span>工作目录</span><code title={selected.cwd}>{selected.cwd}</code><button className="icon-button" aria-label="复制会话目录" title="复制工作目录" onClick={() => void copyText(selected.cwd, '工作目录')}><Copy size={13} /></button></div>
             {selected.archived && <><button className="text-button" onClick={() => void patch(selected, { archived: false })}><ArchiveRestore size={13} />已移入垃圾桶 · 恢复会话</button><button className="text-button" onClick={() => purgeSession(selected)}><Trash2 size={13} />清理会话记录</button></>}
-            {selectedGroup && <button className="text-button" onClick={() => navigate(`group:${selectedGroup.id}`)}><UsersRound size={13} />{selectedGroup.title}</button>}
+            {selectedGroup && <button className="text-button" onClick={() => navigate(isTopic(selectedGroup) ? `topic:${selectedGroup.id}` : `group:${selectedGroup.id}`)}>{isTopic(selectedGroup) ? <Hash size={13} /> : <UsersRound size={13} />}{selectedGroup.title}</button>}
             {selectedParent && <button className="text-button" onClick={() => openSession(selectedParent)}><GitFork size={13} />来源：{selectedParent.title}</button>}
             {selected.groupId && <button className="text-button compact-extra-action" onClick={() => setModal({ type: 'share', session: selected, text: selection })}><Share2 size={13} />分享结果到群组</button>}
             {nativeHref && <a className="text-button compact-extra-action" aria-label="原生窗口" target="_blank" rel="noreferrer" href={nativeHref}><ExternalLink size={13} />打开原生窗口</a>}
@@ -762,31 +775,32 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
             {selected.backend === 'claude' ? <><div><span>权限模式</span><small>{claudePermissionLabel(selected.nativeSettings?.permission ?? (selected.executionMode === 'auto' ? 'auto' : null))}</small></div><div><span>模型</span><small>{selected.nativeSettings?.model ?? '原生默认'}</small></div></> : <div><span>执行模式</span><small>{selected.executionMode === 'auto' ? 'Auto · 自动审核' : '原生默认'}</small></div>}
             <div><span>创建时间</span><time dateTime={selected.createdAt}>{new Date(selected.createdAt).toLocaleString('zh-CN')}</time></div>
           </div></details>
-          <button className="icon-button session-close" aria-label="关闭会话" title="关闭面板，返回列表（Esc）" onClick={() => setSelectedId(null)}><X size={17} /></button>
+          <button className="icon-button session-close" aria-label="关闭会话" title="关闭面板，返回列表" onClick={() => setSelectedId(null)}><X size={17} /></button>
         </div>
       </header>
       {connectionError && <div role="alert" className="error-banner connection-error"><span>{connectionError}</span><button className="text-button" onClick={() => void refresh().catch(() => {})}>重试连接</button></div>}
       {nativeSessionBusy && <div role="alert" className="error-banner native-session-busy"><span>这个 Codex 会话正被其他原生客户端占用。关闭原客户端后可重试恢复；也可以 Fork 继承上下文，独立继续。</span><div><button className="button secondary small-button" disabled={!!busy} onClick={() => void startSelected()}>重试恢复</button><button className="button secondary small-button" disabled={!!busy || !selectedBackend?.capabilities.fork || !selected.nativeSessionId || selected.forkPending} onClick={() => { setError(''); setModal({ type: 'fork', session: selected, groupId: selected.groupId ?? undefined }); }}><GitFork size={13} />Fork 后继续</button></div></div>}
       {error && !nativeSessionBusy && <div role="alert" className="error-banner"><span>{error}</span><button className="icon-button" aria-label="关闭会话错误提示" onClick={() => setError('')}><X size={15} /></button></div>}
       <div className="session-conversation">
-      {(dshWebOnly || dshNativeWeb) && privateView === 'terminal' ? !selected.nativeUrl ? <div className="terminal-empty"><BackendAvatar backend="dsh" /><h3>直接使用 Harness 原生界面</h3><p>{busy === `start:${selected.id}` ? '正在启动原生会话…' : '启动会话后，在这里继续这个会话的上下文。'}</p></div> : auth.remote ? nativeProxy?.id === selected.id ? <div className="native-web"><iframe title="DeepSeek Harness 会话" src={nativeProxy.url} allow="clipboard-read; clipboard-write" /></div> : nativeProxyError ? <div className="terminal-empty"><BackendAvatar backend="dsh" /><h3>原生界面暂时无法打开</h3><p>{nativeProxyError}</p><button className="button secondary" onClick={() => setNativeProxyNonce(value => value + 1)}>重试</button></div> : <div className="terminal-empty"><LoaderCircle size={20} className="spin" /><h3>正在通过主机打开原生界面</h3><p>浏览器只访问 Dili 的域名，原生服务的令牌不会出现在地址栏。</p></div> : <div className="native-web"><iframe title="DeepSeek Harness 会话" src={selected.nativeUrl} allow="clipboard-read; clipboard-write" /></div> : privateView === 'chat' ? <Suspense fallback={<div className="loading-state"><LoaderCircle size={22} className="spin" /><p>正在加载对话…</p></div>}><AgentChatPane key={selected.id} session={selected} onTerminal={() => switchPrivateView('terminal')} onSelection={setSelection} /></Suspense> : privateView === 'conversation' ? <ConversationPane key={selected.id} session={selected} allowInput={!state.demo && !dshWebOnly} onTerminal={() => switchPrivateView('terminal')} onSelection={setSelection} /> : selected.backend === 'codex' && agentChatAvailable && selected.running && selected.interactionMode === 'chat' ? <div className="terminal-empty"><Command size={26} /><h3>连接同一个 {BACKEND[selected.backend].short} 会话</h3><button className="button primary" disabled={!!busy} onClick={() => switchPrivateView('terminal')}>连接原生终端</button></div> : <TerminalPane key={selected.id} sessionId={selected.id} running={selected.running} status={selected.status} allowImages={['codex', 'claude', 'dsh'].includes(selected.backend) && !state.demo} onSelection={setSelection} settings={selected.backend === 'claude' && !state.demo && selected.nativeSessionId && !selected.forkPending ? <ClaudeTerminalSettings session={selected} /> : undefined} />}
+      {(dshWebOnly || dshNativeWeb) && privateView === 'terminal' ? !selected.nativeUrl ? <div className="terminal-empty"><BackendAvatar backend="dsh" /><h3>直接使用 Harness 原生界面</h3><p>{busy === `start:${selected.id}` ? '正在启动原生会话…' : '启动会话后，在这里继续这个会话的上下文。'}</p></div> : auth.remote ? nativeProxy?.id === selected.id ? <div className="native-web"><iframe title="DeepSeek Harness 会话" src={nativeProxy.url} allow="clipboard-read; clipboard-write" /></div> : nativeProxyError ? <div className="terminal-empty"><BackendAvatar backend="dsh" /><h3>原生界面暂时无法打开</h3><p>{nativeProxyError}</p><button className="button secondary" onClick={() => setNativeProxyNonce(value => value + 1)}>重试</button></div> : <div className="terminal-empty"><LoaderCircle size={20} className="spin" /><h3>正在通过主机打开原生界面</h3><p>浏览器只访问 Dili 的域名，原生服务的令牌不会出现在地址栏。</p></div> : <div className="native-web"><iframe title="DeepSeek Harness 会话" src={selected.nativeUrl} allow="clipboard-read; clipboard-write" /></div> : privateView === 'chat' ? <Suspense fallback={<div className="loading-state"><LoaderCircle size={22} className="spin" /><p>正在加载对话…</p></div>}><AgentChatPane key={selected.id} session={selected} onTerminal={() => switchPrivateView('terminal')} onSelection={setSelection} /></Suspense> : privateView === 'conversation' ? <ConversationPane key={selected.id} session={selected} allowInput={!state.demo && !dshWebOnly} onTerminal={() => switchPrivateView('terminal')} onSelection={setSelection} /> : selected.backend === 'codex' && agentChatAvailable && selected.running && selected.interactionMode === 'chat' ? <div className="terminal-empty"><Command size={26} /><h3>连接同一个 {BACKEND[selected.backend].short} 会话</h3><button className="button primary" disabled={!!busy} onClick={() => switchPrivateView('terminal')}>连接原生终端</button></div> : <TerminalPane key={selected.id} sessionId={selected.id} running={selected.running} status={selected.status} allowImages={['codex', 'claude', 'dsh', 'pi'].includes(selected.backend) && !state.demo} onSelection={setSelection} settings={selected.backend === 'claude' && !state.demo && selected.nativeSessionId && !selected.forkPending ? <ClaudeTerminalSettings session={selected} /> : undefined} />}
       </div>
     </section></SessionChrome>}
     </div>
-    {state && <ShellTerminalDock open={terminalPanelOpen} sessionId={terminalSessionId} requestedShellId={setupShellId} onClose={() => setTerminalPanelOpen(false)} inert={!!modal} />}
     </div>
-    <PreviewWorkspace controller={preview} sessions={sessions} currentSession={explorerSession} inert={!!modal} remote={auth.remote} />
+    <PreviewWorkspace controller={preview} sessions={sessions} currentSession={explorerSession} inert={!!modal} remote={auth.remote} openTerminal={() => openTerminalPanel(selected?.id)}
+      terminal={state && <ShellTerminalDock embedded open={terminalPanelOpen} sessionId={terminalSessionId} requestedShellId={setupShellId} onClose={() => preview.close('terminal')} inert={!!modal} />} />
     </div>
 
     </div>
     {modal?.type === 'help' && <HelpDialog close={closeModal} />}
     {modal?.type === 'appearance' && <AppearanceDialog close={closeModal} />}
     {modal?.type === 'debug' && <DebugPanel close={closeModal} />}
+    {modal?.type === 'topic' && state && <TopicDialog mode={modal.mode} state={state} close={closeModal} notify={notify} done={(topic, errors) => { void refresh().catch(() => {}); closeModal(); setGroupReload(value => value + 1); if (modal.mode.type === 'create') notify('话题已发布'); else if (modal.mode.type === 'edit') notify('话题已更新'); if (errors.length) setError(`部分参与者未能加入或未收到消息：${errors.join('；')}`); navigate(`topic:${topic.id}`); }} />}
     {modal?.type === 'replaceDraft' && <ModalShell title="替换当前群组草稿？" subtitle={`将 ${modal.sourceName} 的消息转交为任务，当前草稿需要先处理。`} close={closeModal}><div className="modal-fields"><p className="draft-replace-preview">{modal.draft || '当前草稿已选择接收成员。'}</p><p className="form-note">保留草稿会取消这次转交。替换后，可编辑任务内容并选择接收成员；创建任务仍需你提交。</p></div><div className="modal-footer"><button className="button secondary" onClick={closeModal}>保留当前草稿</button><button className="button primary" onClick={() => { modal.proceed(); closeModal(); }}>替换为转交任务</button></div></ModalShell>}
     {modal?.type === 'shareLink' && <ShareDialog group={modal.group} session={modal.session} close={closeModal} notify={notify} />}
     {modal?.type === 'groupDirectories' && state && <GroupWorkspacePermissions group={state.groups.find(item => item.id === modal.group.id) ?? modal.group} members={state.sessions.filter(item => item.groupId === modal.group.id)} backends={state.backends} close={closeModal} refresh={refresh} />}
     {modal?.type === 'directories' && state && <WorkspacePermissions session={state.sessions.find(item => item.id === modal.session.id) ?? modal.session} backend={state.backends.find(item => item.id === modal.session.backend)!} close={closeModal} refresh={refresh} />}
-    {modal && modal.type !== 'help' && modal.type !== 'appearance' && modal.type !== 'debug' && modal.type !== 'replaceDraft' && modal.type !== 'shareLink' && modal.type !== 'directories' && modal.type !== 'groupDirectories' && state && <AppModal modal={modal} state={state} close={closeModal} done={async (session?: Session, group?: Group) => { await refresh().catch(() => {}); closeModal(); if (group) navigate(`group:${group.id}`); if (session) { if (session.groupId) navigate(`group:${session.groupId}`); openSession(session); } }} notify={notify} />}
+    {modal && modal.type !== 'help' && modal.type !== 'appearance' && modal.type !== 'debug' && modal.type !== 'topic' && modal.type !== 'replaceDraft' && modal.type !== 'shareLink' && modal.type !== 'directories' && modal.type !== 'groupDirectories' && state && <AppModal modal={modal} state={state} close={closeModal} done={async (session?: Session, group?: Group) => { await refresh().catch(() => {}); closeModal(); if (group) navigate(`group:${group.id}`); if (session) { if (session.groupId) navigate(`group:${session.groupId}`); openSession(session); } }} notify={notify} />}
     {toast && <div className="toast" role="status"><CheckCheck size={16} />{toast}<button aria-label="关闭提示" onClick={() => setToast('')}><X size={14} /></button></div>}
   </div>;
 }
@@ -887,7 +901,7 @@ function BackendSettings({ state, refresh, onCreate, local, onTerminal }: { stat
   return <div className="backend-settings">{state.backends.map((backend) => <section className="backend-setting-card" key={backend.id}><div className="backend-setting-title"><BackendAvatar backend={backend.id} /><div><h2>{backend.label}</h2><p>{backend.version || (backend.installed ? '已检测到本机安装' : '未检测到本机安装')}</p></div><span className={`status-badge ${backend.installed ? 'running' : 'unknown'}`}><i />{backend.installed ? '已安装' : '未安装'}</span></div><p className="backend-note">{backend.note || (backend.id === 'dsh' ? '通过 Harness 原生 Web 界面继续交互。' : '在浏览器内运行原生 CLI，保留熟悉的操作方式。')}</p><div className="capability-list">{[['terminal', '原生终端'], ['resume', '恢复会话'], ['fork', '原生 Fork'], ['discovery', '发现已有会话']].map(([capability, label]) => <span key={capability} className={backend.capabilities[capability as keyof typeof backend.capabilities] ? 'supported' : ''}>{backend.capabilities[capability as keyof typeof backend.capabilities] ? <Check size={13} /> : <span className="capability-dash">—</span>}{label}</span>)}</div><button className="button secondary" disabled={!backend.installed} onClick={() => onCreate(backend.id)}><Plus size={15} /> 创建 {BACKEND[backend.id].short} 会话</button><AgentSetupControls info={setup.find(item => item.id === backend.id)} local={local} onTerminal={onTerminal} refresh={refreshSetup} /></section>)}<div className="backend-info-note"><span>{setupError || '能力以本机实际安装的后端为准；安装或升级后重新检测。'}</span><button className="button secondary small-button" onClick={() => { refresh(); void refreshSetup(); }}><Radio size={14} /> 刷新状态</button></div></div>;
 }
 
-function AppModal({ modal, state, close, done, notify }: { modal: Exclude<NonNullable<Modal>, { type: 'help' | 'appearance' | 'replaceDraft' | 'shareLink' | 'directories' | 'groupDirectories' }>; state: AppState; close: () => void; done: (session?: Session, group?: Group) => Promise<void>; notify: (message: string) => void }) {
+function AppModal({ modal, state, close, done, notify }: { modal: Exclude<NonNullable<Modal>, { type: 'help' | 'appearance' | 'replaceDraft' | 'shareLink' | 'directories' | 'groupDirectories' | 'topic' }>; state: AppState; close: () => void; done: (session?: Session, group?: Group) => Promise<void>; notify: (message: string) => void }) {
   const [title, setTitle] = useState(modal.type === 'rename' ? modal.session.title : modal.type === 'fork' ? `${modal.session.title} · Fork` : modal.type === 'handoff' ? `${modal.session.title} · 交接` : modal.type === 'group' ? modal.group?.title ?? '' : '');
   const [backend, setBackend] = useState<Backend>((modal.type === 'create' ? modal.backend : undefined) ?? state.backends.find((item) => item.installed && (modal.type !== 'handoff' || item.id !== modal.session.backend))?.id ?? 'claude');
   const recentSessions = useMemo(() => [...state.sessions].sort((first, second) => second.lastActivity.localeCompare(first.lastActivity)), [state.sessions]);

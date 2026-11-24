@@ -2,6 +2,7 @@ import { defineConfig } from '@playwright/test';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { browserLaunchEnv } from './tests/browser-libs';
 
 const testPortValue = process.env.SESSIONDECK_TEST_PORT?.trim() || '4337';
 const testPort = Number(testPortValue);
@@ -18,7 +19,7 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   timeout: 45_000,
-  use: { baseURL, viewport: { width: 1440, height: 1000 }, trace: 'retain-on-failure', screenshot: 'only-on-failure' },
+  use: { baseURL, viewport: { width: 1440, height: 1000 }, trace: 'retain-on-failure', screenshot: 'only-on-failure', launchOptions: { env: browserLaunchEnv() } },
   outputDir: 'artifacts/playwright',
   webServer: {
     // Build into a throwaway client directory so a browser run cannot empty or

@@ -27,10 +27,10 @@ class FakeNative implements DshChatNative {
   async getStatus(): Promise<DshStatusLike> { return this.status; }
   pendingRequests() { return { questions: this.questions, approvals: this.approvals }; }
   async answerQuestion(_id: string, callId: string, answers: { id: string; selected: string[]; custom?: string }[]) { this.answers.push({ callId, answers }); }
-  settings: DshChatSettings = { model: 'discover/deepseek-v4-flash', models: [{ id: 'discover/deepseek-v4-flash', label: 'deepseek-v4-flash' }, { id: 'discover/deepseek-v4-pro', label: 'deepseek-v4-pro' }], permission: 'workspace-write', permissions: [{ id: 'read-only', label: 'read-only' }, { id: 'workspace-write', label: 'workspace-write' }] };
+  settings: DshChatSettings = { model: 'discover/deepseek-v4-flash', models: [{ id: 'discover/deepseek-v4-flash', label: 'deepseek-v4-flash' }, { id: 'discover/deepseek-v4-pro', label: 'deepseek-v4-pro' }], permission: 'workspace-write', permissions: [{ id: 'read-only', label: 'read-only' }, { id: 'workspace-write', label: 'workspace-write' }], effort: null, efforts: [{ id: 'off', label: '关闭（off）' }, { id: 'high', label: '高（high）' }], defaultEffort: 'off' };
   settingsUpdates: { field: string; value: string }[] = [];
   async readChatSettings() { return this.settings; }
-  async updateChatSettings(_id: string, field: 'model' | 'permission', value: string) { this.settingsUpdates.push({ field, value }); this.settings = { ...this.settings, [field]: value }; }
+  async updateChatSettings(_id: string, field: 'model' | 'permission' | 'effort', value: string) { this.settingsUpdates.push({ field, value }); this.settings = { ...this.settings, [field]: value }; }
   listeners: ((id: string, event: unknown) => void)[] = [];
   onStatusChange() { return () => {}; }
   onSessionEvent(listener: (id: string, event: unknown) => void) { this.listeners.push(listener); return () => {}; }
@@ -140,6 +140,26 @@ test('dsh chat exposes native model and permission choices with versioned writes
   assert.equal(next.model, 'discover/deepseek-v4-pro');
   assert.notEqual(next.version, first.version);
   await assert.rejects(adapter.updateChatSettings(id, { version: first.version, field: 'permission', value: 'read-only' }), /已变化/);
+  adapter.close();
+});
+
+test('dsh chat effort follows the current model catalog and rejects levels it does not offer', async () => {
+  const native = new FakeNative();
+  const adapter = new DshChatAdapter(native, { writerWritable: () => true });
+  const first = await adapter.readChatSettings(id);
+  assert.equal(first.effort, null);
+  assert.equal(first.effortLabel, '模型默认：关闭（off）');
+  assert.deepEqual(first.efforts?.map(item => item.id), ['off', 'high']);
+  await assert.rejects(adapter.updateChatSettings(id, { version: first.version, field: 'effort', value: 'max' }), /不在当前模型/);
+  assert.equal(native.settingsUpdates.length, 0, 'An unoffered level never reaches the native API');
+  const next = await adapter.updateChatSettings(id, { version: first.version, field: 'effort', value: 'high' });
+  assert.deepEqual(native.settingsUpdates, [{ field: 'effort', value: 'high' }]);
+  assert.equal(next.effort, 'high');
+  assert.equal(next.effortLabel, undefined);
+  native.settings = { ...native.settings, efforts: [] };
+  const none = await adapter.readChatSettings(id);
+  assert.match(none.effortReason ?? '', /未报告/);
+  await assert.rejects(adapter.updateChatSettings(id, { version: none.version, field: 'effort', value: 'high' }), /未报告/);
   adapter.close();
 });
 

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { AgentChatAdapter } from './chat.ts';
 import type { AgentChatAnswer, AgentChatHistoryPage, AgentChatItem, AgentChatRequest, AgentChatSettings, AgentChatSettingsUpdate, AgentChatSnapshot } from '../../shared/chat.ts';
 import type { SessionStatus } from '../../shared/types.ts';
+import { defaultEffortLabel } from '../../shared/effort.ts';
 import type { DshHistory } from '../conversation.ts';
 import type { DshChatSettings } from '../dsh.ts';
 import { dshChatItems, dshChatTurn } from './dsh-chat-items.ts';
@@ -23,7 +24,7 @@ export interface DshChatNative {
   pendingRequests?(id: string): DshPending;
   answerQuestion?(id: string, callId: string, answers: { id: string; selected: string[]; custom?: string }[]): Promise<void>;
   readChatSettings?(id: string): Promise<DshChatSettings>;
-  updateChatSettings?(id: string, field: 'model' | 'permission', value: string): Promise<void>;
+  updateChatSettings?(id: string, field: 'model' | 'permission' | 'effort', value: string): Promise<void>;
   onStatusChange?(listener: () => void): () => void;
   onSessionEvent?(listener: (id: string, event: unknown) => void): () => void;
 }
@@ -310,6 +311,7 @@ export class DshChatAdapter implements AgentChatAdapter {
         permissions: [],
         modelReason: '当前 DeepSeek Harness 版本未提供模型目录',
         permissionReason: '当前 DeepSeek Harness 版本未提供权限目录',
+        effortReason: '当前 DeepSeek Harness 版本未提供推理强度目录',
         disabledReason: '当前 DeepSeek Harness 版本只能在原生界面修改模型和权限',
         scope: '原生界面',
       };
@@ -328,6 +330,10 @@ export class DshChatAdapter implements AgentChatAdapter {
       permission: native.permission,
       permissions: native.permissions,
       ...(native.permissionLabel ? { permissionLabel: native.permissionLabel } : {}),
+      effort: native.effort ?? null,
+      efforts: native.efforts ?? [],
+      ...(native.effort ? {} : { effortLabel: defaultEffortLabel(native.defaultEffort) }),
+      ...(native.efforts?.length ? {} : { effortReason: '当前模型未报告可选推理强度' }),
       ...(native.models.length ? {} : { modelReason: 'DeepSeek Harness 未返回可用模型目录' }),
       ...(native.permissions.length ? {} : { permissionReason: 'DeepSeek Harness 未返回权限预设目录' }),
       ...(tuiOwned ? { disabledReason: '当前输入由 dsh-tui 持有；先接管图形对话，再修改原生模型和权限' } : active ? { disabledReason: '请等待当前任务、审批或问题处理结束后再修改原生设置' } : {}),
@@ -340,7 +346,8 @@ export class DshChatAdapter implements AgentChatAdapter {
     if (update.version !== current.version) throw new Error('原生设置已变化，请刷新后重试');
     if (current.disabledReason) throw new Error(current.disabledReason);
     if (!this.native.updateChatSettings) throw new Error('当前 DeepSeek Harness 版本没有提供网页设置接口');
-    if (update.field !== 'model' && update.field !== 'permission') throw new Error('不支持的设置项');
+    if (update.field !== 'model' && update.field !== 'permission' && update.field !== 'effort') throw new Error('不支持的设置项');
+    if (update.field === 'effort' && (current.effortReason || !current.efforts?.some(choice => choice.id === update.value))) throw new Error(current.effortReason || '这个推理强度不在当前模型的原生选项中，请刷新设置');
     await this.native.updateChatSettings(sessionId, update.field, update.value);
     this.settingsVersions.set(sessionId, randomUUID());
     return this.readChatSettings(sessionId);

@@ -1,6 +1,6 @@
 import { DirectoryDialog } from './DirectoryField';
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
-import { ArrowLeft, ChevronDown, FilePenLine, Folder, FolderOpen, Globe2, Maximize2, Minimize2, PanelRightClose, Plus, X } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { ArrowLeft, ChevronDown, FilePenLine, Folder, FolderOpen, Globe2, Maximize2, Minimize2, PanelRightClose, Plus, TerminalSquare, X } from 'lucide-react';
 import type { Session } from '../shared/types';
 import WorkspaceExplorer, { Splitter } from './WorkspaceExplorer';
 import ScratchpadPanel from './ScratchpadPanel';
@@ -12,12 +12,13 @@ import './preview-workspace.css';
 
 function tabTitle(tab: PreviewTab, sessions: Session[]) {
   if (tab.kind === 'note') return '随手记';
+  if (tab.kind === 'terminal') return '终端';
   if (tab.kind === 'web') return tab.url ? new URL(tab.url).host : '新网页';
   if (tab.custom) return `文件 · ${tab.cwd.split('/').filter(Boolean).at(-1) || '/'}`;
   return `文件 · ${sessions.find(session => session.id === tab.sessionId)?.title ?? '工作区'}`;
 }
 function TabIcon({ tab }: { tab: PreviewTab }) {
-  const Icon = tab.kind === 'note' ? FilePenLine : tab.kind === 'web' ? Globe2 : Folder;
+  const Icon = tab.kind === 'note' ? FilePenLine : tab.kind === 'terminal' ? TerminalSquare : tab.kind === 'web' ? Globe2 : Folder;
   return <Icon size={14} aria-hidden="true" />;
 }
 
@@ -41,13 +42,15 @@ function WorkspaceTabContent({ tab, sessions, controller, close }: {
     <button className="icon-button" aria-label="打开任意目录" title="打开目录" onClick={() => setChoosing(true)}><FolderOpen size={16} /></button>
     {choosing && <DirectoryDialog initialPath={tab.cwd} parent={null} close={() => setChoosing(false)} choose={path => { controller.openDirectory(session, path); setChoosing(false); }} />}
   </div>;
-  return <WorkspaceExplorer session={session} root={tab.custom ? tab.cwd : undefined} embedded close={close} picker={picker}
+  return <WorkspaceExplorer session={session} root={tab.custom ? tab.cwd : undefined} embedded close={close} picker={picker} canOpenEditor
     selection={tab.selection} treeCollapsed={tab.treeCollapsed ?? false}
     onTreeCollapsed={value => controller.collapseTree(tab.id, value)}
     onSelectFile={selection => controller.selectFile(tab.id, selection)} />;
 }
 
-export default function PreviewWorkspace({ controller, sessions, currentSession, inert, remote = false }: { controller: PreviewWorkspaceController; sessions: Session[]; currentSession?: Session; inert: boolean; remote?: boolean }) {
+/** `terminal` is the shell terminal panel, rendered by the app so its shells and
+ * context (the current contact) stay owned there; this only hosts it as a tab. */
+export default function PreviewWorkspace({ controller, sessions, currentSession, inert, remote = false, terminal, openTerminal }: { controller: PreviewWorkspaceController; sessions: Session[]; currentSession?: Session; inert: boolean; remote?: boolean; terminal?: ReactNode; openTerminal?: () => void }) {
   const { tabs, activeId, open, select, close, hide } = controller;
   const [fullscreen, setFullscreen] = useState(false);
   useEffect(() => { if (!open) setFullscreen(false); }, [open]);
@@ -108,7 +111,7 @@ export default function PreviewWorkspace({ controller, sessions, currentSession,
       <button className="icon-button preview-mobile-back" aria-label="返回工作台" title="返回工作台" onClick={hide}><ArrowLeft size={16} /></button>
       <div ref={list} className="preview-tab-list" role="tablist" aria-label="预览标签页">
         {tabs.map((tab, index) => <div key={tab.id} className={`preview-tab ${tab.id === activeId ? 'active' : ''}`}>
-          <button type="button" id={tabId(tab)} role="tab" aria-selected={tab.id === activeId} aria-controls={contentId(tab)} tabIndex={tab.id === activeId ? 0 : -1} title={'cwd' in tab ? `${tabTitle(tab, sessions)}\n${tab.cwd}` : tab.kind === 'web' ? tab.url || '新网页' : '随手记 · 自动保存'} onClick={() => select(tab.id)} onKeyDown={event => tabKeys(event, index)}><TabIcon tab={tab} /><span>{tabTitle(tab, sessions)}</span></button>
+          <button type="button" id={tabId(tab)} role="tab" aria-selected={tab.id === activeId} aria-controls={contentId(tab)} tabIndex={tab.id === activeId ? 0 : -1} title={'cwd' in tab ? `${tabTitle(tab, sessions)}\n${tab.cwd}` : tab.kind === 'web' ? tab.url || '新网页' : tab.kind === 'terminal' ? '终端 · 关闭标签后 Shell 继续运行' : '随手记 · 自动保存'} onClick={() => select(tab.id)} onKeyDown={event => tabKeys(event, index)}><TabIcon tab={tab} /><span>{tabTitle(tab, sessions)}</span></button>
           <button type="button" className="preview-tab-close" aria-label={`关闭标签 ${tabTitle(tab, sessions)}`} title="关闭标签" onClick={() => closeTab(tab.id)}><X size={12} /></button>
         </div>)}
       </div>
@@ -116,6 +119,7 @@ export default function PreviewWorkspace({ controller, sessions, currentSession,
         <summary aria-label="新建预览标签" title="新建预览标签"><Plus size={16} /><ChevronDown size={10} /></summary>
         <div className="preview-add-options">
           <button type="button" disabled={!currentSession} onClick={() => add(() => { if (currentSession) controller.openExplorer(currentSession); })}><Folder size={15} /><span>浏览文件</span></button>
+          <button type="button" onClick={() => add(openTerminal ?? controller.openTerminal)}><TerminalSquare size={15} /><span>终端</span></button>
           <button type="button" onClick={() => add(controller.openNote)}><FilePenLine size={15} /><span>随手记</span></button>
           <button type="button" onClick={() => add(controller.openWeb)}><Globe2 size={15} /><span>新网页</span></button>
         </div>
@@ -125,8 +129,8 @@ export default function PreviewWorkspace({ controller, sessions, currentSession,
     </header>
     <div className="preview-workspace-body">
       {tabs.filter(tab => tab.kind !== 'note').map(tab => <div key={tab.id} id={contentId(tab)}
-        role="tabpanel" aria-labelledby={tabId(tab)} className="preview-tab-content" hidden={activeId !== tab.id} tabIndex={0}>
-        {tab.kind === 'web'
+        role="tabpanel" aria-labelledby={tabId(tab)} className="preview-tab-content" hidden={activeId !== tab.id} tabIndex={tab.kind === 'terminal' ? -1 : 0}>
+        {tab.kind === 'terminal' ? terminal : tab.kind === 'web'
           ? <ServicePreviewPanel open embedded close={() => closeTab(tab.id)} inert={inert} remote={remote}
               initialUrl={tab.url} onNavigate={url => controller.navigate(tab.id, url)} />
           : <WorkspaceTabContent tab={tab} sessions={sessions} controller={controller} close={() => closeTab(tab.id)} />}

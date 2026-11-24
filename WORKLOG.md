@@ -43,6 +43,66 @@
 - 验证：`npm run check` 通过；`npx tsx --test server/dsh.test.ts` 24 项全通过（新增“原生列表中的 `session-` ID 必须恢复而不是替换”）。用真实 `~/.dsh` 只读验证：`session-6d8e…` 可发现、可读取 103 条消息，证明历史侧不是瓶颈。
 - 边界：没有在活动实例上重启或导入会话；浏览器端到端与真实 dsh-Web 写锁交接仍需在安全窗口复验。
 
+## 2026-11-16：资源管理器用 VS Code 打开当前工作区
+
+- 背景：群任务 T-22a154 要求加一个按钮，在 Dili 的工作区面板上直接用 VS Code 打开当前工作目录。目标是「在你自己已经工作的地方打开同一个文件夹」，因此调用编辑器自己的 CLI，而不是在网页里新起一个编辑器或伪造文件编辑能力。
+- 服务端：`server/editor.ts` 负责解析命令（`SESSIONDECK_EDITOR_COMMAND` → `code` → `code-insiders`，按 `PATH` 逐项找可执行文件，不靠 spawn 试探）、以单个参数传入目录（不拼 shell、不写临时脚本）、detached + unref 启动（关掉 Dili 不关窗口，窗口不占用 Dili 的 stdio）。新增 `POST /api/{sessions/:id,groups/:id,workspaces/:root}/workspace/open-editor`，与既有 `/workspace/*` 同前缀；三个成员同一 handler，在 `server/access.ts` 登记为 `owner`。
+- 诚实边界：`code` 的退出码非 0、找不到命令、目录不存在分别报 501／501／404，并带上真实原因与最近几行 stderr；CLI 在超时内没返回只报「已请求打开」，不断言「已打开」；演示实例直接 409，避免测试或演示在宿主上真的弹出编辑器；启动失败时前端把 `vscode://file<path>` 复制到剪贴板作为原生回退，而不是留一个死胡同。
+- 客户端：`client/WorkspaceExplorer.tsx` 的两处标题栏（内嵌合并工具栏与独立面板）各加一个按钮，只在 `canOpenEditor`（默认仅 `PreviewWorkspace` 传入）时渲染，分享视图不出现。图标用 VS Code 官方标记（`client/VscodeLogo.tsx`，Simple Icons 的单路径数据，品牌蓝 `#007acc`），不用抽象的 `Code2`。新文案进 `shared/i18n.ts` 的 `editor.*`；面板里用 `workspace-note`／`workspace-error` 显示结果，成功与失败用 `role=status` / `role=alert` 区分。
+- 三个问题：1）跨后端中立——它只认目录，不认识任何后端；公共契约没有新增字段。2）四个后端都诚实成立——与 Claude／Codex／dsh／Pi 无关，是对工作目录的操作，WSL 下由 `code` 自己转给 Windows 窗口；没有 `code` 的机器给出可执行的下一步（安装命令或配置变量）。3）不是界面假象——成功只来自 CLI 的退出码，未返回结果就说未返回，失败附带 `vscode://` 回退。
+- 验证：`npm run check` 通过；新增 `server/editor.test.ts` 7 项（PATH 解析忽略不可执行文件与目录、配置覆盖、含空格/引号/`$(...)`/`;` 的目录名作为单个参数传递且未被解释执行、非零退出码报错、超时不谎称已打开、无编辑器、目录不存在时不启动任何进程）；`server/access.test.ts` 新增该路由 owner-only（可写分享也拒绝）；`server/api.test.ts` 演示模式 409；`npx playwright test tests/panels.spec.ts` 6 项通过（新增按钮仅在所有者视图可见，浏览器测试只断言可见、不点击，避免在跑测机器上真的拉起编辑器）。完整 `npm test` 541 项 / 536 通过 / 1 失败 / 4 跳过，失败项是 `server/codex-chat-api.test.ts` 的「Workspace observer did not reconnect」，单独重跑该文件 25 项全通过，判定为全量并发下的既有偶发，与本次改动无关。
+- 未验证：没有在真实 Windows VS Code / Remote-WSL 窗口上点过一次（本机只验证了假 `code` 脚本的 argv 与退出码语义）；`code-insiders` 与 Cursor 只按同一 CLI 语义推断。
+
+## 2026-11-15：话题协调员嘀哩，微信 ClawBot 与飞书接入
+
+- 背景：用户要在话题群里有一个固定的协调员，不 @ 时作为普通 Agent 聊天并管理上下文，并作为 IM 绑定后的默认入口；模型默认 deepseek-v4-flash，复用设置页里 dsh/Pi 的 Key。讨论后决定自己维护一个只做路由的薄循环，而不是借用现有编码 Agent（安全边界、常驻性和上下文都需要自己掌握）。
+- 嘀哩：`server/coordinator.ts`、`coordinator-context.ts`、`llm.ts`。无状态运行、话题即记忆、`[#n]` 引用按需展开、运行中触发合并批处理；工具只有读话题／参与者历史／话题与联系人列表、派活、提议加人。派的活全部回复后自动汇总一次。提议只能由用户在话题或 IM 里批准。fork 与新建联系人的路由体抽成 `forkContact()` / `createContact()` 供批准复用。
+- 话题行为变化：不 @ 的消息不再发给全部参与者，而是交给嘀哩；@ 参与者照旧只发给他们。
+- IM：`server/im/hub.ts`（主人绑定、去重、确定性指令、话题路由、回答和审批提醒回传），飞书长连接（`feishu.ts` + 手写 `pbbp2.ts`，与 protobufjs 逐字节比对一致，未引入 30 MB 的官方 SDK），微信 ClawBot（`weixin.ts`，对照官方插件 2.4.10 的 iLink 协议）。设置页新增「IM 接入」卡片。详见 `docs/agents/coordinator.md`、`docs/agents/im.md`。
+- 三个问题：1）跨后端中立——嘀哩是 Dili 自身能力，只读写话题与公共会话契约，派活走既有投递路径，对四个后端一致。2）诚实成立——没有配置 API 时明确提示；提议、派活结果都来自真实的 fork/create/投递结果；IM 未绑定的人一律忽略。3）没有界面假象——“正在思考”是落库的占位消息，失败会落成失败回复；IM 状态来自真实连接与登录轮询。
+- 验证：`npm run check` 通过；新增 `coordinator.test.ts`（6 项，脚本化假模型）、`im-channels.test.ts`（6 项，本地假飞书 WebSocket/REST 与假 iLink）；`tests/topics.spec.ts` 新增嘀哩回复与 IM 设置两项浏览器测试。用真实 deepseek-v4-flash 在隔离实例跑通了一轮话题问答。
+- 未验证：飞书和微信都没有用真实账号端到端跑过；iLink 不是公开接口。未做：话题线程映射到飞书话题、图片消息、IM 里批准审批。
+
+## 2026-11-15：设置页直接配置四个后端的 API 地址与密钥
+
+- 背景：用户要求在设置页直接增加“每个机器人后端 API 和 key”的配置，不再只让 dsh/Pi 跳回原生设置。实现保留各后端自己的配置文件，不把密钥转发给 Dili 的模型调用链。
+- Claude：沿用 `~/.claude/settings.json` 的 `env.ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` 和 `model`，保留未管理字段。
+- Codex：沿用 `~/.codex/config.toml` 的 `model_providers.dili` / `model_provider` / `model`；API Key 仍通过 `codex login --with-api-key` 的 stdin 写入原生认证，不写入 TOML。
+- dsh：新增 `AgentSetup.save('dsh')`，写 `$DSH_HOME/profiles/web/cordis.patch.yml` 的 `llm-pi-ai.providers.dili`（`apiKeyEnv: DILI_API_KEY`、`openai-completions` 和模型），把 `agent-default-model` 指向该 provider；同步已存在的 `dsh-tui` patch，不创建新 profile。密钥写入 `$DSH_HOME/.credentials.yaml` 的 `refs.DILI_API_KEY`，不写入 patch。地址和模型必须同时填写；清空二者移除托管 provider 和默认模型覆盖，保留已存密钥。
+- Pi：新增 `AgentSetup.save('pi')`，写 `$PI_CODING_AGENT_DIR/models.json` 的 `dili` provider（`openai-completions`），密钥写 `auth.json` 的 `dili` 条目；保留其他原生 provider 和凭据。同样要求地址/模型成对填写，清空二者只移除托管 provider，保留密钥。
+- 设置页：四个后端都显示「配置 API」；dsh/Pi 的表单明确说明这是 Dili 托管的 OpenAI 兼容 provider，并显示 `configPath` 与 `credentialPath`。保存前备份，原生文件权限 0600，接口只报告 `credentialPresent`，不回显密钥。
+- 依赖：为安全读写 dsh 的 YAML patch/凭据文件新增 `yaml@^2.9.1`；没有引入第二套 UI 或 key 代理。
+- 三个问题的回答：1）跨后端中立——公共契约只增加可选的 `credentialPath`，四个后端的文件格式和写入分支都在 `AgentSetup` 内，客户端不按后端解析密钥。2）四个后端都能诚实成立——Claude/Codex 写各自原生配置，dsh/Pi 明确写 Dili 托管的自定义 provider；内置 provider 的 OAuth/账号仍由原生工具维护，界面对此说明，不假装接管。3）不是界面假象——保存只写真实原生文件并备份，地址/模型成对校验，`info` 从文件回读当前地址/模型/凭据存在性；不调用模型，不把“已保存”说成“已验证”。
+- 验证：`npx tsx --test server/setup.test.ts` 12 项通过（新增 DSH/Pi 配置、保留原生字段、密钥不回落响应、0600 权限、重置、只更新 Key 时保留 provider，以及配置格式错误时不落 Key 的用例）；用临时 `DSH_HOME` 实际运行 `dsh --profile web --dump-config`，生成的 `providers.dili`、`apiKeyEnv`、`baseURL`、模型和 `agent-default-model` 均被原生解析，退出码 0；用临时 `PI_CODING_AGENT_DIR` 运行 `pi --offline --list-models probe-model` 和 `pi auth check --provider dili --json`，分别列出 `dili/probe-model` 并返回 `{"status":"ready","provider":"dili","authType":"api_key"}`。隔离端口 4402 的 HTTP 烟测在固定临时目录保存 Claude、DSH、Pi 配置，响应只含 path/存在性，不含 Key，文件权限均为 0600。`npm run check` 和 `npm run build` 通过；完整 `npm test` 514 项 / 510 通过 / 0 失败 / 4 跳过。
+- 边界：网页只管理一个 Dili 托管的 OpenAI 兼容 provider，不管理 dsh/Pi 内置 provider 的 OAuth、账号或模型目录；dsh 正在运行的旧进程是否热加载取决于原生版本，新启动进程读取；配置不执行模型请求，也不验证密钥有效性；未重启 4317 的活动 Dili。Playwright 浏览器验收仍受本机 Chromium 系统库缺失限制。
+
+## 2026-11-15：Pi coding agent 成为第四个一等后端
+
+- 背景与授权：用户明确要求先支持 Pi，并让使用体验与其他项目无感；范围是 Dili 自有 UI/控制面直接驱动 Pi，不 iframe 嵌入 pi-web，不复用 pi-web-ui 组件，也不启动第二套 Pi Web。pi-web 只作为能力对照。
+- 架构：新增 `server/pi.ts`（官方 `pi --mode rpc` JSONL 桥）、`server/pi-session.ts`（原生 session 文件解析）和 `server/agents/pi-chat.ts`（共享 `AgentChatAdapter`）。联系人、图形对话、群聊投递、原生终端、导入、Fork、用量、导出、远程与分享沿用现有外壳；Pi 专属协议和 UI 分支不进入公共契约。
+- 身份与恢复：新建 `--session-id <uuid> --name <title>`，恢复 `--session-id <uuid>`。实测空 Pi 会话在第一条消息前没有 session 文件，`--session` 会报 `No session found`，因此交接回图形对话也必须用 id 形式。Pi 新会话使用 UUIDv7，发现、历史索引和桥接校验都接受全部 UUID 版本。
+- 交换与历史：优先读取 session 文件尾部（2 MiB / 1000 条）避免长会话全量 `get_entries`；后续用 `get_entries {since}` 增量。文件头 `id` 是 session UUID，不是 entry 游标；`since` 跳过 `type:'session'` 头，否则 Pi 永远返回空。工具调用与 `toolResult` 合并为共享工具卡，历史最多 250 项并明确提示只有最近窗口；`readChatHistory` 没有游标分页时直接报错并指向原生终端，不返回空页。
+- 设置与诚实边界：模型来自 `get_available_models`，思考强度来自 `get_available_thinking_levels`，写入后回读；设置带版本号，过期写入返回 409。Pi 没有统一权限预设，`permission` 明确为 `null`、附原因、权限列表为空；只有扩展主动发起的 `confirm`／`select`／`input`／`editor` 才映射成网页请求，普通工具没有逐次审批。`notify`／`setStatus`／`setWidget` 等显示型扩展请求未伪造。
+- 交接与进程：`OwnedProcess` 托管每个 Pi RPC 进程；停止只结束当前确认拥有的进程，不按端口或宽泛进程名清理。图形→终端要求 RPC 快照 idle 且无待回答；终端→图形因 Pi TUI 没有状态通道而保持“未知”，必须用户显式确认并提示可能中断任务。关闭后适配器保留最后快照为 `connected:false`，不把历史消失。
+- 其他：`server/index.ts` 接入 Pi 启动、停止、设置、群投递、状态、图片、重命名回写和关机清理；`server/adapters.ts` 接入发现与 `--session-id`／`--fork` 参数；`server/conversation.ts` 接入原生记录与用量；`AgentSetup` 接入安装/登录引导。客户端接入第四个后端筛选、紫色标识、图形/终端入口、图片、群聊与分享；`ConversationPane` 对 Pi 不再显示会写 PTY 的旧输入框。
+- 三个问题的回答：1）跨后端中立成立——公共 `Backend`／`AgentChatAdapter`／`AgentChatSnapshot` 只承载通用概念，Pi 的 RPC 命令、扩展 UI 和 session 文件解析都在 Pi 桥/适配器内。2）四个后端都能诚实成立——Pi 有真实 RPC、原生身份、历史、停止、模型/思考强度与终端交接；没有权限预设、没有游标分页、终端状态未知时都显示原因或要求确认。3）不是界面假象——发送返回 Pi RPC 的受理结果，`get_state.sessionId` 不符即拒绝；工具卡来自原生 `toolCall`／`toolResult`；设置回读；交接前后进程真实启停；Fork 走原生 `--fork`。
+- 验证：`npm run check` 通过；`npm run build` 通过；`npm test` 512 项，508 通过、0 失败、4 跳过（新增 `server/pi-session.test.ts` 7 项、`server/pi.test.ts` 1 项和 `adapters.test.ts` 的 Pi 发现/启动/Fork 覆盖）。在隔离端口 4399、独立数据目录、真实 Pi 1.5.2 + 本地 mock provider 上实测：Pi 出现在后端列表且 `graphicalChat:true`；图形启动/发送/assistant+工具卡；设置显示 `mock/mock-model`、`permission:null`；图片 prompt 被 Pi 受理（1×1 测试图被 Pi 以内联尺寸上限省略，界面保留占位文本）；运行中改名同步到原生 `session_info`；Fork 创建并成功恢复 5 条父会话条目；图形↔原生终端双向交接；从图形视图向运行中的原生终端发送时先确认再交接；Pi 作为群成员接收 @ 任务并回帖；停止后 `/chat` 仍返回最后快照且 `connected:false`。
+- 审查后补强：生成中发送使用 Pi 原生 `followUp` 转向并绑定后续 turn id；图形“停止生成”改走 Pi `abort`，不再关闭整个 RPC 进程；Fork 启动失败只关闭本次新进程，不再误关父会话；只有模型目录为空才报告 `modelReason`，让模型选择真正可用；Pi 终端忽略 TUI 的 `escape interrupt` 提示以保持“未知”并允许交接；补上终端交接时发送按钮的静默返回；用 prompt 前的 entry 锚点判断乐观用户消息何时落盘，并保留流式 assistant 文本直到原生记录确认；关闭时等进程退出并阻止同 ID 重开产生双写；超大 session 尾部不可读时不再全量拉取；Pi 状态事件更新 `lastActivity`；`readChatHistory` 返回 409 而不是 500。
+- 转向/停止的 HTTP 烟测：在隔离端口 4400 用 Pi fixture 实测生成中发送 `slow` 后再发 `ask`，两次都返回 accepted，快照 activeTurnId 切到第二个 turn；回答扩展确认后再次发送 `slow` 并调用 `/chat/interrupt`，返回 200，快照仍为 `connected:true`，随后发送 `hello` 被接受并完成，证明停止生成只 abort 当前轮、不关闭 RPC。
+- 未做／边界：没有重启正在运行的 Dili（4317），后端改动需下次正常重启后生效；前端 `dist/client` 已由 `npm run build` 更新。Playwright 浏览器验收未运行：本机 Chromium 缺 `libnspr4.so`／`libnss3.so` 等系统库，启动即失败；未用真实 Pi 账号或云模型验证内容质量和图片视觉能力。pi-web 的 provider/API key 网页配置、会话树按消息分支、PDF/DOCX/XLSX 预览、插件/技能面板仍未实现，记录在 TODO 27 与 [Pi 领域笔记](docs/agents/pi.md)。Windows 原生进程支持和 Pi 真机移动端验收不在本轮。
+
+## 2026-11-02：会话内设置推理强度；Esc 不再关闭会话
+
+- 推理强度（effort）：公共契约 `AgentChatSettings` 增加可选的 `effort`／`efforts`／`effortLabel`／`effortReason`，`field` 增加 `effort`；输入框下方新增「推理强度」按钮，会话设置面板与 `/effort` 命令共用同一状态。选项只来自当前模型的原生目录，切换模型后随之变化；服务端 `checkSettingsUpdate` 拒绝目录外的值，不发给原生。级别显示名由 `shared/effort.ts` 生成（保留原生 id，未知 id 原样显示），配 `effort.test.ts`。
+  - Codex：`model/list` 的 `supportedReasoningEfforts`／`defaultReasoningEffort`；当前值取 `thread/resume` 的 `reasoningEffort`（`thread/settings/updated` 通知里叫 `effort`，两者都接收）；写入 `thread/settings/update { effort }` 后沿用既有回读确认。
+  - Claude：`initialize` 中各模型的 `supportsEffort`／`supportedEffortLevels`；图形执行器经 `apply_flag_settings { settings: { effortLevel } }` 即时应用。实测该请求成功时返回空应答，而且不校验级别（`bogus` 也返回 success），所以只以 `get_settings` 的 `applied.effort` 作为确认。`get_settings` 应答里还带用户 settings 的 `env`，本机实测其中有 `ANTHROPIC_AUTH_TOKEN`：代码只取 `applied.effort`，fixture 放了假令牌，契约测试断言设置响应里不出现它。值保存到联系人 `nativeSettings.effort`，下次图形或终端启动时传 `--effort`；CLI 帮助里没有 `--effort` 时不传，并显示原因（`capabilities.effortOption`）。终端运行中修改按既有规则提示「重启以应用」。
+  - dsh：`session.modelCatalog` 各模型的 `reasoning.efforts`／`defaultEffort`；当前值取 `modelSelection` 投影的 `reasoningEffort`；写入 `session.selectModel` 时带上 `reasoningEffort`，并以返回的 `selected` 确认。原生 `selectModel` 会替换整个选择，缺省 effort 时回到模型默认，所以切换模型时只有新模型也提供当前级别才保留，否则回到默认。
+- Esc：删除 `App.tsx` 中按 Esc 关闭会话的全局监听（以及已经不起作用的 `useDialog(..., false)` 调用），关闭按钮提示去掉「（Esc）」。Esc 仍用于关闭菜单、弹窗、对话目录和退出全屏，这些都不会丢失会话。
+- 三个问题的回答：1）跨后端中立：effort 是三个后端都有的原生概念，公共契约只放 id、显示名和原因，各后端协议差异留在各自适配器里。2）三个后端都能诚实成立：每个后端都有原生目录、写入和回读确认；未报告目录、CLI 太旧或当前模型不支持时显示原因，不提供可选项。3）不是界面假象：修改后都以原生回读确认（Codex `thread/resume`，Claude `get_settings`，dsh `selected`），没确认就返回 409，界面显示回读到的实际值；原生未设置时显示「模型默认」，不猜具体级别。
+- 验证：`npm run check` 通过；`npm test` 486 项，485 通过、0 失败、1 跳过（新增 `shared/effort.test.ts`，在 `adapters`、`dsh`、`agents/dsh-chat` 和 `codex-chat-api` 的 Codex／Claude 设置契约里增加 effort 用例，Claude 契约覆盖离线保存后 `--effort` 启动与 Fork 继承）；`npx playwright test` 隔离实例 258 项全部通过（端口 4337），包括手机 390px 宽度下三个快捷按钮不溢出、`/effort` 命令，以及 Esc 不关闭会话。
+- 原生实测（都不发 prompt、不调用模型）：Claude Code 2.1.322 用 `--print --no-session-persistence` 跑 `initialize`、`get_settings`、`apply_flag_settings`，结果与上文一致；Codex 0.167.2 app-server 用临时 `CODEX_HOME` 跑 `model/list`（各模型都报告 low…ultra）、`thread/start`、`thread/settings/update { effort }`，收到 `thread/settings/updated` 中的 `effort`。Codex 同样不校验级别（`bogus-level` 被接受并回显），目录外的值由 Dili 服务端拦截。还没有跑过第一轮的线程，`thread/resume` 回读返回「no rollout found」；这与模型和权限修改走的既有回读路径相同，不是本次新增的限制。dsh 只用测试替身覆盖，真实 dsh 0.2 的 `reasoning` 目录没有在本机实测。
+- 未做：没有重启正在运行的 Dili（4317），后端改动在下次正常重启后生效，前端需要 `npm run build`；Codex 原生终端和 dsh-tui 不读联系人上的 effort，只在图形对话中修改。
+
 ## 2026-11-02：数据目录改名、工作目录自动迁移与单元原地改写
 
 - 背景：上一节只处理了「这一次」改名（手工跑 `repair:workspaces`），用户进一步问了三点：1）工作区数据仍在 checkout 里时是否前向兼容；2）默认数据目录 `~/.local/share/sessiondeck` 能否改成 `~/.local/share/dili`；3）升级后能否无感迁移。结论：可以，但必须区分「能安全推断的改名」和「不能猜的映射」。

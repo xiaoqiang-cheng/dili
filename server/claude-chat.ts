@@ -7,6 +7,7 @@ import type { AgentChatAnswer, AgentChatChoice, AgentChatHistoryPage, AgentChatI
 import { checkSettingsUpdate, settingsError, settingsVersion } from './agents/settings.ts';
 import type { ConversationTranscript, NativeSettings, SessionStatus } from '../shared/types.ts';
 import { claudePermissionChoices, claudePermissionLabel, normalizeClaudePermission } from '../shared/permissions.ts';
+import { effortChoices } from '../shared/effort.ts';
 import type { LaunchCommand } from './terminal.ts';
 import { OwnedProcess } from './owned-process.ts';
 
@@ -20,6 +21,8 @@ interface Run {
   requests: Map<string, { nativeId: string; input: Row; tool: string }>;
   messageId?: string; blocks: Map<number, string>; completedBlocks: Map<string, number>; stderr: string;
   settings?: AgentChatSettings; changingSettings?: boolean;
+  /** Effort the process reports through get_settings; undefined when it cannot. */
+  effort?: string | null;
   historyRefresh?: Promise<void>; historyDirty?: boolean;
   inheritedHistory?: AgentChatItem[];
 }
@@ -34,7 +37,20 @@ export interface ClaudeContactSettings {
   /** Settings the running terminal executor was launched with, if one runs. */
   terminal(nativeId: string): NativeSettings | undefined;
   /** Reads the native model list without a live executor (no session is saved). */
-  probeModels(): Promise<AgentChatChoice[]>;
+  probeModels(): Promise<ClaudeModelChoice[]>;
+  /** The installed CLI accepts --effort at launch. */
+  effortOption(): boolean;
+}
+
+/** A native model plus the effort levels it reports; only the choice is public. */
+export type ClaudeModelChoice = AgentChatChoice & { efforts?: string[] };
+const publicModels = (models: ClaudeModelChoice[]): AgentChatChoice[] => models.map(({ efforts: _efforts, ...choice }) => choice);
+/** Effort levels of the selected model; no explicit model means Claude's `default`. */
+function claudeEfforts(models: ClaudeModelChoice[], model: string | null): { efforts: AgentChatChoice[]; effortReason?: string } {
+  const current = models.find(choice => choice.id === (model ?? 'default'));
+  if (!current) return { efforts: [], effortReason: models.length ? '当前模型不在原生列表中，无法确认可选推理强度' : '暂时无法读取 Claude 模型列表' };
+  const efforts = effortChoices((current.efforts ?? []).map(id => ({ id })));
+  return efforts.length ? { efforts } : { efforts, effortReason: '当前模型不支持调整推理强度' };
 }
 
 const LIVE_SCOPE = '保存到当前会话，并立即作用于图形执行器；切换到原生终端或重新启动时沿用同一设置。';
@@ -47,15 +63,15 @@ export class ClaudeChatBridge {
   private runs = new Map<string, Run>();
   private events = new EventEmitter();
   private offline = new Map<string, AgentChatSettings>();
-  private models: AgentChatChoice[] = [];
-  private modelsProbe?: Promise<AgentChatChoice[]>;
+  private models: ClaudeModelChoice[] = [];
+  private modelsProbe?: Promise<ClaudeModelChoice[]>;
   constructor(private readonly history?: (id: string, cursor?: string) => Promise<AgentChatHistoryPage>, private readonly contact?: ClaudeContactSettings) {}
   private permissionChoices(current: string | null) {
     const modes = this.contact?.permissionModes() ?? [];
     // A mode reported by the process stays selectable even if --help omitted it.
     return claudePermissionChoices(current && !modes.includes(current) ? [...modes, current] : modes);
   }
-  private async offlineModels(): Promise<AgentChatChoice[]> {
+  private async offlineModels(): Promise<ClaudeModelChoice[]> {
     if (this.models.length || !this.contact) return this.models;
     this.modelsProbe ??= this.contact.probeModels().then(models => { if (models.length) this.models = models; return models; }).catch(() => []).finally(() => { this.modelsProbe = undefined; });
     return this.modelsProbe;
@@ -66,12 +82,18 @@ export class ClaudeChatBridge {
     if (!stored) return settingsError('请先连接 Claude 图形会话');
     const terminal = this.contact!.terminal(id);
     const models = await this.offlineModels();
-    const model = stored.model ?? null, permission = stored.permission ?? null;
+    const model = stored.model ?? null, permission = stored.permission ?? null, effort = stored.effort ?? null;
     const choices = this.permissionChoices(permission);
-    const restartRequired = !!terminal && ((terminal.model ?? null) !== model || (terminal.permission ?? null) !== permission);
+    const restartRequired = !!terminal && ((terminal.model ?? null) !== model || (terminal.permission ?? null) !== permission || (terminal.effort ?? null) !== effort);
+    const effortOption = this.contact!.effortOption();
+    const { efforts, effortReason } = claudeEfforts(models, model);
     const next = settingsVersion(this.offline.get(id), {
-      nativeSessionId: id, model, models, permission, permissions: choices, apply: 'restart', restartRequired,
+      nativeSessionId: id, model, models: publicModels(models), permission, permissions: choices, apply: 'restart', restartRequired,
       ...(permission ? {} : { permissionLabel: claudePermissionLabel(null) }),
+      effort, efforts: effortOption ? efforts : [],
+      // No --effort flag: Claude applies the user's own settings or its model default.
+      ...(effort ? {} : { effortLabel: '沿用原生配置' }),
+      ...(!effortOption ? { effortReason: '当前 Claude CLI 不支持 --effort，请升级后重新检测' } : effortReason ? { effortReason } : {}),
       ...(!models.length ? { modelReason: '暂时无法读取 Claude 模型列表，请检查 CLI 版本和原生登录后刷新' } : {}),
       ...(!choices.length ? { permissionReason: '当前 Claude CLI 未报告可选权限模式，请升级后重新检测' } : {}),
       scope: terminal ? TERMINAL_SCOPE : STOPPED_SCOPE,
@@ -125,7 +147,19 @@ export class ClaudeChatBridge {
     checkSettingsUpdate(await this.readChatSettings(id), update);
     if (!run?.alive || this.runs.get(id) !== run || run.settings?.version !== update.version || run.changingSettings || run.snapshot.activeTurnId || run.snapshot.requests.length) return settingsError('原生会话正在处理任务或设置，或连接已变化，请刷新后重试');
     run.changingSettings = true;
+    let readBack = false;
     try {
+      if (update.field === 'effort') {
+        await this.control(run, { subtype: 'apply_flag_settings', settings: { effortLevel: update.value } });
+        // The success envelope is empty and does not validate the level; only the applied value confirms it.
+        const effort = await this.readEffort(run);
+        if (this.runs.get(id) !== run || !run.alive) return settingsError('原生执行器已变化，请刷新设置');
+        run.effort = effort; readBack = true;
+        run.settings = settingsVersion(undefined, { ...run.settings!, ...this.effortFields(run.settings!.model, effort) });
+        if (effort !== update.value) return settingsError('原生进程未确认目标推理强度，请刷新检查实际设置');
+        this.contact?.save(id, { effort });
+        return this.readChatSettings(id);
+      }
       const response = await this.control(run, update.field === 'model' ? { subtype: 'set_model', model: update.value } : { subtype: 'set_permission_mode', mode: update.value });
       if (this.runs.get(id) !== run || !run.alive) return settingsError('原生执行器已变化，请刷新设置');
       const actual = response[update.field === 'model' ? 'model' : 'mode'];
@@ -135,10 +169,13 @@ export class ClaudeChatBridge {
         run.settings = settingsVersion(undefined, { ...run.settings!, [update.field]: null });
         return settingsError('原生进程未返回设置确认，请刷新检查；当前 CLI 可能不支持此操作');
       }
-      run.settings = settingsVersion(undefined, { ...run.settings!, [update.field]: actual, ...(update.field === 'permission' ? { permissions: this.permissionChoices(actual) } : {}) });
+      // Effort levels belong to the model, and Claude may clamp the effort to the new model.
+      if (update.field === 'model') run.effort = await this.readEffort(run);
+      run.settings = settingsVersion(undefined, { ...run.settings!, [update.field]: actual, ...(update.field === 'permission' ? { permissions: this.permissionChoices(actual) } : this.effortFields(actual, run.effort)) });
       this.contact?.save(id, { [update.field]: actual });
     } catch (cause) {
-      if (!(cause as { nativeRejected?: boolean })?.nativeRejected && run.settings) run.settings = settingsVersion(undefined, { ...run.settings, [update.field]: null });
+      // After a native readback the displayed value is already the confirmed one.
+      if (!readBack && !(cause as { nativeRejected?: boolean })?.nativeRejected && run.settings) run.settings = settingsVersion(undefined, { ...run.settings, [update.field]: null, ...(update.field === 'effort' ? { effortLabel: '原生未确认当前值' } : {}) });
       throw cause;
     } finally { run.changingSettings = false; }
     return this.readChatSettings(id);
@@ -256,11 +293,14 @@ export class ClaudeChatBridge {
       const models = nativeModels(initialized.models);
       if (models.length) this.models = models;
       const modelIndex = command.args.indexOf('--model');
+      const model = modelIndex >= 0 ? command.args[modelIndex + 1] ?? null : null;
       const permission = typeof initialized.current_permission_mode === 'string' ? normalizeClaudePermission(initialized.current_permission_mode) : null;
       const permissions = permission ? this.permissionChoices(permission) : [];
+      run.effort = await this.readEffort(run);
+      if (!run.alive) throw new Error('Claude 原生进程已退出');
       run.settings = settingsVersion(undefined, {
-        nativeSessionId: id, model: modelIndex >= 0 ? command.args[modelIndex + 1] ?? null : null, models,
-        permission, permissions, apply: 'live',
+        nativeSessionId: id, model, models: publicModels(models),
+        permission, permissions, apply: 'live', ...this.effortFields(model, run.effort),
         ...(!models.length ? { modelReason: '当前 Claude 未返回模型列表，请检查 CLI 版本和原生配置' } : {}),
         ...(!permission ? { permissionReason: '当前 Claude 未报告权限模式，请升级 CLI 后重试' } : {}),
         scope: LIVE_SCOPE,
@@ -276,13 +316,26 @@ export class ClaudeChatBridge {
     if (!run.alive || run.child.stdin.destroyed) return Promise.reject(new Error('Claude 原生连接已断开'));
     return new Promise((resolve, reject) => { run.child.stdin.write(JSON.stringify(row) + '\n', error => error ? reject(error) : resolve()); });
   }
-  private control(run: Run, request: Row): Promise<Row> {
+  private control(run: Run, request: Row, timeoutMs = 45_000): Promise<Row> {
     const id = randomUUID();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { run.pending.delete(id); reject(new Error('Claude 原生控制请求超时')); }, 45_000);
+      const timer = setTimeout(() => { run.pending.delete(id); reject(new Error('Claude 原生控制请求超时')); }, timeoutMs);
       run.pending.set(id, { resolve, reject, timer });
       void this.write(run, { type: 'control_request', request_id: id, request }).catch(error => { clearTimeout(timer); run.pending.delete(id); reject(error); });
     });
+  }
+  /** The effort the process applies, or undefined when this CLI cannot report it. */
+  private async readEffort(run: Run): Promise<string | null | undefined> {
+    try {
+      // The reply also carries the user's settings, env and credentials. Keep only the applied effort.
+      const effort = object((await this.control(run, { subtype: 'get_settings' }, 5_000)).applied)?.effort;
+      return typeof effort === 'string' && effort ? effort : effort === null ? null : undefined;
+    } catch { return undefined; }
+  }
+  private effortFields(model: string | null, effort: string | null | undefined): Pick<AgentChatSettings, 'effort' | 'efforts' | 'effortLabel' | 'effortReason'> {
+    if (effort === undefined) return { effort: null, efforts: [], effortLabel: undefined, effortReason: '当前 Claude CLI 未报告推理强度，请升级后重试' };
+    const { efforts, effortReason } = claudeEfforts(this.models, model);
+    return { effort, efforts, effortLabel: effort === null ? '模型默认' : undefined, effortReason };
   }
   private upsert(run: Run, item: AgentChatItem) {
     item.text = item.text.slice(0, 32_000);
@@ -306,7 +359,7 @@ export class ClaudeChatBridge {
     }
     if (row.parent_tool_use_id) return; // subagent output is not this contact's reply
     if (row.type === 'system' && run.settings && (row.subtype === 'init' || row.subtype === 'status')) {
-      run.settings = settingsVersion(run.settings, { ...run.settings, ...(typeof row.model === 'string' ? { model: row.model } : {}), ...(typeof row.permissionMode === 'string' ? { permission: row.permissionMode } : {}) });
+      run.settings = settingsVersion(run.settings, { ...run.settings, ...(typeof row.model === 'string' ? { model: row.model, ...this.effortFields(row.model, run.effort) } : {}), ...(typeof row.permissionMode === 'string' ? { permission: row.permissionMode } : {}) });
       return;
     }
     if (row.type === 'stream_event') {
@@ -445,19 +498,22 @@ export class ClaudeChatBridge {
   async close() { await Promise.all([...this.runs.keys()].map(id => this.closeSession(id))); this.events.removeAllListeners(); }
 }
 
-export function nativeModels(value: unknown): AgentChatChoice[] {
+export function nativeModels(value: unknown): ClaudeModelChoice[] {
   return (Array.isArray(value) ? value : []).filter((model: Row) => typeof model?.value === 'string').slice(0, 100)
-    .map((model: Row) => ({ id: model.value as string, label: String(model.displayName || model.value), ...(typeof model.description === 'string' ? { description: model.description } : {}) }));
+    .map((model: Row) => ({
+      id: model.value as string, label: String(model.displayName || model.value), ...(typeof model.description === 'string' ? { description: model.description } : {}),
+      ...(model.supportsEffort === true && Array.isArray(model.supportedEffortLevels) ? { efforts: model.supportedEffortLevels.filter((level: unknown) => typeof level === 'string').slice(0, 20) } : {}),
+    }));
 }
 
 /** One short-lived print-mode process answers `initialize` and exits. It sends
  * no prompt and persists no session, so it cannot spend quota or add history. */
-export function probeClaudeModels(file: string, timeoutMs = 15_000): Promise<AgentChatChoice[]> {
+export function probeClaudeModels(file: string, timeoutMs = 15_000): Promise<ClaudeModelChoice[]> {
   return new Promise(resolve => {
     const env = { ...process.env }; delete env.CLAUDECODE; delete env.SESSIONDECK_TOKEN;
     const child = spawn(file, ['--print', '--no-session-persistence', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'], { cwd: tmpdir(), env, stdio: 'pipe' });
     let buffer = '', done = false;
-    const finish = (models: AgentChatChoice[]) => { if (done) return; done = true; clearTimeout(timer); child.kill(); resolve(models); };
+    const finish = (models: ClaudeModelChoice[]) => { if (done) return; done = true; clearTimeout(timer); child.kill(); resolve(models); };
     const timer = setTimeout(() => finish([]), timeoutMs);
     child.on('error', () => finish([])); child.on('close', () => finish([]));
     child.stdin.on('error', () => finish([]));

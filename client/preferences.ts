@@ -14,7 +14,7 @@ function readFilters(view: View): ContactFilters {
     const saved = JSON.parse(readLocalPreference(`sessiondeck.filters.${view}`) ?? 'null');
     return {
       query: typeof saved?.query === 'string' ? saved.query.slice(0, 300) : '',
-      backend: ['all', 'claude', 'codex', 'dsh'].includes(saved?.backend) ? saved.backend : 'all',
+      backend: ['all', 'claude', 'codex', 'dsh', 'pi'].includes(saved?.backend) ? saved.backend : 'all',
       status: statuses.has(saved?.status) ? saved.status : 'all',
     };
   } catch { return { ...defaults }; }

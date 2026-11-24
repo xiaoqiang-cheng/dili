@@ -43,6 +43,7 @@
 | P0 | 没有 token／上下文／压缩信息 | `server/usage.ts`、`shared/usage.ts`、`client/SessionUsage.tsx` | Claude/Codex 历史汇总显示在会话信息；截断窗口标“最近窗口”；dsh 仅在原生记录提供用量字段时显示，否则“原生未提供”，不按字数估算 |
 | P0 | 对话不能导出 | `server/export.ts`、`client/export-session.ts` | `GET /api/sessions/:id/export` 输出转义、无脚本、带 CSP 的独立 HTML；会话信息中可下载 |
 | P1 | WORKLOG 是时间线，不是领域陷阱 | `docs/agents/` | 已建立按领域笔记并在本文档路由 |
+| P1 | Pi 图形能力未完全对齐 pi-web | `server/pi.ts`、`server/agents/pi-chat.ts`、`docs/agents/pi.md` | 会话、RPC 对话、工具卡、扩展确认、模型／思考强度、原生终端交接、Dili 托管的 API 配置已接入；内置 provider 的 OAuth 网页管理、会话树分支、文档预览、插件面板仍未排期。不嵌入 pi-web，也不伪造权限 |
 | P1 | 会话/长对话无渲染上限 | `client/App.tsx`、`ConversationPane.tsx`、`client/Markdown.tsx` | 会话列表每页 120 张卡片渐进加载；对话默认渲染最近 200 条并可加载更早；长 Markdown 分块，代码高亮按需加载；隐藏页暂停轮询 |
 | P1 | 移动端边界缺浏览器验收 | `tests/mobile-boundaries.spec.ts` | 覆盖 16px 输入字号、隐藏页暂停/恢复、终端附加键点击与视口内可见 |
 | P1 | SSE 重连只能整包重取 | `server/sse-replay.ts`、`server/index.ts` | 事件带 `id: revision`；`Last-Event-ID` 命中连续窗口时补发，缺口回退完整快照；窗口 200 条/4 MiB |
@@ -61,7 +62,10 @@
 - [protocol.md](docs/agents/protocol.md)：状态修订、SSE 补发、终端通道、分享视图。
 - [security.md](docs/agents/security.md)：访问登记、Origin、路径与上传边界、密钥处理。
 - [terminal.md](docs/agents/terminal.md)：PTY 生命周期、重连回放、图片与移动端输入。
+- [pi.md](docs/agents/pi.md)：Pi coding agent 的官方 RPC、空会话恢复、扩展 UI 与能力边界。
 - [dsh.md](docs/agents/dsh.md)：DeepSeek Harness 的原生 Web／TUI 路径与限制。
+- [coordinator.md](docs/agents/coordinator.md)：话题协调员嘀哩的工具边界、上下文快照、派活与提议。
+- [im.md](docs/agents/im.md)：微信 ClawBot 与飞书接入的协议、主人绑定和未验证项。
 - [relay.md](docs/agents/relay.md)：邀请码、frp、设备与分享权限。
 - [remote-network.md](docs/agents/remote-network.md)：同网直连、split-horizon DNS、公网中继 FRP 链路、主机网页代理部署。
 - [testing.md](docs/agents/testing.md)：单测、契约测试、浏览器验收与原生烟测的边界。

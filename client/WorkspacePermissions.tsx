@@ -24,7 +24,7 @@ export default function WorkspacePermissions({ session, backend, close, refresh 
     <form onSubmit={submit}><div className="modal-fields">
       <div className="form-label"><span>主工作区</span><code style={{ overflowWrap: 'anywhere' }}>{session.cwd}</code></div>
       {!!session.additionalDirectories?.length && <div className="form-label"><span>附加工作区</span>{session.additionalDirectories.map(directory => <code key={directory} style={{ overflowWrap: 'anywhere' }}>{directory}</code>)}</div>}
-      {!supported ? <p className="form-note">{session.backend === 'dsh' ? '当前 DeepSeek Harness 原生沙箱以单个工作目录为边界，尚无追加目录权限接口。可为目标目录新建会话。' : '当前 CLI 未检测到附加目录能力，请升级后在设置中刷新检测。'}</p> : <>
+      {!supported ? <p className="form-note">{session.backend === 'dsh' ? '当前 DeepSeek Harness 原生沙箱以单个工作目录为边界，尚无追加目录权限接口。可为目标目录新建会话。' : session.backend === 'pi' ? 'Pi 的目录边界由原生工具决定；Dili 当前没有接入 --add-dir。可为目标目录新建会话。' : '当前 CLI 未检测到附加目录能力，请升级后在设置中刷新检测。'}</p> : <>
         <DirectoryField label="新增可操作目录" value={path} onChange={setPath} disabled={busy || session.archived} help="选择运行 Agent 的电脑上的目录，或粘贴路径／file:// 链接。" />
         <p className="form-note"><Folder size={15} />Codex 空闲时立即生效；Claude 和兼容终端在下次恢复会话时生效。</p>
         <p className="form-note">沿用原生审批、沙箱和网络策略。只追加指定目录；此处不提供权限撤销。</p>

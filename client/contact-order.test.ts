@@ -111,3 +111,11 @@ test('compareContacts is a total order and breaks ties deterministically', () =>
   assert.ok(compareContacts(b, a, 'created') > 0);
   assert.equal(Math.sign(compareContacts(a, b, 'input')) + Math.sign(compareContacts(b, a, 'input')), 0);
 });
+
+test('topics stay off the contact list while their participants remain contacts', () => {
+  const topic = group('t', { kind: 'topic' });
+  const chat = group('g');
+  const sessions = [session('in-topic', { groupId: 't' }), session('in-group', { groupId: 'g' }), session('solo')];
+  const entries = buildContacts(query(sessions, [topic, chat]));
+  assert.deepEqual(entries.map(entry => entry.id).sort(), ['g', 'in-topic', 'solo']);
+});

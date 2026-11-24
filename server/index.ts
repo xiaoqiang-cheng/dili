@@ -1,4 +1,4 @@
-import { relayPublicUrl } from '../shared/relay-public-url.ts';
+import { OFFICIAL_RELAY_URL, relayPublicUrl } from '../shared/relay-public-url.ts';
 import express from 'express';
 import { createServer } from 'node:http';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -12,10 +12,12 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { Store } from './store.ts';
 import { renderConversationHtml, exportFileName } from './export.ts';
 import { canAccessWebProxy, WebProxy, parseProxyTarget } from './web-proxy.ts';
+import { groupCost } from '../shared/group-cost.ts';
 import { parseServicePreviewUrl } from '../shared/service-preview.ts';
 import { SseReplayBuffer } from './sse-replay.ts';
 import { shellQuote } from './shell-quote.ts';
 import { IDLE_SLEEP_ENV, idleSleepMinutes, shouldSleep } from './idle-sleep.ts';
+import { openInEditor } from './editor.ts';
 import { FunAsr, VoiceConnections } from './voice.ts';
 import { VOICE_MAX_FRAME } from '../shared/voice.ts';
 import { ScratchpadStore } from './scratchpad.ts';
@@ -34,6 +36,7 @@ import { decodeInvite } from './invite.ts';
 import { ensureFrp } from './frp-install.ts';
 import { pendingPairing, redeemPairing, revokePairing, type PendingPairing } from './pairing.ts';
 import type { RelayPairing } from '../shared/pairing.ts';
+import { inviteRequestState, submitInviteRequest, type InviteReceipt } from './invite-request.ts';
 import { remoteBase, remoteHtml, remoteManifest } from './remote-base.ts';
 import { caddyConfig, DEFAULT_REMOTE, normalizeRemote, SecretBox, secretKey, Tunnel } from './remote.ts';
 import type { AuthStatus, RemoteSettings, RemoteStatus, ShareMode } from '../shared/auth.ts';
@@ -41,6 +44,8 @@ import { demoBackends, seedDemo, demoCommand } from './demo.ts';
 import { getBackendInfo, buildLaunch, discoverSessions, resolveNativeSessionId, validateNativeId, findExecutable, effectiveClaudeSettings } from './adapters.ts';
 import { DshBridge } from './dsh.ts';
 import { DshChatAdapter } from './agents/dsh-chat.ts';
+import { PiBridge } from './pi.ts';
+import { PiChatAdapter } from './agents/pi-chat.ts';
 import { submitDshInject } from './dsh-inject.ts';
 import { NativeStatusWatcher } from './native-status.ts';
 import { nativeHookPatch } from './native-events.ts';
@@ -49,6 +54,13 @@ import { migrateDataDir, resolveDataDir } from './data-dir.ts';
 import { relocateStoredWorkspaces } from './workspace-migration.ts';
 import { CodexBridge } from './codex.ts';
 import { ClaudeChatBridge, probeClaudeModels } from './claude-chat.ts';
+import { TopicMirror } from './topic-mirror.ts';
+import { COORDINATOR_MODEL, Coordinator } from './coordinator.ts';
+import { ImHub, type ImBinding } from './im/hub.ts';
+import { FeishuChannel, type FeishuCredentials } from './im/feishu.ts';
+import { WeixinChannel, type WeixinAccount } from './im/weixin.ts';
+import type { ImChannelState, ImStatus } from '../shared/im.ts';
+import { forkTitle } from '../shared/topic-names.ts';
 import { GroupReplies } from './group-replies.ts';
 import { createWorktree, mergeWorktree, removeWorktree, worktreeStatus } from './worktrees.ts';
 import { sameDirectory } from './paths.ts';
@@ -62,7 +74,7 @@ import { ChatSubmissions } from './chat-submissions.ts';
 import { registerAgentChat } from './chat-api.ts';
 import { createAgentChatAdapters } from './agents/chat.ts';
 import { MAX_TERMINAL_IMAGE_BYTES, TERMINAL_IMAGE_TYPES, type TerminalImageType } from '../shared/terminal-images.ts';
-import type { Backend, BackendInfo, GroupDirectoryResult, MemberWorktree, NativeSettings, Session, AppState, SessionStatus, ConversationTranscript, DiscoveredSession } from '../shared/types.ts';
+import type { Backend, BackendInfo, GroupDirectoryResult, MemberWorktree, NativeSettings, Session, AppState, SessionStatus, ConversationTranscript, DiscoveredSession, GroupMessage, ImChannelKind } from '../shared/types.ts';
 import { normalizeClaudePermission } from '../shared/permissions.ts';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -167,6 +179,18 @@ const dshChat = new DshChatAdapter(dsh, {
   writerWritable: nativeId => store.sessions().some(item => item.backend === 'dsh' && item.nativeSessionId === nativeId && item.running && item.executionTransport === 'web'),
 });
 const conversations = new ConversationReader({ dshHistory: id => dsh.readHistory(id) });
+// Pi is the fourth executor. Its official RPC process is owned by Dili per
+// contact; the native session file stays the source of truth for history.
+const piBridge = new PiBridge();
+const piChat = new PiChatAdapter({ bridge: piBridge, onStatus: (nativeId, event) => {
+  const item = store.sessions().find(candidate => candidate.backend === 'pi' && candidate.nativeSessionId === nativeId && !candidate.forkPending);
+  if (!item || closing) return;
+  // A close removes the connection before emitting its final event. Do not
+  // resurrect a card that another path already marked stopped.
+  if (event.status === 'stopped' && !item.running) return;
+  status(item.id, { status: event.status, statusSource: 'native', statusDetail: event.detail, lastActivity: event.timestamp, ...(event.status === 'stopped' || event.status === 'error' ? { running: false } : {}), ...(event.status === 'waiting_input' || event.status === 'waiting_approval' ? { lastAttentionKey: `pi:${nativeId}:${event.timestamp}` } : {}) });
+  if (event.status === 'idle' || event.status === 'waiting_input') void conversations.readLatest(item).then(transcript => updatePreview(item, transcript)).catch(() => undefined);
+} });
 // Codex's app-server is lazy-started on the first Codex contact. This keeps a
 // Claude/dsh-only installation usable when an older Codex CLI lacks the bridge
 // flags, while preserving exact native IDs whenever the installed CLI supports it.
@@ -188,13 +212,57 @@ const claudeBridge = new ClaudeChatBridge((id, cursor) => conversations.readClau
   },
   terminal: nativeId => { const item = claudeContact(nativeId); return item?.running && item.executionTransport === 'pty' ? claudeTerminalSettings.get(item.id) : undefined; },
   probeModels: async () => { const file = await findExecutable('claude'); return file ? probeClaudeModels(file) : []; },
+  effortOption: () => !!info('claude').capabilities.effortOption,
 });
 const claudeRuns = new Map<string, { nativeId: string; launchId: string }>();
+const chatAdapters = createAgentChatAdapters([['codex', codexBridge], ['claude', claudeBridge], ['dsh', dshChat], ['pi', piChat]]);
+
 const groupReplies = new GroupReplies({
   store,
   read: item => conversations.readLatest(item),
-  turnOpen: item => !!item.nativeSessionId && item.executionTransport === 'structured' && !!(item.backend === 'claude' ? claudeBridge : item.backend === 'codex' ? codexBridge : undefined)?.chatSnapshot(item.nativeSessionId)?.activeTurnId,
-  onReply: () => broadcast(),
+  turnOpen: item => !!item.nativeSessionId && item.executionTransport === 'structured' && !!chatAdapters[item.backend]?.chatSnapshot(item.nativeSessionId)?.activeTurnId,
+  onReply: () => { broadcast(); coordinator.repliesChanged(); },
+});
+// Dili's own topic coordinator (嘀哩). It reuses the API the user configured
+// for dsh/Pi and has topic tools only: no shell, no files.
+const coordinator = new Coordinator({
+  store,
+  api: async () => demo ? null : agentSetup.managedApi(),
+  ...(process.env.SESSIONDECK_COORDINATOR_MODEL?.trim() ? { model: process.env.SESSIONDECK_COORDINATOR_MODEL.trim() } : {}),
+  backends: () => backends,
+  defaultCwd: () => process.cwd(),
+  readTranscript: item => conversations.readLatest(item),
+  deliver: id => deliverNow(id, { autoStart: true }),
+  onChange: () => broadcast(),
+  onAnswer: (groupId, message, triggers) => imHub.coordinatorAnswered(groupId, message, triggers),
+});
+// IM chats bound to topics (WeChat ClawBot, Feishu). Bindings are sealed settings.
+const imBinding = (kind: ImChannelKind): ImBinding => sealedSetting<ImBinding>(`im-binding-${kind}`) ?? { owners: [], chats: {} };
+const imHub = new ImHub({
+  store, coordinator,
+  binding: imBinding,
+  saveBinding: (kind, binding) => auth.setSetting(`im-binding-${kind}`, secrets.seal(JSON.stringify(binding))),
+  decideProposal: (groupId, proposalId, approve) => decideProposal(groupId, proposalId, approve),
+  onChange: () => broadcast(),
+});
+const appVersion = (() => { try { return String(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version); } catch { return 'dev'; } })();
+// Channels: Feishu over its long connection, WeChat through ClawBot's iLink API.
+type FeishuSettings = FeishuCredentials & { enabled: boolean };
+const feishuSettings = () => sealedSetting<FeishuSettings>('im-feishu');
+const feishu = new FeishuChannel({ receive: message => imHub.receive(message), onStatus: () => broadcast() });
+const weixin = new WeixinChannel({
+  receive: message => imHub.receive(message),
+  save: account => auth.setSetting('im-weixin', account ? secrets.seal(JSON.stringify(account)) : null),
+  loggedIn: userId => { const binding = imBinding('weixin'); if (!binding.owners.includes(userId)) imHub.saveOwner('weixin', userId); },
+  onStatus: () => broadcast(),
+  botAgent: `Dili/${appVersion}`,
+});
+imHub.register(feishu); imHub.register(weixin);
+const topicMirror = new TopicMirror({
+  store,
+  read: item => conversations.readLatest(item),
+  turnOpen: item => !!item.nativeSessionId && item.executionTransport === 'structured' && !!chatAdapters[item.backend]?.chatSnapshot(item.nativeSessionId)?.activeTurnId,
+  onChange: () => broadcast(),
 });
 const app = express();
 const server = createServer(app);
@@ -293,7 +361,7 @@ function text(value: unknown, name: string, max = 200, required = true): string 
   return value.trim();
 }
 function backend(value: unknown): Backend {
-  if (typeof value !== 'string' || !['claude', 'codex', 'dsh'].includes(value)) fail('未知后端');
+  if (typeof value !== 'string' || !['claude', 'codex', 'dsh', 'pi'].includes(value)) fail('未知后端');
   return value as Backend;
 }
 function directory(value: unknown) {
@@ -342,7 +410,7 @@ function status(id: string, patch: Partial<Session>, activity?: string) {
     && !(patch.status === 'waiting_approval' && old.status === 'waiting_approval');
   const updated = store.updateSession(id, { ...(patch.status && patch.status !== 'error' ? { errorCode: null } : {}), ...patch, ...(attention ? { unread: old.unread + 1 } : {}) });
   if (activity) store.activity(id, 'status', activity);
-  if (patch.status) groupReplies.statusChanged(updated);
+  if (patch.status) { groupReplies.statusChanged(updated); if (!demo) { topicMirror.statusChanged(updated); void imHub.memberChanged(updated); } }
   scheduleBroadcast();
   return updated;
 }
@@ -444,7 +512,7 @@ function captureTerminalImage(req: express.Request, res: express.Response, next:
   const suppliedGeneration = req.headers['x-sessiondeck-terminal'];
   if (typeof suppliedGeneration !== 'string' || !generation || suppliedGeneration !== generation)
     return res.status(409).json({ error: '原生终端已重启，请重新连接后粘贴图片' });
-  if (!item || !['codex', 'claude', 'dsh'].includes(item.backend) || !item.running || item.backend !== 'claude' && item.interactionMode === 'chat')
+  if (!item || !['codex', 'claude', 'dsh', 'pi'].includes(item.backend) || !item.running || item.backend !== 'claude' && item.interactionMode === 'chat')
     return res.status(409).json({ error: '只有正在运行的 Agent 原生终端可以接收图片' });
   if (item.status === 'waiting_approval') return res.status(409).json({ error: '原生会话正在等待审批，请先完成审批后再添加图片' });
   pendingTerminalImages.set(req, { id, generation, type });
@@ -482,7 +550,7 @@ app.post('/api/sessions/:id/terminal/image', captureTerminalImage,
       next(error);
     }
   });
-registerAttachments(app, express.raw, attachments, { csrf: csrfValid, allowedGroup: id => !!store.group(id), allowed: id => { const item = store.session(id); return !demo && !!item && !item.archived && ['codex', 'claude', 'dsh'].includes(item.backend); } });
+registerAttachments(app, express.raw, attachments, { csrf: csrfValid, allowedGroup: id => !!store.group(id), allowed: id => { const item = store.session(id); return !demo && !!item && !item.archived && ['codex', 'claude', 'dsh', 'pi'].includes(item.backend); } });
 const jsonBody = express.json({ limit: '128kb' });
 // A proxied web app owns its own request body. Parsing it here would consume the
 // stream before /web-proxy can pipe it to the local service.
@@ -617,6 +685,28 @@ app.post('/api/remote', async (req, res) => res.json(await changeRemote(async ()
   await applyRemote();
   return remoteStatus();
 })));
+// Asking the relay for an invite from here keeps the code on this machine: once
+// approved it fills the pairing form, nothing to copy between devices. Local only.
+const inviteRelay = process.env.SESSIONDECK_INVITE_RELAY_URL?.trim() || OFFICIAL_RELAY_URL;
+const inviteReceipt = () => sealedSetting<InviteReceipt>('remote-invite-request');
+app.get('/api/remote/invite-request', async (_req, res) => {
+  const receipt = inviteReceipt();
+  if (!receipt) return res.json({ request: null });
+  try { res.json({ request: await inviteRequestState(receipt) }); }
+  catch (cause) {
+    // The relay no longer knows it (or the receipt is wrong): forget it here too.
+    if ((cause as { status?: number }).status === 404) { auth.setSetting('remote-invite-request', null); return res.json({ request: null, error: (cause as Error).message }); }
+    throw cause;
+  }
+});
+app.post('/api/remote/invite-request', async (req, res) => {
+  if (inviteReceipt()) fail('已有一条申请，请先查看结果或撤回', 409);
+  const receipt = await submitInviteRequest(inviteRelay, req.body.email, req.body.name);
+  auth.setSetting('remote-invite-request', secrets.seal(JSON.stringify(receipt)));
+  res.status(201).json({ request: await inviteRequestState(receipt) });
+});
+// Forgets the receipt on this machine; the relay keeps the request for its admin.
+app.delete('/api/remote/invite-request', (_req, res) => { auth.setSetting('remote-invite-request', null); res.json({ request: null }); });
 app.post('/api/remote/pair', async (req, res) => res.json(await changeRemote(async () => {
   if (!auth.hasPassword()) fail('请先设置所有者密码');
   if (pairing()) fail('请先解除已有配对，再使用新的邀请码', 409);
@@ -632,6 +722,7 @@ app.post('/api/remote/pair', async (req, res) => res.json(await changeRemote(asy
     const pair = await redeemPairing(pending);
     auth.setSetting('remote-pairing', secrets.seal(JSON.stringify(pair)));
     auth.setSetting('remote-pairing-pending', null);
+    auth.setSetting('remote-invite-request', null);
     auth.setSetting('remote', { ...remoteSettings(), mode: 'invite', enabled: true, publicUrl: pair.publicUrl, serverPort: pair.serverPort });
     pairingStage = 'connecting';
     await applyRemote();
@@ -692,11 +783,11 @@ app.delete('/api/shells/:id', async (req, res) => {
   res.json({ removed: true });
 });
 const chatApi = registerAgentChat(app, {
-  store, adapters: createAgentChatAdapters([['codex', codexBridge], ['claude', claudeBridge], ['dsh', dshChat]]), conversations, instanceId, demo, updatePreview, attachments, submissions,
+  store, adapters: chatAdapters, conversations, instanceId, demo, updatePreview, attachments, submissions,
   closing: () => closing,
   supported: item => !!info(item.backend).capabilities.graphicalChat,
   contactSettings: item => item.backend === 'claude' || item.backend === 'dsh',
-  ready: item => item.backend === 'dsh' ? dsh.readyState : (() => { const run = (item.backend === 'claude' ? claudeRuns : codexRuns).get(item.id); return run?.nativeId === item.nativeSessionId && run?.launchId === launchIds.get(item.id); })(),
+  ready: item => item.backend === 'dsh' ? dsh.readyState : item.backend === 'pi' ? piBridge.has(item.nativeSessionId) : (() => { const run = (item.backend === 'claude' ? claudeRuns : codexRuns).get(item.id); return run?.nativeId === item.nativeSessionId && run?.launchId === launchIds.get(item.id); })(),
   busy: id => starting.has(id) || stopping.has(id),
   sessions: () => publisher.sessions(),
   broadcast: scheduleBroadcast,
@@ -740,7 +831,7 @@ async function confirmDshTerminalSubmit(item: Session, text: string, startedAt: 
 
 app.post('/api/sessions/:id/input', async (req, res) => {
   const item = session(String(req.params.id));
-  if (demo || item.backend === 'codex' || item.archived || !item.running || item.forkPending || starting.has(item.id) || stopping.has(item.id)) fail('请先启动会话后发送消息',409);
+  if (demo || item.backend === 'codex' || item.backend === 'pi' || item.archived || !item.running || item.forkPending || starting.has(item.id) || stopping.has(item.id)) fail('该会话请使用图形对话或原生终端发送消息',409);
   if (req.body.submit !== undefined && typeof req.body.submit !== 'boolean') fail('发送方式无效');
   const submit = req.body.submit === true;
   if (item.status === 'waiting_approval') fail('请先在原生终端中处理审批',409);
@@ -905,6 +996,17 @@ app.get(['/api/groups/:id/workspace/git/diff', '/api/sessions/:id/workspace/git/
     : req.path.startsWith('/api/groups/') ? (store.group(String(req.params.id))?.workspace || fail('群工作区尚未设置', 409)) : session(String(req.params.id)).cwd;
   res.json(await gitDiff(cwd, req.query.path));
 });
+app.post(['/api/groups/:id/workspace/open-editor', '/api/sessions/:id/workspace/open-editor', '/api/workspaces/:root/workspace/open-editor'], async (req, res) => {
+  const cwd = req.params.root !== undefined
+    ? (principalOf(res).kind === 'owner' ? directory(String(req.params.root)) : fail('仅所有者可以打开目录', 403))
+    : req.path.startsWith('/api/groups/') ? (store.group(String(req.params.id))?.workspace || fail('群工作区尚未设置', 409)) : session(String(req.params.id)).cwd;
+  if (demo) fail('演示模式没有可打开的本机工作区', 409);
+  // The path is one argv entry: no shell, no quoting, no interpolation.
+  const launch = await openInEditor(cwd).catch((error: unknown) => {
+    fail(error instanceof Error ? error.message : '无法启动编辑器', (error as { status?: number })?.status ?? 501);
+  });
+  res.json(launch);
+});
 app.get('/api/events', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Connection', 'keep-alive');
@@ -1044,7 +1146,10 @@ async function memberPlacement(targetGroup: string | null, value: unknown, membe
   if (demo) fail('演示模式不创建 Git 工作树');
   return createWorktree({ dataDir, workspace, group: group!.title, member, id: randomUUID() });
 }
-app.post('/api/sessions', async (req, res) => {
+app.post('/api/sessions', async (req, res) => { res.status(201).json(await createContact(req.body)); });
+/** Creates a contact (optionally a group or topic member) from a request body. */
+async function createContact(body: Record<string, unknown>): Promise<Session> {
+  const req = { body } as { body: Record<string, any> };
   const id = backend(req.body.backend);
   const nativeSettings = id === 'claude' ? claudeSettingsInput(req.body.nativeSettings) : undefined;
   const targetGroup = groupId(req.body.groupId);
@@ -1055,8 +1160,8 @@ app.post('/api/sessions', async (req, res) => {
   const item = store.addSession({ backend: id, title, cwd: placed.cwd, ...(placed.worktree ? { worktree: placed.worktree } : {}), groupId: targetGroup, executionMode: wantedMode, ...(nativeSettings ? { nativeSettings } : {}) });
   store.activity(item.id, 'create', `创建了 ${item.title}`); broadcast();
   if (item.groupId) await briefNewMember(item, req.body.briefing);
-  res.status(201).json(session(item.id));
-});
+  return session(item.id);
+}
 app.patch('/api/sessions/:id', async (req, res) => {
   const item = session(String(req.params.id));
   const patch: Partial<Session> = {};
@@ -1081,7 +1186,11 @@ app.patch('/api/sessions/:id', async (req, res) => {
     })));
   }
   if ('archived' in patch && (starting.has(item.id) || stopping.has(item.id))) fail('会话正在连接或停止，请稍后重试', 409);
-  const updated = store.updateSession(item.id, patch); broadcast(); res.json(updated);
+  const updated = store.updateSession(item.id, patch);
+  if (updated.backend === 'pi' && patch.title && updated.nativeSessionId && piBridge.has(updated.nativeSessionId)) {
+    void piBridge.setName(updated.nativeSessionId, updated.title).catch(() => undefined);
+  }
+  broadcast(); res.json(updated);
 });
 app.post('/api/sessions/:id/read', (req, res) => { const item = store.updateSession(session(String(req.params.id)).id, { unread: 0 }); broadcast(); res.json(item); });
 /** Empty one trashed contact from Dili. Native history, group messages and
@@ -1104,6 +1213,7 @@ app.delete('/api/sessions/:id', (req, res) => {
 async function appendSessionDirectory(id: string, path: string): Promise<{ session: Session; status: GroupDirectoryResult['status'] }> {
   const item = session(id);
   if (item.backend === 'dsh') fail('当前 DeepSeek Harness 原生沙箱只支持单工作区，暂不支持追加目录权限', 409);
+  if (item.backend === 'pi') fail('Pi 当前没有在 Dili 中接入 --add-dir；请使用 Pi 原生工具配置或在目标目录新建会话', 409);
   if (!info(item.backend).capabilities.additionalDirectories) fail('当前 CLI 不支持附加目录，请更新后刷新后端检测', 409);
   if (item.archived) fail('请先从垃圾桶恢复会话', 409);
   if (starting.has(item.id) || stopping.has(item.id) || terminals.isStopping(item.id)) fail('会话正在连接或停止，请稍后重试', 409);
@@ -1146,8 +1256,11 @@ app.post('/api/native-event/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/sessions/:id/fork', async (req, res) => {
-  const parent = session(String(req.params.id));
+app.post('/api/sessions/:id/fork', async (req, res) => { res.status(201).json(await forkContact(String(req.params.id), req.body)); });
+/** Forks a contact through its backend's native fork; the source stays untouched. */
+async function forkContact(parentId: string, body: Record<string, unknown>): Promise<Session> {
+  const req = { body } as { body: Record<string, any> };
+  const parent = session(parentId);
   if (!info(parent.backend).capabilities.fork) fail('当前后端没有可用的原生 Fork 能力');
   if (!parent.nativeSessionId || parent.forkPending) fail('原生会话 ID 尚未确定，请先启动来源会话并完成初始化');
   const title = text(req.body.title || `${parent.title} · 分支`, '名称');
@@ -1176,8 +1289,8 @@ app.post('/api/sessions/:id/fork', async (req, res) => {
   if (placed.worktree) child = store.updateSession(child.id, { worktree: placed.worktree });
   store.activity(child.id, 'fork', `从 ${parent.title} 分叉为 ${child.title}`); broadcast();
   if (child.groupId) await briefNewMember(child, req.body.briefing);
-  res.status(201).json(session(child.id));
-});
+  return session(child.id);
+}
 
 app.post('/api/sessions/:id/handoff', async (req, res) => {
   const parent = session(String(req.params.id));
@@ -1195,6 +1308,9 @@ app.post('/api/sessions/:id/handoff', async (req, res) => {
 /** Starts or switches a contact's executor; shared by the HTTP route and group @-delivery. */
 async function startSession(id: string, body: { mode?: unknown; restart?: unknown; handoff?: unknown } = {}): Promise<Session> {
   let item = session(id);
+  // Only close a process opened by this attempt; a forkPending child temporarily
+  // carries the parent's id and must never tear down the parent's live RPC.
+  let piOpened: string | undefined;
   // Older releases advertised a native dsh Auto preset that 0.2 does not
   // ship. Normalize such contacts once instead of stranding them on every start.
   let dshAutoNote = '';
@@ -1228,6 +1344,32 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
       else await terminals.stop(item.id);
       claudeRuns.delete(item.id); launchIds.delete(item.id); expectedNativeIds.delete(item.id);
       status(item.id, { running: false, status: 'stopped', statusSource: 'process', statusDetail: '旧执行者已退出，正在恢复会话' });
+      item = session(item.id);
+    } finally { starting.delete(item.id); stopping.delete(item.id); }
+  }
+  // Pi's RPC process and its TUI cannot both write the same session. Handoff
+  // is explicit and only from an idle state, then the saved native file is
+  // reopened by the other executor.
+  if (item.running && !demo && item.backend === 'pi') {
+    const structured = item.executionTransport === 'structured' && piBridge.has(item.nativeSessionId);
+    if ((mode === 'chat') === structured && body.restart !== true) {
+      status(item.id, { interactionMode: mode, executionTransport: structured ? 'structured' : 'pty' });
+      broadcast(); return session(item.id);
+    }
+    const snapshot = structured ? await piBridge.snapshot(item.nativeSessionId!) : undefined;
+    // A Pi TUI has no status channel. After an explicit handoff confirmation we
+    // may stop it while its status is unknown, and say so in the activity log;
+    // the chat side still requires a provably idle RPC snapshot.
+    const terminalStateUnknown = !structured && item.status === 'unknown';
+    if ((!terminalStateUnknown && !['idle', 'waiting_input'].includes(item.status)) || snapshot?.activeTurnId || snapshot?.requests.length || terminals.isSubmitting(item.id)) fail('请先完成或停止当前任务，并处理 Pi 的确认后再切换执行方式', 409);
+    if (body.handoff !== true) fail(body.restart === true ? '重启将退出当前 Pi 进程，并用会话设置恢复同一份已保存的会话；需要确认' : '切换将退出当前 Pi 进程，并恢复同一份已保存的会话；需要确认交接', 409);
+    starting.add(item.id); stopping.add(item.id);
+    try {
+      if (structured) await piBridge.close(item.nativeSessionId!);
+      else await terminals.stop(item.id);
+      launchIds.delete(item.id); expectedNativeIds.delete(item.id);
+      status(item.id, { running: false, status: 'stopped', statusSource: 'process', statusDetail: 'Pi 旧执行者已退出，正在恢复同一份会话' });
+      if (terminalStateUnknown) store.activity(item.id, 'start', 'Pi 原生终端没有报告任务状态；已按你的切换确认关闭终端并恢复图形对话');
       item = session(item.id);
     } finally { starting.delete(item.id); stopping.delete(item.id); }
   }
@@ -1303,6 +1445,22 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
   launchIds.set(item.id, launchId);
   expectedNativeIds.delete(item.id);
   try {
+    if (!demo && item.backend === 'pi' && mode === 'chat') {
+      const native = await piBridge.open({
+        nativeSessionId: item.forkPending ? null : item.nativeSessionId,
+        ...(item.forkPending ? { forkFrom: item.nativeSessionId } : {}),
+        cwd: item.cwd,
+        title: item.title,
+      });
+      piOpened = native.nativeSessionId;
+      if (item.forkPending && publisher.sessions().some(other => other.id !== item.id && other.backend === 'pi' && !other.forkPending && other.nativeSessionId === native.nativeSessionId)) {
+        await piBridge.close(native.nativeSessionId);
+        fail('Pi Fork 生成的原生会话与其他会话冲突，请重试', 409);
+      }
+      store.updateSession(item.id, { nativeSessionId: native.nativeSessionId, forkPending: false, directoriesPending: false });
+      status(item.id, { nativeSessionId: native.nativeSessionId, forkPending: false, running: true, interactionMode: 'chat', executionTransport: 'structured', status: 'idle', statusSource: 'native', statusDetail: 'Pi 图形对话已就绪；可切换原生终端，两者通过同一份已保存会话交接', lastActivity: new Date().toISOString() });
+      store.activity(item.id, 'start', `打开了 ${item.title}`); broadcast(); return session(item.id);
+    }
     if (dshWeb(item) || (item.backend === 'dsh' && mode === 'chat')) {
       const resumed = await dsh.openOrCreateSession(item.nativeSessionId, item.cwd, item.title);
       const native = resumed.native;
@@ -1347,6 +1505,9 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
         }
       }
       const command: LaunchCommand = demo ? demoCommand() : await buildLaunch(item, dataDir, info(item.backend).capabilities);
+      if (!demo && item.backend === 'pi') {
+        status(item.id, { nativeSessionId: command.nativeSessionId, forkPending: false });
+      }
       if (!demo && item.backend === 'claude') {
         // Persist the preallocated identity before the first hook/history write.
         // Reopening an empty TUI or fork must reuse its original launch shape.
@@ -1370,6 +1531,7 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
       if (command.nativeSessionId) expectedNativeIds.set(item.id, command.nativeSessionId);
       status(item.id, { running: true, interactionMode: 'terminal', executionTransport: 'pty', status: 'unknown', statusSource: 'process', statusDetail: '正在连接原生终端' });
       terminals.start(item, command);
+      if (!demo && item.backend === 'pi') status(item.id, { status: 'unknown', statusSource: 'process', statusDetail: 'Pi 原生终端运行中；Pi 不报告任务状态，切换图形对话前请确认终端已空闲' });
       store.updateSession(item.id, { directoriesPending: false });
       status(item.id, { lastActivity: new Date().toISOString() });
       observeNative(session(item.id));
@@ -1386,6 +1548,7 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
       await claudeBridge.closeSession(claudeRun.nativeId);
       claudeRuns.delete(item.id);
     }
+    if (piOpened) await piBridge.close(piOpened).catch(() => undefined);
     const errorCode = error instanceof Error && 'code' in error && error.code === 'NATIVE_SESSION_BUSY' ? error.code : null;
     status(item.id, { running: false, status: 'error', errorCode, statusSource: 'process', statusDetail: error instanceof Error ? error.message : '启动失败' });
     throw error;
@@ -1406,6 +1569,7 @@ async function stopSession(id: string, afterStop?: () => Session): Promise<Sessi
     // Already stopped in the UI can still leave a Codex writer inside app-server.
     // Force-release so Desktop is not blocked by a "stopped" contact.
     if (!item.running) {
+      if (item.backend === 'pi' && !demo && item.nativeSessionId && piBridge.has(item.nativeSessionId)) await piBridge.close(item.nativeSessionId);
       if (item.backend === 'codex' && !demo && item.nativeSessionId) {
         await releaseCodexNative(item.nativeSessionId, item.id);
         status(item.id, { status: 'stopped', statusSource: 'native', statusDetail: '已停止 Codex 当前任务，点「恢复原生会话」才会重新占用' });
@@ -1423,6 +1587,10 @@ async function stopSession(id: string, afterStop?: () => Session): Promise<Sessi
       await claudeBridge.closeSession(item.nativeSessionId);
       claudeRuns.delete(item.id); launchIds.delete(item.id); expectedNativeIds.delete(item.id);
       status(item.id, { running: false, status: 'stopped', statusSource: 'native', statusDetail: '已停止 Claude 图形会话，可恢复原生上下文' });
+    } else if (item.backend === 'pi' && !demo && item.nativeSessionId && piBridge.has(item.nativeSessionId)) {
+      await piBridge.close(item.nativeSessionId);
+      launchIds.delete(item.id); expectedNativeIds.delete(item.id);
+      status(item.id, { running: false, status: 'stopped', statusSource: 'native', statusDetail: '已停止 Pi 图形会话，可恢复原生上下文' });
     } else if (item.backend === 'codex' && !demo && item.nativeSessionId) {
       // Interrupt only this thread's active turn, then close its TUI and park
       // the app-server when idle so zombie writers cannot block Desktop.
@@ -1462,16 +1630,18 @@ app.post('/api/sessions/:id/worktree/remove', async (req, res) => {
   store.activity(item.id, 'worktree', `已清理工作树，保留分支 ${worktree.branch}`); broadcast(); res.json(updated);
 });
 app.post('/api/groups', (req, res) => {
-  const created = store.addGroup(text(req.body.title, '群组名称'), text(req.body.goal ?? '', '共同目标', 4000, false));
+  if (req.body.kind !== undefined && req.body.kind !== 'topic') fail('群组类型无效');
+  const topic = req.body.kind === 'topic';
+  const created = store.addGroup(text(req.body.title, topic ? '话题标题' : '群组名称'), text(req.body.goal ?? '', topic ? '话题内容' : '共同目标', topic ? 30_000 : 4000, false), topic ? 'topic' : undefined);
   const prompt = text(req.body.prompt ?? '', '群 prompt', 8000, false);
   const workspace = req.body.workspace ? directory(req.body.workspace) : undefined;
   const group = prompt || workspace ? store.updateGroup(created.id, { ...(prompt ? { prompt } : {}), ...(workspace ? { workspace } : {}) }) : created;
-  store.activity(null, 'group', `创建了群组 ${group.title}`); broadcast(); res.status(201).json(group);
+  store.activity(null, 'group', topic ? `发布了话题 ${group.title}` : `创建了群组 ${group.title}`); broadcast(); res.status(201).json(group);
 });
 app.patch('/api/groups/:id', (req, res) => {
   const patch: { title?: string; goal?: string; prompt?: string; workspace?: string; pinned?: boolean; archived?: boolean } = {};
   if ('title' in req.body) patch.title = text(req.body.title, '群组名称');
-  if ('goal' in req.body) patch.goal = text(req.body.goal, '共同目标', 4000, false);
+  if ('goal' in req.body) patch.goal = text(req.body.goal, '共同目标', store.group(String(req.params.id))?.kind === 'topic' ? 30_000 : 4000, false);
   if ('prompt' in req.body) patch.prompt = text(req.body.prompt ?? '', '群 prompt', 8000, false);
   if ('workspace' in req.body) patch.workspace = req.body.workspace ? directory(req.body.workspace) : '';
   if ('pinned' in req.body) { if (typeof req.body.pinned !== 'boolean') fail('无效的布尔值'); patch.pinned = req.body.pinned; }
@@ -1514,14 +1684,33 @@ app.post('/api/groups/:id/read', (req, res) => {
     .map(({ id, unread, updatedAt }) => ({ id, unread, updatedAt }));
   res.json({ ...group, members, instanceId, revision: snapshot.revision });
 });
-app.get('/api/groups/:id', (req, res) => {
+app.get('/api/groups/:id', async (req, res) => {
   if (req.query.since !== undefined && typeof req.query.since !== 'string') fail('历史版本无效');
   if (req.query.before !== undefined && typeof req.query.before !== 'string') fail('历史游标无效');
-  const detail = store.groupDetail(String(req.params.id), {
+  const id = String(req.params.id);
+  const detail = store.groupDetail(id, {
     ...(req.query.before !== undefined ? { before: Number(req.query.before) } : {}),
     ...(typeof req.query.since === 'string' ? { since: req.query.since } : {}),
   });
-  res.json(principalOf(res).kind === 'share' ? { ...detail, group: { ...detail.group, workspace: '', prompt: '' }, deliveries: [] } : detail);
+  if (principalOf(res).kind === 'share') return res.json({ ...detail, group: { ...detail.group, workspace: '', prompt: '' }, deliveries: [], cost: null });
+  // Cost is read-only native usage. A member that cannot be read reports
+  // nothing rather than an estimate; one failing member must not fail the page.
+  const memberIds = [...new Set(detail.deliveries.map(delivery => delivery.sessionId))];
+  const members = await Promise.all(memberIds.map(async memberId => {
+    const member = store.session(memberId);
+    if (!member) return null;
+    let usage = null;
+    if (!demo) {
+      try {
+        const transcript = await conversations.read({ ...member, forkPending: false });
+        const current = store.session(memberId);
+        // Ignore a read that raced an identity change; it describes another session.
+        if (current && current.nativeSessionId === member.nativeSessionId) usage = transcript.usage ?? null;
+      } catch { /* unreadable native history stays unknown for this member */ }
+    }
+    return { id: member.id, title: member.title, usage };
+  }));
+  res.json({ ...detail, cost: groupCost(id, detail.messages, detail.deliveries, members.filter(member => member !== null)) });
 });
 app.get('/api/groups/:id/messages/:messageId', (req, res) => {
   const message = store.message(String(req.params.messageId));
@@ -1546,6 +1735,8 @@ app.post('/api/groups/:id/messages', async (req, res) => {
   const messageText = text(req.body.text ?? '', '消息', 30_000, !images.length);
   const message = store.addMessage({ groupId: id, kind, text: messageText, ...(images.length ? { attachments: images } : {}), recipientIds: ids, senderId, senderName: principal.kind === 'share' ? principal.name : senderId ? session(senderId).title : '你', sourceMessageId, ...(references.length ? { references } : {}) });
   broadcast();
+  // In a topic, a message that names nobody is for the coordinator.
+  if (principal.kind === 'owner' && kind === 'note' && !ids.length && !senderId && store.group(id)?.kind === 'topic' && messageText.trim()) coordinator.trigger(id, { type: 'message', messageId: message.id });
   // @-assignment sends immediately. Each recipient is independent: a failure
   // leaves that delivery pending or awaiting confirmation, never retried here.
   const errors: { sessionId: string; error: string }[] = [];
@@ -1555,6 +1746,71 @@ app.post('/api/groups/:id/messages', async (req, res) => {
   }
   res.status(201).json({ ...message, ...(errors.length ? { deliveryErrors: errors } : {}) });
 });
+/** Approves or rejects a coordinator proposal. Only the user can: from Dili, or
+ * from a bound IM chat through the deterministic "同意 P-xxxx" command. */
+async function decideProposal(groupId: string, proposalId: string, approve: boolean): Promise<GroupMessage> {
+  const message = store.db.prepare("SELECT data FROM messages WHERE json_extract(data, '$.groupId') = ? AND json_extract(data, '$.proposal.id') = ?").get(groupId, proposalId);
+  const found = message ? JSON.parse(String(message.data)) as GroupMessage : undefined;
+  if (!found?.proposal) fail('提议不存在', 404);
+  const proposal = found!.proposal!;
+  if (proposal.status !== 'pending') fail('这个提议已经处理过了', 409);
+  if (!approve) { const updated = store.updateCoordinatorMessage(found!.id, { proposal: { ...proposal, status: 'rejected' } })!; broadcast(); return updated; }
+  const topic = store.group(groupId)!;
+  try {
+    const member = proposal.fork
+      ? await forkContact(proposal.fork.contactId, { title: forkTitle(proposal.fork.title, topic.title), groupId, placement: 'directory', briefing: 'none' })
+      : await createContact({ backend: proposal.create!.backend, title: proposal.create!.title, cwd: proposal.create!.cwd, groupId, placement: 'directory', briefing: 'none' });
+    const updated = store.updateCoordinatorMessage(found!.id, { proposal: { ...proposal, status: 'approved', memberId: member.id, result: `${member.title} 已加入` } })!;
+    // The new participant catches up on the topic, like one added by hand.
+    const welcome = store.addMessage({ groupId, kind: 'task', agent: 'coordinator', senderId: null, senderName: '嘀哩', recipientIds: [member.id], text: '你刚加入这个话题。请阅读上面的话题说明和讨论，然后给出你的看法。' });
+    broadcast();
+    for (const delivery of store.deliveries().filter(item => item.messageId === welcome.id)) void deliverNow(delivery.id, { autoStart: true }).catch(() => {});
+    return updated;
+  } catch (cause) {
+    const updated = store.updateCoordinatorMessage(found!.id, { proposal: { ...proposal, status: 'failed', result: cause instanceof Error ? cause.message : '加入失败' } })!;
+    broadcast(); return updated;
+  }
+}
+app.post('/api/groups/:id/proposals/:proposal', async (req, res) => {
+  if (typeof req.body.approve !== 'boolean') fail('请选择同意或拒绝');
+  res.json(await decideProposal(String(req.params.id), String(req.params.proposal), req.body.approve));
+});
+function imChannelState(kind: ImChannelKind, state: { state: ImChannelState['state']; error?: string; since?: string }): ImChannelState {
+  const binding = imBinding(kind);
+  const pair = binding.pairCode && Date.parse(binding.pairCode.expiresAt) > Date.now() ? binding.pairCode : undefined;
+  return { state: state.state, ...(state.error ? { error: state.error } : {}), ...(state.since ? { since: state.since } : {}), owners: binding.owners.length,
+    chats: Object.values(binding.chats).map(chat => ({ topic: store.group(chat.topicId)?.title ?? '已删除的话题' })), ...(pair ? { pairCode: pair } : {}) };
+}
+app.get('/api/im', async (_req, res) => {
+  const api = demo ? null : await agentSetup.managedApi().catch(() => null);
+  const feishuState = feishu.status(), weixinState = weixin.status();
+  const status: ImStatus = {
+    feishu: { ...imChannelState('feishu', feishuState), ...(feishuSettings()?.appId ? { appId: feishuSettings()!.appId } : {}), ...(feishuState.botName ? { botName: feishuState.botName } : {}) },
+    weixin: { ...imChannelState('weixin', weixinState), ...(weixinState.qr ? { qr: weixinState.qr } : {}), ...(weixinState.login ? { login: weixinState.login } : {}), ...(weixinState.account ? { account: weixinState.account } : {}) },
+    coordinator: api ? { model: process.env.SESSIONDECK_COORDINATOR_MODEL?.trim() || COORDINATOR_MODEL, source: api.source } : null,
+  };
+  res.json(status);
+});
+app.post('/api/im/feishu', async (req, res) => {
+  if (demo) fail('演示模式不连接 IM', 409);
+  const current = feishuSettings();
+  const appId = text(req.body.appId ?? current?.appId ?? '', 'App ID', 100);
+  if (!/^cli_[a-zA-Z0-9]{8,40}$/.test(appId)) fail('App ID 应以 cli_ 开头');
+  const appSecret = typeof req.body.appSecret === 'string' && req.body.appSecret ? text(req.body.appSecret, 'App Secret', 200) : current?.appSecret ?? fail('请填写 App Secret');
+  if (typeof req.body.enabled !== 'boolean') fail('无效的布尔值');
+  const next: FeishuSettings = { appId, appSecret: appSecret!, enabled: req.body.enabled };
+  auth.setSetting('im-feishu', secrets.seal(JSON.stringify(next)));
+  await feishu.configure(next.enabled ? next : null);
+  res.json({ ok: true });
+});
+app.delete('/api/im/feishu', async (_req, res) => { await feishu.configure(null); auth.setSetting('im-feishu', null); imHub.unbind('feishu'); res.json({ ok: true }); });
+const imKind = (value: string): ImChannelKind => value === 'feishu' || value === 'weixin' ? value : fail('未知的 IM 渠道', 404);
+app.post('/api/im/:kind/pair', (req, res) => { const kind = imKind(String(req.params.kind)); imHub.newPairCode(kind); res.json(imBinding(kind).pairCode); });
+app.delete('/api/im/:kind/owners', (req, res) => { imHub.unbind(imKind(String(req.params.kind))); res.json({ ok: true }); });
+app.post('/api/im/weixin/login', async (_req, res) => { if (demo) fail('演示模式不连接 IM', 409); await weixin.startLogin(); res.json({ ok: true }); });
+app.post('/api/im/weixin/verify', (req, res) => { weixin.submitVerifyCode(text(req.body.code, '数字', 12)); res.json({ ok: true }); });
+app.delete('/api/im/weixin/login', (_req, res) => { weixin.cancelLogin(); res.json({ ok: true }); });
+app.delete('/api/im/weixin', (_req, res) => { weixin.logout(); imHub.unbind('weixin'); res.json({ ok: true }); });
 const deliveryLocks = new Set<string>();
 /** Sends one pending delivery. A stopped member that supports graphical chat is
  * started first (the user explicitly @-assigned it); terminal members are staged. */
@@ -1569,7 +1825,8 @@ async function deliverNow(id: string, options: { autoStart?: boolean } = {}) {
   if (target.status === 'waiting_approval') fail('请先在原生会话中处理当前审批，再填入任务');
   const targetWeb = dshWeb(target);
   if (targetWeb && !target.nativeSessionId) fail('原生会话尚未准备好');
-  const agentChat = !demo && target.interactionMode === 'chat' && (target.backend === 'codex' ? codexRuns : claudeRuns).has(target.id);
+  const chatAdapter = chatAdapters[target.backend];
+  const agentChat = !demo && !!chatAdapter && target.interactionMode === 'chat' && !!target.nativeSessionId && (target.backend === 'pi' ? piBridge.has(target.nativeSessionId) : target.backend === 'dsh' ? dsh.readyState : (target.backend === 'claude' ? claudeRuns : codexRuns).has(target.id));
   if (!targetWeb && !agentChat && !terminals.has(target.id)) fail('会话尚未启动或已经退出');
   const message = store.message(delivery.messageId);
   const images = message?.attachments?.length ? attachments.resolve(groupAttachmentScope(message.groupId), message.attachments.map(item => item.id)) : [];
@@ -1581,9 +1838,9 @@ async function deliverNow(id: string, options: { autoStart?: boolean } = {}) {
     const deliveryStatus = targetWeb || agentChat ? 'sent' : 'staged';
     const pending = sendDelivery(store, id, deliveryStatus, async () => {
       if (agentChat) {
-        try { await (target.backend === 'claude' ? claudeBridge : codexBridge).sendPrompt(target.nativeSessionId!, delivery.text, undefined, images); }
+        try { await chatAdapter!.sendPrompt(target.nativeSessionId!, delivery.text, undefined, images); }
         catch (error) {
-          if ((error as { deliveryUnknown?: boolean }).deliveryUnknown === false) throw new DeliveryNotAcceptedError(error instanceof Error ? error.message : 'Codex 未接收任务');
+          if ((error as { deliveryUnknown?: boolean }).deliveryUnknown === false) throw new DeliveryNotAcceptedError(error instanceof Error ? error.message : `${info(target.backend).label} 未接收任务`);
           throw error;
         }
       } else if (deliveryStatus === 'sent') await dsh.prompt(target.nativeSessionId!, delivery.text);
@@ -1646,7 +1903,11 @@ terminals.on('data', (id: string, data: string) => {
 });
 terminals.on('hint', (id: string, hint: { status: SessionStatus; detail: string }) => {
   if (stopping.has(id) || terminals.isStopping(id)) return;
-  if (session(id).statusSource === 'native') return;
+  const item = session(id);
+  // Pi's TUI prints "escape interrupt" even at an idle prompt; never turn that
+  // terminal estimate into a native "running" state that blocks handoff.
+  if (item.backend === 'pi') return;
+  if (item.statusSource === 'native') return;
   if (session(id).status !== hint.status) status(id, { status: hint.status, statusSource: 'terminal', statusDetail: hint.detail }, hint.detail);
 });
 terminals.on('input', (id: string, data: string) => {
@@ -2009,6 +2270,12 @@ server.listen(port, host, () => {
   // Tasks whose member already finished or failed before this start are collected now.
   if (!demo) for (const item of store.sessions()) groupReplies.statusChanged(item);
   relayNotices.start();
+  if (!demo) {
+    const savedFeishu = feishuSettings();
+    if (savedFeishu?.enabled) void feishu.configure(savedFeishu);
+    const savedWeixin = sealedSetting<WeixinAccount>('im-weixin');
+    if (savedWeixin) weixin.resume(savedWeixin);
+  }
   void applyRemote().then(() => {
     if (remoteServer.listening) console.log(`远程访问监听 → http://${envRemoteBind}:${remoteSettings().localPort}（需要登录）`);
   }).catch(error => console.error(`远程访问未启动：${error instanceof Error ? error.message : String(error)}`));
@@ -2038,8 +2305,8 @@ function shutdown(exitCode = 0) {
   // Exiting directly in server.close used to orphan a slow native process and
   // let a replacement instance race it against the same native history.
   void (async () => {
-    groupReplies.close();
-    const results = await Promise.allSettled([voiceClosed, httpClosed, tunnel.close(), frpTunnel.close(), relayNotices.close(), terminals.close(), shells.close(), dshChat.close(), dsh.close(), codexBridge.close(), claudeBridge.close()]);
+    groupReplies.close(); topicMirror.close(); coordinator.close(); feishu.close(); weixin.stop();
+    const results = await Promise.allSettled([voiceClosed, httpClosed, tunnel.close(), frpTunnel.close(), relayNotices.close(), terminals.close(), shells.close(), dshChat.close(), dsh.close(), codexBridge.close(), claudeBridge.close(), piBridge.closeAll()]);
     for (const result of results) if (result.status === 'rejected') { console.error('关闭原生资源失败：', result.reason instanceof Error ? result.reason.message : String(result.reason)); exitCode = 1; }
     try { publisher.close(); store.close(); }
     finally { await instanceLock.release(); }

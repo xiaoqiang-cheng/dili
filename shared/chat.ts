@@ -74,8 +74,15 @@ export interface AgentChatSettings {
   /** Explains a reported native policy that is not one of the offered presets. */
   permissionLabel?: string;
   permissions: AgentChatChoice[];
+  /** Reasoning effort for the current model. null means the model default applies. */
+  effort?: string | null;
+  /** Explains a null effort, e.g. which model default applies. */
+  effortLabel?: string;
+  /** Levels the current model reports; they change with the model. */
+  efforts?: AgentChatChoice[];
   modelReason?: string;
   permissionReason?: string;
+  effortReason?: string;
   disabledReason?: string;
   /** live: applied to the running executor now; restart: saved to the contact
    * and used by the next graphical or terminal launch. */
@@ -86,7 +93,7 @@ export interface AgentChatSettings {
 }
 export interface AgentChatSettingsUpdate {
   version: string;
-  field: 'model' | 'permission';
+  field: 'model' | 'permission' | 'effort';
   value: string;
 }
 

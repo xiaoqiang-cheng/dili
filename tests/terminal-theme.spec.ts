@@ -25,7 +25,7 @@ for (const mobile of [false, true]) {
         const panes: Locator[] = [native];
         if (!mobile) {
           await page.getByRole('button', { name: '打开终端', exact: true }).click();
-          const dock = page.getByRole('region', { name: '底部终端面板' });
+          const dock = page.getByRole('region', { name: '终端面板' });
           await expect(dock.locator('.terminal-connection.connected')).toHaveCount(1);
           await dock.getByRole('button', { name: '终端分屏', exact: true }).click();
           await expect(dock.locator('.terminal-connection.connected')).toHaveCount(2);

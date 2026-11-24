@@ -121,6 +121,10 @@ test('local HTTP and real demo PTYs complete the contact, fork and group flow', 
     assert.match(usage.note, /演示/);
     const exported = await request<{ error: string }>(`/api/sessions/${created.id}/export`, 'GET', undefined, 409);
     assert.match(exported.error, /演示模式/);
+    // A demo instance has no local checkout to hand to an editor, and a test run
+    // must never start one on the host: the refusal is the honest answer.
+    const editor = await request<{ error: string }>(`/api/sessions/${created.id}/workspace/open-editor`, 'POST', {}, 409);
+    assert.match(editor.error, /演示模式/);
   });
 
   await t.test('only trashed contacts can be purged from Dili', async () => {

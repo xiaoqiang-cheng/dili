@@ -101,7 +101,7 @@ async function openGroup(page: import('@playwright/test').Page, title: string) {
   await expect(page.getByLabel('群组消息')).toBeVisible();
 }
 
-test('keyboard navigation keeps modal focus, leaves the workbench interactive, and preserves native terminal Escape', async ({ page }) => {
+test('keyboard navigation keeps modal focus, leaves the workbench interactive, and Escape never closes the session', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: '会话列表', exact: true })).toBeVisible();
   await page.keyboard.press('Control+k');
@@ -137,8 +137,14 @@ test('keyboard navigation keeps modal focus, leaves the workbench interactive, a
   await page.keyboard.press('Escape');
   await expect(rename).not.toBeVisible();
   await expect(drawer).toBeVisible();
-  await drawer.getByRole('button', { name: '关闭会话', exact: true }).focus();
+  // A stray Esc must not drop the open session; only the explicit close button does.
+  const close = drawer.getByRole('button', { name: '关闭会话', exact: true });
+  await close.focus();
   await page.keyboard.press('Escape');
+  await expect(drawer).toBeVisible();
+  await page.locator('body').press('Escape');
+  await expect(drawer).toBeVisible();
+  await close.click();
   await expect(drawer).not.toBeVisible();
   await expect(card).toBeFocused();
 });

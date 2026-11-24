@@ -14,6 +14,7 @@ import { OwnedProcess } from './owned-process.ts';
 import { sameDirectory } from './paths.ts';
 import type { CodexChatAnswer, CodexChatHistoryPage, CodexChatSnapshot, AgentChatSettings, AgentChatSettingsUpdate } from '../shared/chat.ts';
 import { checkSettingsUpdate, settingsError, settingsVersion } from './agents/settings.ts';
+import { defaultEffortLabel, effortChoices } from '../shared/effort.ts';
 import { CodexChatState, nativeChatAnswer, nativeChatRequest, type NativeChatRequest } from './codex-chat.ts';
 
 export interface CodexNativeSession {
@@ -125,7 +126,9 @@ export class CodexBridge {
   private captureSettings(id: string, value: unknown) {
     if (!value || typeof value !== 'object') return;
     const row = value as Record<string, unknown>;
-    this.nativeSettings.set(id, { ...this.nativeSettings.get(id), ...Object.fromEntries(['model', 'approvalPolicy', 'approvalsReviewer'].filter(key => row[key] !== undefined).map(key => [key, row[key]])), ...(row.sandboxPolicy || row.sandbox ? { sandbox: row.sandboxPolicy ?? row.sandbox } : {}) });
+    // Resume responses name it reasoningEffort; thread/settings/updated uses effort. null is the model default.
+    const effort = row.reasoningEffort !== undefined ? row.reasoningEffort : row.effort;
+    this.nativeSettings.set(id, { ...this.nativeSettings.get(id), ...Object.fromEntries(['model', 'approvalPolicy', 'approvalsReviewer'].filter(key => row[key] !== undefined).map(key => [key, row[key]])), ...(row.sandboxPolicy || row.sandbox ? { sandbox: row.sandboxPolicy ?? row.sandbox } : {}), ...(effort !== undefined ? { effort } : {}) });
   }
   async readChatSettings(id: string): Promise<AgentChatSettings> {
     const connection = this.observers.get(id);
@@ -141,9 +144,12 @@ export class CodexBridge {
     const thread = (native.result as { thread?: Thread })?.thread;
     if (thread?.id !== id) return settingsError('原生设置返回了不同会话，请重新连接');
     this.captureSettings(id, native.result);
-    const data = (response.result as { data?: { model: string; displayName: string; description?: string; hidden?: boolean }[] })?.data;
+    const data = (response.result as { data?: { model: string; displayName: string; description?: string; hidden?: boolean; supportedReasoningEfforts?: { reasoningEffort: string; description?: string }[]; defaultReasoningEffort?: string }[] })?.data;
     const models = Array.isArray(data) ? data.filter(row => !row.hidden && typeof row.model === 'string').slice(0, 100).map(row => ({ id: row.model, label: row.displayName || row.model, description: row.description })) : [];
     const raw = this.nativeSettings.get(id) ?? {};
+    const current = Array.isArray(data) ? data.find(row => row.model === raw.model) : undefined;
+    const efforts = effortChoices(Array.isArray(current?.supportedReasoningEfforts) ? current.supportedReasoningEfforts.map(level => ({ id: level?.reasoningEffort, description: level?.description })) : []);
+    const effort = typeof raw.effort === 'string' ? raw.effort : null;
     const policy = raw.approvalPolicy, reviewer = raw.approvalsReviewer;
     const permission = policy === 'on-request' && reviewer === 'auto_review' ? 'auto_review' : typeof policy === 'string' && (reviewer === 'user' || reviewer === undefined) ? policy : null;
     const settings = settingsVersion(this.settingsViews.get(id), {
@@ -155,6 +161,9 @@ export class CodexBridge {
         ...(typeof reviewer === 'string' ? [{ id: 'auto_review', label: '自动审核', description: '由 Codex 审核请求；保留当前沙箱' }] : []),
         { id: 'never', label: '不请求审批', description: '无法在当前沙箱执行的操作直接失败' },
       ] : [],
+      effort, efforts,
+      ...(effort === null ? { effortLabel: defaultEffortLabel(current?.defaultReasoningEffort) } : {}),
+      ...(!('effort' in raw) ? { effortReason: '当前 Codex 未报告推理强度，请升级 CLI 后重试' } : !efforts.length ? { effortReason: '当前模型未报告可选推理强度' } : {}),
       ...(!models.length ? { modelReason: '当前 Codex 未返回可用模型列表，请检查 CLI 版本或原生配置' } : {}),
       ...(policy === undefined ? { permissionReason: '当前 Codex 未报告审批设置，请升级 CLI 后重试' } : {}),
       ...(thread.status?.type !== 'idle' || this.changingSettings.has(id) || this.sendingPrompts.has(id) || this.chat.get(id)?.activeTurnId || this.chat.get(id)?.requests.length ? { disabledReason: '请等待当前任务、审批或设置修改结束；原生状态未确认时不可修改' } : {}),
@@ -171,7 +180,7 @@ export class CodexBridge {
     if (this.changingSettings.has(id) || this.sendingPrompts.has(id) || this.chat.get(id)?.activeTurnId || this.chat.get(id)?.requests.length) return settingsError('原生会话正在处理任务或设置，请稍后重试');
     this.changingSettings.add(id);
     try {
-      const response = await this.call(connection, 'thread/settings/update', { threadId: id, ...(update.field === 'model' ? { model: update.value } : { approvalPolicy: update.value === 'auto_review' ? 'on-request' : update.value, ...(this.nativeSettings.get(id)?.approvalsReviewer !== undefined ? { approvalsReviewer: update.value === 'auto_review' ? 'auto_review' : 'user' } : {}) }) });
+      const response = await this.call(connection, 'thread/settings/update', { threadId: id, ...(update.field === 'model' ? { model: update.value } : update.field === 'effort' ? { effort: update.value } : { approvalPolicy: update.value === 'auto_review' ? 'on-request' : update.value, ...(this.nativeSettings.get(id)?.approvalsReviewer !== undefined ? { approvalsReviewer: update.value === 'auto_review' ? 'auto_review' : 'user' } : {}) }) });
       if (response.error) throw this.rpcError(response, '当前 Codex 不支持或拒绝了设置修改');
       if (connection.closed || this.observers.get(id) !== connection) return settingsError('原生连接已变化，请刷新确认设置');
       // Metadata-only native readback; never replay history or auto-mode overrides.

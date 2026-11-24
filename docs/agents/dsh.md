@@ -10,6 +10,16 @@
 
 用 `SESSIONDECK_DSH_PREFER_WEB=1` 可强制走 Web 桥（TUI 挂起但收不到输入时的退路）。
 
+## API 配置落点（2026-11-15）
+
+设置页可直接保存 Dili 托管的 OpenAI Chat Completions 兼容 provider，不再必须打开原生 Web：
+
+- `$DSH_HOME/profiles/web/cordis.patch.yml` 的 `llm-pi-ai` 条目增加 `providers.dili`，字段为 `apiKeyEnv: DILI_API_KEY`、`api: openai-completions`、`baseURL` 和一个 `models` 条目；同时把 `agent-default-model` 指向 `dili/<model>`，让新会话直接使用该配置。
+- 密钥写入 `$DSH_HOME/.credentials.yaml` 的 `version: 1` / `refs.DILI_API_KEY`，不写进 patch 文件。凭据和 patch 都备份旧文件并以 0600 写入；接口只报告是否存在，不回显值。
+- 如果 `profiles/dsh-tui/cordis.patch.yml` 已存在，同步更新；不存在的 profile 不创建。`dsh-tui` 是否读取新配置仍由它自己的启动层决定。
+- API 地址和模型必须同时填写；清空二者会移除 `providers.dili` 并删除指向它的 `agent-default-model` 覆盖，已保存的 `DILI_API_KEY` 保留。保存不发起模型请求，DSH 正在运行的旧进程未必热加载该文件，新会话/重启后读取。
+- 这是 Dili 管理的自定义 provider，不取代原生 Web 设置里的其他 provider、OAuth 或模型目录；原生界面仍可修改，保存前请确认没有并发编辑。
+
 ## 身份与服务
 
 - dsh 0.1 使用 `session-<uuid>`；0.2 的不同版本既可能使用裸 UUID，也可能继续生成 `session-<uuid>`（0.2.2-rc.1 的原生 Web 控制器就是后者）。`DSH_ID` 两种都接受，新建仍用裸 UUID。

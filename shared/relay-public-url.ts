@@ -6,3 +6,6 @@ export function relayPublicUrl(value: string): string {
   }
   return url.href;
 }
+
+/** Where this machine asks for an invite unless SESSIONDECK_INVITE_RELAY_URL says otherwise. */
+export const OFFICIAL_RELAY_URL = 'https://dili.discoverpaw.com/connect';

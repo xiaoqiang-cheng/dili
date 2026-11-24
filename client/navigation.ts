@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-export type View = 'contacts' | 'attention' | 'running' | 'archive' | 'backends' | 'activity' | `group:${string}`;
+export type View = 'contacts' | 'attention' | 'running' | 'archive' | 'backends' | 'activity' | 'topics' | `group:${string}` | `topic:${string}`;
 export interface WorkspaceRoute { view: View; selectedId: string | null }
 
-const plainViews = new Set(['contacts', 'attention', 'running', 'archive', 'backends', 'activity']);
+const plainViews = new Set(['contacts', 'attention', 'running', 'archive', 'backends', 'activity', 'topics']);
 const validId = (value: string | null): value is string => !!value && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
 
 export function readWorkspaceRoute(hash: string): WorkspaceRoute {
@@ -13,13 +13,14 @@ export function readWorkspaceRoute(hash: string): WorkspaceRoute {
     let view: View = 'contacts';
     if (parts.length === 1 && plainViews.has(parts[0])) view = parts[0] as View;
     else if (parts.length === 2 && parts[0] === 'groups' && validId(parts[1])) view = `group:${parts[1]}`;
+    else if (parts.length === 2 && parts[0] === 'topics' && validId(parts[1])) view = `topic:${parts[1]}`;
     const selectedId = new URLSearchParams(search).get('session');
     return { view, selectedId: validId(selectedId) ? selectedId : null };
   } catch { return { view: 'contacts', selectedId: null }; }
 }
 
 export function workspaceHash(route: WorkspaceRoute) {
-  const path = route.view.startsWith('group:') ? `/groups/${encodeURIComponent(route.view.slice(6))}` : `/${route.view}`;
+  const path = route.view.startsWith('group:') ? `/groups/${encodeURIComponent(route.view.slice(6))}` : route.view.startsWith('topic:') ? `/topics/${encodeURIComponent(route.view.slice(6))}` : `/${route.view}`;
   return `#${path}${route.selectedId ? `?session=${encodeURIComponent(route.selectedId)}` : ''}`;
 }
 

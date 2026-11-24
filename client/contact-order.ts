@@ -21,7 +21,7 @@ export interface ContactQuery {
   sort: ContactSort;
 }
 
-const BACKEND_LABEL: Record<Backend, string> = { claude: 'Claude Code', codex: 'Codex', dsh: 'DeepSeek Harness' };
+const BACKEND_LABEL: Record<Backend, string> = { claude: 'Claude Code', codex: 'Codex', dsh: 'DeepSeek Harness', pi: 'Pi' };
 
 /** The agent is blocked on a person: waiting for input or approval, or failed. */
 export const attention = (session: Session) => session.status === 'waiting_input' || session.status === 'waiting_approval' || session.status === 'error';
@@ -57,9 +57,14 @@ export function compareContacts(a: ContactEntry, b: ContactEntry, sort: ContactS
   return created(b) - created(a) || compareName(a, b);
 }
 
-function sessionVisible(session: Session, input: ContactQuery): boolean {
+/** Topics live on their own board. Their participants are ordinary contacts too:
+ * each is a forked or new session, so it stays in the contact list. */
+export const isTopic = (group?: Pick<Group, 'kind'> | null) => group?.kind === 'topic';
+
+function sessionVisible(session: Session, input: ContactQuery, topics: Set<string>): boolean {
   const { mode, backend, status } = input;
-  if (mode === 'archive' ? !session.archived : mode === 'attention' ? session.archived || !pending(session) : mode === 'running' ? session.archived || session.status !== 'running' : session.archived || !!session.groupId) return false;
+  const inGroupChat = !!session.groupId && !topics.has(session.groupId);
+  if (mode === 'archive' ? !session.archived : mode === 'attention' ? session.archived || !pending(session) : mode === 'running' ? session.archived || session.status !== 'running' : session.archived || inGroupChat) return false;
   return (backend === 'all' || session.backend === backend)
     && (status === 'all' || (status === 'attention' ? attention(session) : status === 'unread' ? session.unread > 0 : session.status === status))
     && `${session.title} ${session.cwd} ${session.lastUserInput || ''} ${BACKEND_LABEL[session.backend]}`.toLowerCase().includes(input.query.trim().toLowerCase());
@@ -77,9 +82,10 @@ function groupVisible(group: Group, members: Session[], input: ContactQuery): bo
 
 export function buildContacts(input: ContactQuery): ContactEntry[] {
   const membersOf = (id: string) => input.sessions.filter(session => session.groupId === id);
+  const topics = new Set(input.groups.filter(isTopic).map(group => group.id));
   const entries: ContactEntry[] = [
-    ...input.sessions.filter(session => sessionVisible(session, input)).map(session => ({ kind: 'session' as const, id: session.id, session })),
-    ...input.groups.filter(group => groupVisible(group, membersOf(group.id), input)).map(group => ({ kind: 'group' as const, id: group.id, group, members: membersOf(group.id) })),
+    ...input.sessions.filter(session => sessionVisible(session, input, topics)).map(session => ({ kind: 'session' as const, id: session.id, session })),
+    ...input.groups.filter(group => !isTopic(group) && groupVisible(group, membersOf(group.id), input)).map(group => ({ kind: 'group' as const, id: group.id, group, members: membersOf(group.id) })),
   ];
   return entries.sort((a, b) => compareContacts(a, b, input.sort));
 }

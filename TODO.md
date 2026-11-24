@@ -27,6 +27,7 @@
 | 19 | 邀请码配对与自动生成远程链接 | 已完成基础版 |
 | 23 | 网页服务远程预览与端口转发 | 主机路径代理已落地；独立预览子域名待排期 |
 | 26 | 三平台输入输出体验 | 输入区、dsh 工具卡与导出、可视壳对齐、dsh 0.2+ 结构化图形对话（含原生模型/权限与 dsh-tui 接管）已完成；审批仍跳原生 |
+| 27 | Pi 一等后端 | 基础支持已完成；pi-web 能力差距（provider 网页配置、会话树分支、文档预览、插件面板）待排期 |
 
 状态约定：`[x]` 仅表示该条描述的工作完成，不代表整个平台、真实账号或公网部署均已验收。已实现基础与后续优化分别列出；当前行为见[产品规格](docs/product-spec.md)，文档分工见[文档索引](docs/README.md)。
 
@@ -289,3 +290,12 @@
 - [x] 检查 dsh 原生 `session.prompt`、历史事件和流式事件是否足以支撑 `AgentChatPane` 所需的文本、工具、审批和中断；结论是文本／工具／问题可支撑。
 - [x] 新增 dsh 0.2+ chat adapter：阻塞式问题走 `$events` waterfall，timed 问题走 `userQuestions/answer`，审批保留原生入口；协议细节与已知限制见 `docs/agents/dsh.md`。
 - [x] dsh 0.2 原生模型/权限目录接入统一设置面板；dsh-tui 持有时只读并说明，显式接管后停止 TUI、从同一 session 恢复网页 writer。
+
+## 27 Pi 一等后端（2026-11-15）
+
+- [x] 官方 `pi --mode rpc` JSONL 桥：原生身份校验、RPC 发送、流式文本、工具卡、停止、原生会话文件续接。
+- [x] 会话、发现/导入、原生终端 `--session-id` 交接、Fork、图片、群聊投递、用量与导出复用现有外壳。
+- [x] 原生模型／思考强度设置；Pi 没有统一权限预设，`permission: null` 并说明原因，不伪造审批。
+- [x] 阻塞式扩展 `confirm`／`select`／`input`／`editor` 映射为网页请求；普通工具没有逐次审批。
+- [ ] 与 pi-web 的剩余差距：内置 provider 的 OAuth/账号网页管理（自定义 OpenAI 兼容 provider 已可配置）、会话树按消息分支、PDF/DOCX/XLSX 预览、插件/技能面板、widget/status 显示型扩展。
+- [ ] Windows 原生进程、真实账号和公网移动端 Pi 交接验收；Linux fixture 与本地真实 CLI + mock provider 已覆盖 RPC 链路。

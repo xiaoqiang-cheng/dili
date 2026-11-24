@@ -8,8 +8,10 @@ import { interfaceScale, viewportHeight } from './zoom';
 const ignoreSelection = () => {};
 const clampHeight = (height: number) => Math.max(180, Math.min(height, viewportHeight() * .7));
 
-export default function ShellTerminalDock({ open, sessionId, requestedShellId, onClose, inert = false }: {
-  open: boolean; sessionId?: string; requestedShellId?: string; onClose: () => void; inert?: boolean;
+/** Shell terminals. `embedded` fills a tab of the right-hand panel instead of
+ * docking at the bottom with its own resize handle. */
+export default function ShellTerminalDock({ open, sessionId, requestedShellId, onClose, inert = false, embedded = false }: {
+  open: boolean; sessionId?: string; requestedShellId?: string; onClose: () => void; inert?: boolean; embedded?: boolean;
 }) {
   const [shells, setShells] = useState<ShellTerminal[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -137,13 +139,13 @@ export default function ShellTerminalDock({ open, sessionId, requestedShellId, o
 
   if (!open) return null;
   const panes = [active, split].filter((shell): shell is ShellTerminal => !!shell);
-  return <section className={`terminal-dock ${split ? 'split' : ''}`} style={{ height }} aria-label="底部终端面板" inert={inert}>
-    <div className="terminal-dock-resizer" role="separator" tabIndex={0} aria-label="调整终端面板高度" aria-orientation="horizontal" aria-valuemin={180} aria-valuemax={Math.round(viewportHeight() * .7)} aria-valuenow={Math.round(height)}
+  return <section className={`terminal-dock${embedded ? ' embedded' : ''}${split ? ' split' : ''}`} style={embedded ? undefined : { height }} aria-label="终端面板" inert={inert}>
+    {!embedded && <div className="terminal-dock-resizer" role="separator" tabIndex={0} aria-label="调整终端面板高度" aria-orientation="horizontal" aria-valuemin={180} aria-valuemax={Math.round(viewportHeight() * .7)} aria-valuenow={Math.round(height)}
       onPointerDown={pointerDown} onPointerMove={event => { if (dragRef.current) setHeight(clampHeight(dragRef.current.height + (dragRef.current.y - event.clientY) / interfaceScale())); }}
       onPointerUp={event => { dragRef.current = null; event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={() => { dragRef.current = null; }}
-      onKeyDown={event => { if (event.key === 'ArrowUp' || event.key === 'ArrowDown') { event.preventDefault(); setHeight(current => clampHeight(current + (event.key === 'ArrowUp' ? 30 : -30))); } }} />
+      onKeyDown={event => { if (event.key === 'ArrowUp' || event.key === 'ArrowDown') { event.preventDefault(); setHeight(current => clampHeight(current + (event.key === 'ArrowUp' ? 30 : -30))); } }} />}
     <header className="terminal-dock-header">
-      <span className="terminal-dock-label"><TerminalSquare size={14} />终端</span>
+      {!embedded && <span className="terminal-dock-label"><TerminalSquare size={14} />终端</span>}
       <div className="terminal-dock-tabs" role="tablist" aria-label="打开的终端">
         {shells.map(shell => <div className={`terminal-dock-tab ${shell.id === active?.id ? 'active' : ''}`} key={shell.id}>
           <button id={`shell-tab-${shell.id}`} role="tab" aria-selected={shell.id === active?.id} aria-controls={`shell-pane-${shell.id}`} title={`${shell.shell}\n${shell.cwd}${shell.running ? '' : `\n已退出 · ${shell.exitCode}`}`} onClick={() => select(shell.id)}><TerminalSquare size={13} /><span>{shell.title}{!shell.running && ` · 已退出 ${shell.exitCode ?? ''}`}</span></button>
@@ -153,7 +155,7 @@ export default function ShellTerminalDock({ open, sessionId, requestedShellId, o
       <div className="terminal-dock-actions">
         <button className="icon-button" aria-label="新建终端" title="新建独立 Shell 终端" disabled={busy} onClick={() => void createShell()}>{busy ? <LoaderCircle size={15} className="spin" /> : <Plus size={15} />}</button>
         <button className={`icon-button ${split ? 'active' : ''}`} aria-label={split ? '关闭终端分屏' : '终端分屏'} aria-pressed={!!split} title={split ? '收起分屏，保留终端' : '左右分屏'} disabled={busy || !active} onClick={() => void toggleSplit()}><Columns2 size={16} /></button>
-        <button className="icon-button" aria-label="隐藏终端面板" title="隐藏面板，Shell 继续运行" onClick={onClose}><X size={16} /></button>
+        <button className="icon-button" aria-label="隐藏终端面板" title={embedded ? '关闭终端标签，Shell 继续运行' : '隐藏面板，Shell 继续运行'} onClick={onClose}><X size={16} /></button>
       </div>
     </header>
     {error && <div className="terminal-dock-error" role="alert"><span>{error}</span><button className="text-button" onClick={() => { setError(''); void refresh().catch(cause => setError(cause.message)); }}><RefreshCw size={13} />刷新列表</button></div>}

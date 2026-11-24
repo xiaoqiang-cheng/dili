@@ -522,6 +522,17 @@ for (const backend of ['codex', 'claude'] as const) test(`${backend} settings us
   assert.equal(afterRejection.version, settings.version);
   settings = await request<AgentChatSettings>(path, 'POST', { version: settings.version, field: 'permission', value: backend === 'claude' ? 'plan' : 'untrusted' });
   assert.equal(settings.permission, backend === 'claude' ? 'plan' : 'untrusted');
+  // Effort levels come from the current model's native catalog: fixture-alternative adds a level.
+  assert.ok(!settings.effortReason, settings.effortReason);
+  assert.ok(settings.efforts?.some(choice => choice.id === (backend === 'claude' ? 'max' : 'xhigh')), 'Levels follow the selected model');
+  assert.ok(!JSON.stringify(settings).includes('fixture-secret-token'), 'Native settings replies must not forward user env or credentials');
+  settings = await request<AgentChatSettings>(path, 'POST', { version: settings.version, field: 'effort', value: 'high' });
+  assert.equal(settings.effort, 'high');
+  await request(path, 'POST', { version: settings.version, field: 'effort', value: 'invented-effort' }, 409);
+  // Codex rejects 'denied' natively; Claude acknowledges 'unconfirmed' but its applied effort does not change.
+  await request(path, 'POST', { version: settings.version, field: 'effort', value: backend === 'claude' ? 'unconfirmed' : 'denied' }, 409);
+  settings = await request<AgentChatSettings>(path);
+  assert.equal(settings.effort, 'high', 'An unconfirmed effort must not be displayed as applied');
   await request(`/api/sessions/${contact.id}/chat/messages`, 'POST', { requestId: randomUUID(), text: 'HOLD', model: 'ignored-value' }, 400);
   await request(`/api/sessions/${contact.id}/chat/messages`, 'POST', { requestId: randomUUID(), text: 'HOLD' });
   await until(async () => !!(await snapshot(contact.id)).activeTurnId, 'Native HOLD did not start');
@@ -532,13 +543,15 @@ for (const backend of ['codex', 'claude'] as const) test(`${backend} settings us
   if (backend === 'codex') {
     const calls = (await fixture.calls()) as { method: string; params: Record<string, unknown> }[];
     const updates = calls.filter(call => call.method === 'thread/settings/update');
-    assert.equal(updates.length, 3, 'Rejected local settings must never reach native mutation');
+    assert.equal(updates.length, 5, 'Rejected local settings must never reach native mutation');
+    assert.deepEqual(updates.filter(call => call.params.effort !== undefined).map(call => call.params.effort), ['high', 'denied']);
     assert.ok(updates.every(call => call.params.sandbox === undefined && call.params.sandboxPolicy === undefined && call.params.permissions === undefined));
     assert.ok(updates.some(call => call.params.approvalPolicy === 'untrusted'));
   } else {
     const calls = (await readFile(join(fixture.directory, 'claude-calls.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     assert.equal(calls.filter(call => call.request?.subtype === 'set_model').length, 2);
     assert.ok(calls.some(call => call.request?.subtype === 'set_permission_mode' && call.request.mode === 'plan'));
+    assert.deepEqual(calls.filter(call => call.request?.subtype === 'apply_flag_settings').map(call => call.request.settings), [{ effortLevel: 'high' }, { effortLevel: 'unconfirmed' }]);
     await request(path, 'POST', { version: settings.version, field: 'model', value: 'fixture-no-ack' }, 409);
     const uncertain = await request<AgentChatSettings>(path);
     assert.equal(uncertain.model, null, 'An empty native success envelope cannot confirm the effective model');
@@ -630,14 +643,21 @@ test('Claude contact settings align graphical and terminal executors, including 
   settings = await request<AgentChatSettings>(settingsPath);
   assert.equal(settings.apply, 'restart');
   settings = await request<AgentChatSettings>(settingsPath, 'POST', { version: settings.version, field: 'permission', value: 'dontAsk' });
+  assert.ok(settings.efforts?.some(choice => choice.id === 'max'), 'Offline effort levels come from the probed model list');
+  await request(settingsPath, 'POST', { version: settings.version, field: 'effort', value: 'invented-effort' }, 409);
+  settings = await request<AgentChatSettings>(settingsPath, 'POST', { version: settings.version, field: 'effort', value: 'max' });
+  assert.equal(settings.effort, 'max');
   await request<Session>(path + '/start', 'POST', { mode: 'chat' });
   printArgs = (await launches('claude-print-launches.jsonl')).filter(args => args.includes('--session-id') || args.includes('--resume')).at(-1)!;
   assert.equal(printArgs[printArgs.indexOf('--permission-mode') + 1], 'dontAsk');
-  assert.equal((await request<AgentChatSettings>(settingsPath)).permission, 'dontAsk');
+  assert.equal(printArgs[printArgs.indexOf('--effort') + 1], 'max');
+  settings = await request<AgentChatSettings>(settingsPath);
+  assert.equal(settings.permission, 'dontAsk');
+  assert.equal(settings.effort, 'max', 'The live executor reports the effort it was launched with');
 
   // Forks inherit the contact settings.
   const fork = await request<Session>(path + '/fork', 'POST', { title: 'Fork keeps settings' }, 201);
-  assert.deepEqual(fork.nativeSettings, { permission: 'dontAsk', model: 'fixture-alternative' });
+  assert.deepEqual(fork.nativeSettings, { permission: 'dontAsk', model: 'fixture-alternative', effort: 'max' });
 });
 
 test('members get the rules once on join and greet; tasks carry a short header; the final answer flows back', { timeout: 60_000 }, async t => {

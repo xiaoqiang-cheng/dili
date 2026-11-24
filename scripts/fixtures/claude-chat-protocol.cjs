@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const fs = require('node:fs'), path = require('node:path'), readline = require('node:readline'), { randomUUID } = require('node:crypto');
 if (process.argv.includes('--version')) { console.log('fixture-stream'); process.exit(0); }
-if (process.argv.includes('--help')) { console.log('--add-dir --resume --fork-session --input-format --include-partial-messages\n  --allow-dangerously-skip-permissions  Enable bypassing all permission checks\n  --permission-mode <mode>              Permission mode to use for the session\n                                        (choices: "acceptEdits", "auto",\n                                        "bypassPermissions", "manual",\n                                        "dontAsk", "plan")\n  --print'); process.exit(0); }
+if (process.argv.includes('--help')) { console.log('--add-dir --resume --fork-session --input-format --include-partial-messages\n  --allow-dangerously-skip-permissions  Enable bypassing all permission checks\n  --effort <level>                      Effort level for the current session\n  --permission-mode <mode>              Permission mode to use for the session\n                                        (choices: "acceptEdits", "auto",\n                                        "bypassPermissions", "manual",\n                                        "dontAsk", "plan")\n  --print'); process.exit(0); }
 const root = process.env.SESSIONDECK_FIXTURE_DIR;
 if (!process.argv.includes('--print')) {
   fs.appendFileSync(path.join(root, 'claude-launches.jsonl'), JSON.stringify({ pid: process.pid, args: process.argv.slice(2) }) + '\n');
@@ -20,6 +20,8 @@ if (!process.argv.includes('--print')) {
   const event = payload => out({ type: 'stream_event', event: payload, parent_tool_use_id: null });
   let replyText = '第一段 **完成**', groupInterim = '', timer, messageId, active = false, pending, model = process.argv.includes('--model') ? arg('--model') : 'fixture-claude', mode = process.argv.includes('--permission-mode') ? arg('--permission-mode').replace(/^manual$/, 'default') : 'default';
   const bypassAllowed = process.argv.includes('--allow-dangerously-skip-permissions') || process.argv.includes('--dangerously-skip-permissions');
+  let effort = process.argv.includes('--effort') ? arg('--effort') : 'medium';
+  const levels = ['low', 'medium', 'high', 'unconfirmed'];
   function finish(error = false) {
     clearTimeout(timer);
     if (!active) return;
@@ -38,7 +40,11 @@ if (!process.argv.includes('--print')) {
     fs.appendFileSync(path.join(root, 'claude-calls.jsonl'), JSON.stringify(row) + '\n');
     if (row.type === 'control_request') {
       let response = {};
-      if (row.request.subtype === 'initialize') response = { current_permission_mode: mode, models: [{ value: 'fixture-claude', displayName: 'Claude Fixture' }, { value: 'fixture-alternative', displayName: 'Claude Alternative' }, { value: 'fixture-denied', displayName: 'Native denied' }, { value: 'fixture-no-ack', displayName: 'Missing confirmation' }] };
+      if (row.request.subtype === 'initialize') response = { current_permission_mode: mode, models: [{ value: 'default', displayName: 'Default', supportsEffort: true, supportedEffortLevels: levels }, { value: 'fixture-claude', displayName: 'Claude Fixture', supportsEffort: true, supportedEffortLevels: levels }, { value: 'fixture-alternative', displayName: 'Claude Alternative', supportsEffort: true, supportedEffortLevels: [...levels, 'max'] }, { value: 'fixture-denied', displayName: 'Native denied' }, { value: 'fixture-no-ack', displayName: 'Missing confirmation' }] };
+      // Mirrors the real CLI: the reply also carries user settings (here a fake secret) that Dili must not forward.
+      if (row.request.subtype === 'get_settings') response = { effective: { env: { ANTHROPIC_AUTH_TOKEN: 'fixture-secret-token' } }, applied: { model, effort } };
+      // Mirrors the real CLI: an empty success envelope that does not validate the level.
+      if (row.request.subtype === 'apply_flag_settings' && row.request.settings?.effortLevel !== 'unconfirmed') effort = row.request.settings?.effortLevel ?? effort;
       if (row.request.subtype === 'set_model') {
         if (row.request.model === 'fixture-denied') { out({ type: 'control_response', response: { subtype: 'error', request_id: row.request_id, error: 'Native policy denied model' } }); return; }
         model = row.request.model; response = model === 'fixture-no-ack' ? {} : { model };

@@ -5,6 +5,7 @@ export const AUTO_MODE_NOTE: Record<Backend, string> = {
   claude: 'Claude 原生 Auto 自动审核工具操作；部分操作仍可能需要你确认。',
   codex: 'Codex 自动审核审批请求，并使用工作目录可写沙箱。',
   dsh: 'DeepSeek Harness 0.2 没有原生 Auto 权限预设；请使用原生默认权限，或在原生设置中选择具体预设。',
+  pi: 'Pi 没有统一的 Auto 审批预设；工具权限由 Pi 原生工具策略决定。',
 };
 export function executionMode(value: unknown): ExecutionMode {
   if (value === undefined) return 'default';

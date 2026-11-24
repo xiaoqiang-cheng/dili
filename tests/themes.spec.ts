@@ -206,16 +206,10 @@ test('interface zoom slider applies 100–200%, persists and synchronizes withou
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('ZOOM_COPY_CHECK');
   await page.screenshot({ path: 'artifacts/interface-zoom-200.png' });
   await page.getByRole('button', { name: '打开终端', exact: true }).click();
-  const dock = page.getByRole('region', { name: '底部终端面板', exact: true });
+  const dock = page.getByRole('region', { name: '终端面板', exact: true });
   await expect(dock.locator('.terminal-connection.connected')).toHaveCount(1);
-  const resizer = dock.getByRole('separator', { name: '调整终端面板高度', exact: true });
-  const heightBefore = Number(await resizer.getAttribute('aria-valuenow'));
-  const drag = (await resizer.boundingBox())!;
-  await page.mouse.move(drag.x + drag.width / 2, drag.y + drag.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(drag.x + drag.width / 2, drag.y + drag.height / 2 + 40, { steps: 5 });
-  await page.mouse.up();
-  await expect(resizer).toHaveAttribute('aria-valuenow', String(heightBefore - 20));
+  // The terminal is a tab of the right panel; at 200% the panel fills the narrow window.
+  await expect(page.getByRole('complementary', { name: '统一预览面板' }).getByRole('tab', { name: '终端', exact: true })).toHaveAttribute('aria-selected', 'true');
   const shellInput = dock.locator('.xterm-helper-textarea');
   await shellInput.focus(); await page.keyboard.insertText('printf ZOOM_SHELL_OK'); await page.keyboard.press('Enter');
   await expect(dock.locator('.xterm-rows')).toContainText('ZOOM_SHELL_OK');

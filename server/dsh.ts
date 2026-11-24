@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { findExecutable, isLegacyDshId, validateNativeId } from './adapters.ts';
 import { resolveDataDir } from './data-dir.ts';
 import type { SessionStatus } from '../shared/types.js';
+import { effortChoices } from '../shared/effort.ts';
 import { OwnedProcess } from './owned-process.ts';
 import { sameDirectory } from './paths.ts';
 import { DeliveryNotAcceptedError } from './delivery.ts';
@@ -34,7 +35,13 @@ export interface DshChatSettings {
   permission: string | null;
   permissions: DshModelChoice[];
   permissionLabel?: string;
+  /** null means the model's default effort applies. */
+  effort: string | null;
+  efforts: DshModelChoice[];
+  defaultEffort?: string;
 }
+type DshReasoning = { efforts?: { id?: string; name?: string; description?: string }[]; defaultEffort?: string };
+type DshRoute = { provider: string; model: string; efforts: DshModelChoice[]; defaultEffort?: string };
 export interface DshPendingQuestion { callId: string; questions: unknown[]; state?: 'open' | 'continued' }
 export interface DshPendingApproval { id: string; toolName?: string; reason?: string }
 interface TurnBoundary { type: 'turn/start' | 'turn/end'; seq: number; reason?: string }
@@ -127,11 +134,11 @@ export class DshBridge {
   private eventClientId = '';
   /** Model catalog choice ids are opaque here; keep the provider/model route
    * beside them so a UI string can never be mistaken for a native route. */
-  private modelChoices = new Map<string, Map<string, { provider: string; model: string }>>();
+  private modelChoices = new Map<string, Map<string, DshRoute>>();
   /** The Session projection may lag one event behind a just-accepted native
    * model/permission write; keep the confirmed value briefly so the settings
    * response does not bounce back to the old choice. */
-  private recentSettings = new Map<string, { model?: string; permission?: string; at: number }>();
+  private recentSettings = new Map<string, { model?: string; permission?: string; effort?: string | null; at: number }>();
   onStatusChange(listener: () => void) { this.statusListeners.add(listener); return () => { this.statusListeners.delete(listener); }; }
   /** Live session events are for adapters only; they never replace read-only history. */
   onSessionEvent(listener: (id: string, event: unknown) => void) { this.eventListeners.add(listener); return () => { this.eventListeners.delete(listener); }; }
@@ -668,19 +675,22 @@ export class DshBridge {
     validateNativeId('dsh', id);
     await this.start();
     const [catalog, presets, projections] = await Promise.all([
-      this.rpc<{ default?: { provider?: string; model?: string }; groups?: { id?: string; name?: string; models?: { id?: string; name?: string; description?: string }[] }[] }>('session.modelCatalog', {}, {}),
+      this.rpc<{ default?: { provider?: string; model?: string; reasoningEffort?: string }; groups?: { id?: string; name?: string; models?: { id?: string; name?: string; description?: string; reasoning?: DshReasoning }[] }[] }>('session.modelCatalog', {}, {}),
       this.rpc<{ options?: { value?: string; name?: string; description?: string }[] }>('permissionPresets/catalog', {}, {}),
       this.rpc<{ values?: Record<string, unknown> } | null>('session.projections', { sessionId: id }),
     ]);
     const values = projections?.values ?? {};
-    const modelState = values.modelSelection as { lastUsed?: { provider?: string; model?: string } | null; pending?: { provider?: string; model?: string } | null } | undefined;
+    type Selection = { provider?: string; model?: string; reasoningEffort?: string } | null;
+    const modelState = values.modelSelection as { lastUsed?: Selection; pending?: Selection } | undefined;
     const selected = modelState?.pending ?? modelState?.lastUsed ?? catalog.default;
-    const choices = new Map<string, { provider: string; model: string; label: string; description?: string }>();
+    const choices = new Map<string, DshRoute & { label: string; description?: string }>();
     for (const group of catalog.groups ?? []) {
       for (const model of group.models ?? []) {
         if (!group.id || !model.id) continue;
         const key = `${group.id}/${model.id}`;
-        choices.set(key, { provider: group.id, model: model.id, label: model.name || model.id, ...(model.description ? { description: model.description } : {}) });
+        const efforts = effortChoices((model.reasoning?.efforts ?? []).flatMap(effort => typeof effort?.id === 'string' ? [{ id: effort.id, name: effort.name, description: effort.description }] : []));
+        const defaultEffort = typeof model.reasoning?.defaultEffort === 'string' ? model.reasoning.defaultEffort : undefined;
+        choices.set(key, { provider: group.id, model: model.id, label: model.name || model.id, efforts, ...(defaultEffort ? { defaultEffort } : {}), ...(model.description ? { description: model.description } : {}) });
       }
     }
     const recent = this.recentSettings.get(id);
@@ -690,9 +700,12 @@ export class DshBridge {
       const split = currentModel.indexOf('/');
       const provider = selected?.provider ?? (split > 0 ? currentModel.slice(0, split) : '');
       const model = selected?.model ?? (split > 0 ? currentModel.slice(split + 1) : '');
-      if (provider && model) choices.set(currentModel, { provider, model, label: `${model}（原生当前值）` });
+      if (provider && model) choices.set(currentModel, { provider, model, label: `${model}（原生当前值）`, efforts: [] });
     }
-    this.modelChoices.set(id, new Map([...choices].map(([key, value]) => [key, { provider: value.provider, model: value.model }])));
+    this.modelChoices.set(id, new Map([...choices].map(([key, value]) => [key, { provider: value.provider, model: value.model, efforts: value.efforts, ...(value.defaultEffort ? { defaultEffort: value.defaultEffort } : {}) }])));
+    // An absent effort is the model's default; the selection never inherits another model's effort.
+    const route = currentModel ? choices.get(currentModel) : undefined;
+    const currentEffort = fresh && fresh.effort !== undefined ? fresh.effort : typeof selected?.reasoningEffort === 'string' && selected.reasoningEffort ? selected.reasoningEffort : null;
     const options = (presets.options ?? []).flatMap(option => typeof option.value === 'string' && option.value ? [{ id: option.value, label: option.name || option.value, ...(option.description ? { description: option.description } : {}) }] : []);
     const projectedPermission = typeof (values.permissions as { currentValue?: unknown } | undefined)?.currentValue === 'string' ? (values.permissions as { currentValue: string }).currentValue : null;
     const currentPermission = fresh?.permission ?? projectedPermission;
@@ -702,21 +715,33 @@ export class DshBridge {
       permission: currentPermission,
       permissions: options,
       ...(currentPermission && !options.some(option => option.id === currentPermission) ? { permissionLabel: `自定义原生权限组合（${currentPermission}）` } : {}),
+      effort: currentEffort,
+      efforts: route?.efforts ?? [],
+      ...(route?.defaultEffort ? { defaultEffort: route.defaultEffort } : {}),
     };
   }
 
   /** Apply a model or permission choice through the native Session API. The
    * caller must re-read settings; a command that was admitted is not proof
    * that the projection changed. */
-  async updateChatSettings(id: string, field: 'model' | 'permission', value: string): Promise<void> {
+  async updateChatSettings(id: string, field: 'model' | 'permission' | 'effort', value: string): Promise<void> {
     validateNativeId('dsh', id);
     await this.start();
     const before = await this.readChatSettings(id);
-    if (field === 'model') {
-      const route = this.modelChoices.get(id)?.get(value);
-      if (!route || !before.models.some(choice => choice.id === value)) throw new Error('这个模型不在原生当前目录中，请刷新设置');
-      await this.rpc('session.selectModel', { sessionId: id, provider: route.provider, model: route.model });
-      this.recentSettings.set(id, { ...this.recentSettings.get(id), model: value, at: Date.now() });
+    if (field === 'model' || field === 'effort') {
+      const key = field === 'model' ? value : before.model;
+      const route = key ? this.modelChoices.get(id)?.get(key) : undefined;
+      if (field === 'model' && (!route || !before.models.some(choice => choice.id === value))) throw new Error('这个模型不在原生当前目录中，请刷新设置');
+      if (!route) throw new Error('当前模型不在原生目录中，无法设置推理强度，请刷新设置');
+      if (field === 'effort' && !route.efforts.some(choice => choice.id === value)) throw new Error('这个推理强度不在当前模型的原生选项中，请刷新设置');
+      // selectModel replaces the whole selection, and an absent effort resets to the model default.
+      // A model switch keeps the current effort only when the new model offers it.
+      const effort = field === 'effort' ? value : before.effort && route.efforts.some(choice => choice.id === before.effort) ? before.effort : undefined;
+      const result = await this.rpc<{ selected?: { provider?: string; model?: string; reasoningEffort?: string } } | null>('session.selectModel', { sessionId: id, provider: route.provider, model: route.model, ...(effort ? { reasoningEffort: effort } : {}) });
+      const selected = result?.selected;
+      if (field === 'effort' && (selected?.provider !== route.provider || selected?.model !== route.model || selected?.reasoningEffort !== value)) throw new Error('原生未确认目标推理强度，请刷新检查实际设置');
+      const confirmedEffort = selected && (selected.provider === route.provider && selected.model === route.model) ? selected.reasoningEffort || null : undefined;
+      this.recentSettings.set(id, { ...this.recentSettings.get(id), model: `${route.provider}/${route.model}`, ...(confirmedEffort !== undefined ? { effort: confirmedEffort } : {}), at: Date.now() });
       return;
     }
     if (!before.permissions.some(choice => choice.id === value)) throw new Error('这个权限预设不在原生当前目录中，请刷新设置');

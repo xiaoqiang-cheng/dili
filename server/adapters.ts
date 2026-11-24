@@ -9,13 +9,14 @@ import { DatabaseSync } from 'node:sqlite';
 import { zstdDecompressSync } from 'node:zlib';
 import type { Backend, BackendInfo, DiscoveredSession, NativeSettings, Session } from '../shared/types.js';
 import { parseClaudePermissionModes } from '../shared/permissions.ts';
+import { PI_SESSION_FILE } from './pi-session.ts';
 
 const run = promisify(execFile);
-const BACKENDS: Backend[] = ['claude', 'codex', 'dsh'];
-const LABELS: Record<Backend, string> = { claude: 'Claude Code', codex: 'Codex', dsh: 'DeepSeek Harness' };
+const BACKENDS: Backend[] = ['claude', 'codex', 'dsh', 'pi'];
+const LABELS: Record<Backend, string> = { claude: 'Claude Code', codex: 'Codex', dsh: 'DeepSeek Harness', pi: 'Pi' };
 const UUID = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i;
 type Candidate = DiscoveredSession & { createdAt?: string };
-export interface DiscoveryPaths { claudeHome?: string; codexHome?: string; dshHome?: string }
+export interface DiscoveryPaths { claudeHome?: string; codexHome?: string; dshHome?: string; piHome?: string }
 const DISCOVERY_LIMIT = 250;
 const DISCOVERY_SCAN_ENTRIES = 20_000;
 const DISCOVERY_SCAN_DIRECTORIES = 2000;
@@ -71,7 +72,7 @@ export async function getBackendInfo(): Promise<BackendInfo[]> {
     try { version = (await run(file, ['--version'], { timeout: 5000, maxBuffer: 4096 })).stdout.trim().slice(0, 120); } catch { /* launch will report details */ }
     let help = '';
     try { help = (await run(file, ['--help'], { timeout: 5000, maxBuffer: 40_000 })).stdout; } catch { /* conservative capability detection */ }
-    let nativeControl = id === 'claude' && help.includes('--include-partial-messages') && help.includes('--input-format');
+    let nativeControl = id === 'claude' ? help.includes('--include-partial-messages') && help.includes('--input-format') : id === 'pi' ? help.includes('--mode') && /\brpc\b/.test(help) && help.includes('--session-id') : false;
     if (id === 'codex' && help.includes('--remote-auth-token-env')) {
       try {
         const serverHelp = (await run(file, ['app-server', '--help'], { timeout: 5000, maxBuffer: 40_000 })).stdout;
@@ -84,8 +85,8 @@ export async function getBackendInfo(): Promise<BackendInfo[]> {
     const tui = id === 'dsh' ? await findDshTui() : null;
     return {
       id, label: LABELS[id], installed: true, version,
-      capabilities: { additionalDirectories: id !== 'dsh' && help.includes('--add-dir'), ...(id === 'claude' ? { permissionModes: parseClaudePermissionModes(help), bypassOption: help.includes('--allow-dangerously-skip-permissions') } : {}), terminal: id !== 'dsh' || !!tui, resume: id === 'dsh' || /\bresume\b/.test(help), fork: id === 'dsh' || (id === 'claude' ? help.includes('--fork-session') : /\bfork\b/.test(help)), discovery: true, nativeControl, graphicalChat: id === 'dsh' ? dshChatCapable(version) : nativeControl, autoMode: id === 'claude' ? help.includes('--permission-mode') && /["']auto["']/.test(help) : id === 'codex' ? help.includes('--approve-for-me') : false },
-      note: id === 'dsh' ? (dshChatCapable(version) ? (tui ? '图形对话复用原生 session API；dsh-tui 仍可打开原生终端' : '图形对话复用原生 Web session API；安装 @deepseek-harness-tui/dsh-tui 可获得原生终端') : '原生 Web／终端界面；升级到 dsh 0.2 可启用图形对话') : id === 'codex' ? (nativeControl ? '原生 app-server 提供图形对话、流式回复、审批和精确会话；可切换原生终端' : '兼容终端模式：原生 ID 在完成一轮后确认；更新 Codex 可启用图形对话') : nativeControl ? '图形模式复用 Claude stream-json：流式正文、工具、审批与提问；与 TUI 通过已保存会话交接' : '兼容终端模式与对话记录；更新 Claude 可启用结构化图形对话',
+      capabilities: { additionalDirectories: id !== 'dsh' && id !== 'pi' && help.includes('--add-dir'), ...(id === 'claude' ? { permissionModes: parseClaudePermissionModes(help), bypassOption: help.includes('--allow-dangerously-skip-permissions'), effortOption: help.includes('--effort') } : {}), terminal: id !== 'dsh' || !!tui, resume: id === 'dsh' || /\bresume\b/.test(help), fork: id === 'dsh' ? true : id === 'pi' ? help.includes('--fork') : id === 'claude' ? help.includes('--fork-session') : /\bfork\b/.test(help), discovery: true, nativeControl, graphicalChat: id === 'dsh' ? dshChatCapable(version) : nativeControl, autoMode: id === 'claude' ? help.includes('--permission-mode') && /["']auto["']/.test(help) : id === 'codex' ? help.includes('--approve-for-me') : false },
+      note: id === 'pi' ? (nativeControl ? 'RPC 图形对话复用 Pi 原生会话；可切换原生终端，两者通过已保存会话交接' : '兼容终端模式；更新 Pi 到支持 --mode rpc 的版本可启用图形对话') : id === 'dsh' ? (dshChatCapable(version) ? (tui ? '图形对话复用原生 session API；dsh-tui 仍可打开原生终端' : '图形对话复用原生 Web session API；安装 @deepseek-harness-tui/dsh-tui 可获得原生终端') : '原生 Web／终端界面；升级到 dsh 0.2 可启用图形对话') : id === 'codex' ? (nativeControl ? '原生 app-server 提供图形对话、流式回复、审批和精确会话；可切换原生终端' : '兼容终端模式：原生 ID 在完成一轮后确认；更新 Codex 可启用图形对话') : nativeControl ? '图形模式复用 Claude stream-json：流式正文、工具、审批与提问；与 TUI 通过已保存会话交接' : '兼容终端模式与对话记录；更新 Claude 可启用结构化图形对话',
     };
   }));
 }
@@ -94,6 +95,14 @@ export async function getBackendInfo(): Promise<BackendInfo[]> {
 export async function buildLaunch(session: Session, _dataDir?: string, capabilities?: BackendInfo['capabilities']): Promise<{ file: string; args: string[]; nativeSessionId?: string; env?: Record<string, string> }> {
   const source = session.nativeSessionId ? validateNativeId(session.backend, session.nativeSessionId) : null;
   if (session.forkPending && !source) throw new Error('原会话尚未获得原生 ID，无法 Fork');
+  if (session.backend === 'pi') {
+    const file = await findExecutable('pi');
+    if (!file) throw new Error('未找到 Pi，请安装 @earendil-works/pi-coding-agent 并加入 PATH');
+    if (source && !session.forkPending) return { file, args: ['--session-id', source], nativeSessionId: source };
+    const nativeSessionId = randomUUID();
+    const args = source ? ['--fork', source, '--session-id', nativeSessionId, '--name', session.title] : ['--session-id', nativeSessionId, '--name', session.title];
+    return { file, args, nativeSessionId };
+  }
   if (session.backend === 'dsh') {
     const tui = await findDshTui();
     if (!tui) throw new Error('未找到 dsh-tui，请安装 @deepseek-harness-tui/dsh-tui 或使用原生 Web 界面');
@@ -166,24 +175,25 @@ async function mapLimited<T, R>(items: T[], parallelism: number, fn: (item: T) =
 
 /** File metadata is cheap; read actual JSON only after selecting the most
  * recently modified logs, with extra candidates to tolerate damaged files. */
-async function newestLogs(root: string, kind: 'claude' | 'codex', scan: ScanBudget): Promise<LogFile[]> {
+async function newestLogs(root: string, kind: 'claude' | 'codex' | 'pi', scan: ScanBudget): Promise<LogFile[]> {
   const files: LogFile[] = [];
   const pending = [{ path: root, depth: 0 }];
   while (pending.length && withinBudget(scan)) {
     const directory = pending.shift()!;
     const found = await entries(directory.path, scan);
-    const logs = found.filter(entry => entry.isFile() && entry.name.endsWith('.jsonl') && (kind === 'codex' || UUID.test(entry.name.slice(0, -6))));
+    const logs = found.filter(entry => entry.isFile() && entry.name.endsWith('.jsonl') && (kind === 'codex' || (kind === 'pi' ? PI_SESSION_FILE.test(entry.name) : UUID.test(entry.name.slice(0, -6)))));
     const metadata = await mapLimited(logs, 16, async entry => {
       if (Date.now() >= scan.deadline) return null;
       const path = join(directory.path, entry.name);
       try {
         const info = await stat(path);
-        return info.isFile() ? { path, id: kind === 'claude' ? entry.name.slice(0, -6) : undefined, modified: info.mtimeMs, created: info.birthtimeMs } : null;
+        const piId = kind === 'pi' ? entry.name.match(PI_SESSION_FILE)?.[1] : undefined;
+        return info.isFile() ? { path, id: kind === 'pi' ? piId : kind === 'claude' ? entry.name.slice(0, -6) : undefined, modified: info.mtimeMs, created: info.birthtimeMs } : null;
       } catch { return null; }
     });
     files.push(...metadata.filter((item): item is NonNullable<typeof item> => item !== null));
     if (files.length > DISCOVERY_CANDIDATES * 2) { files.sort((a, b) => b.modified - a.modified); files.length = DISCOVERY_CANDIDATES; }
-    const maxDepth = kind === 'claude' ? 1 : 4;
+    const maxDepth = kind === 'claude' ? 1 : kind === 'pi' ? 2 : 4;
     if (directory.depth < maxDepth) {
       // Codex's YYYY/MM/DD folders are visited newest first when a very large
       // archive reaches the scan budget. Symlink directories are never followed.
@@ -272,6 +282,27 @@ async function claudeSessions(home: string): Promise<Candidate[]> {
       // is eligible for the import list, never conversation text as a fallback.
     }
     return cwd ? { backend: 'claude', nativeSessionId: file.id!, title: label(title, 'Claude Code 会话'), cwd, lastActivity: iso(file.modified), createdAt } : null;
+  });
+}
+
+/** Pi keeps versioned JSONL sessions under `sessions/--<cwd>--/`. A session
+ * file is the authoritative identity; its first line is the header and the
+ * latest session_info is the native display name. */
+async function piSessions(home: string): Promise<Candidate[]> {
+  const scan = budget();
+  const files = await newestLogs(process.env.PI_CODING_AGENT_SESSION_DIR ?? join(home, 'sessions'), 'pi', scan);
+  return parseNewest(files, scan, async file => {
+    const chunks = await readLogEdges(file.path, 65536, true);
+    let header: Record<string, unknown> | undefined;
+    let name = '';
+    for (const line of chunks.join('\n').split('\n')) {
+      let row: Record<string, unknown>;
+      try { row = JSON.parse(line); } catch { continue; }
+      if (!header && row?.type === 'session') header = row;
+      if (row?.type === 'session_info' && typeof row.name === 'string') name = row.name;
+    }
+    if (!header || header.type !== 'session' || typeof header.id !== 'string' || header.id !== file.id || !Number.isInteger(header.version) || !validCwd(header.cwd)) return null;
+    return { backend: 'pi', nativeSessionId: header.id, title: label(name, 'Pi 会话'), cwd: String(header.cwd), createdAt: iso(header.timestamp, file.created), lastActivity: iso(file.modified) };
   });
 }
 
@@ -418,14 +449,14 @@ function discoverOnce(id: Backend, home: string): Promise<Candidate[]> {
   const key = `${id}:${resolve(home)}`;
   const existing = discoveries.get(key);
   if (existing) return existing;
-  const pending = (id === 'codex' ? codexSessions(home) : id === 'claude' ? claudeSessions(home) : dshSessions(home))
+  const pending = (id === 'codex' ? codexSessions(home) : id === 'claude' ? claudeSessions(home) : id === 'pi' ? piSessions(home) : dshSessions(home))
     .finally(() => { if (discoveries.get(key) === pending) discoveries.delete(key); });
   discoveries.set(key, pending);
   return pending;
 }
 
 async function candidates(backend?: Backend, paths: DiscoveryPaths = {}): Promise<Candidate[]> {
-  const jobs = (backend ? [backend] : BACKENDS).map(id => discoverOnce(id, id === 'codex' ? paths.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex') : id === 'claude' ? paths.claudeHome ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude') : paths.dshHome ?? process.env.DSH_HOME ?? join(homedir(), '.dsh')));
+  const jobs = (backend ? [backend] : BACKENDS).map(id => discoverOnce(id, id === 'codex' ? paths.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex') : id === 'claude' ? paths.claudeHome ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude') : id === 'pi' ? paths.piHome ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), '.pi', 'agent') : paths.dshHome ?? process.env.DSH_HOME ?? join(homedir(), '.dsh')));
   const results = await Promise.allSettled(jobs);
   return results.flatMap(r => r.status === 'fulfilled' ? r.value : []).sort((a, b) => b.lastActivity.localeCompare(a.lastActivity));
 }
@@ -447,15 +478,17 @@ export async function resolveNativeSessionId(session: Session, startedAt: string
  * itself), so both the Dili settings and the TUI's Shift+Tab can reach it live. */
 export function effectiveClaudeSettings(session: Pick<Session, 'nativeSettings' | 'executionMode'>): NativeSettings {
   const permission = session.nativeSettings?.permission ?? (session.executionMode === 'auto' ? 'auto' : undefined);
-  const model = session.nativeSettings?.model;
-  return { ...(model ? { model } : {}), ...(permission ? { permission } : {}) };
+  const model = session.nativeSettings?.model, effort = session.nativeSettings?.effort;
+  return { ...(model ? { model } : {}), ...(permission ? { permission } : {}), ...(effort ? { effort } : {}) };
 }
 function claudeSettingsArgs(session: Session, capabilities?: BackendInfo['capabilities']): string[] {
-  const { model, permission } = effectiveClaudeSettings(session);
+  const { model, permission, effort } = effectiveClaudeSettings(session);
   return [
     ...(permission ? ['--permission-mode', permission] : []),
     // `default` is the native alias for "whatever Claude would pick"; omit it.
     ...(model && model !== 'default' ? ['--model', model] : []),
+    // An older CLI without --effort would refuse to start; the settings view reports why effort is unavailable.
+    ...(effort && capabilities?.effortOption ? ['--effort', effort] : []),
     ...(capabilities?.bypassOption || permission === 'bypassPermissions' ? ['--allow-dangerously-skip-permissions'] : []),
   ];
 }

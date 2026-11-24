@@ -74,3 +74,10 @@
 .workspace-directory-controls { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; }
 .workspace-directory-controls select { min-width: 0; flex: 1; width: 0; height: 28px; border: 0; background: transparent; color: var(--text); text-overflow: ellipsis; }
 .workspace-directory-controls .icon-button { flex: 0 0 28px; }
+
+/* The shell terminal as a tab: fills the panel, no bottom-dock chrome. */
+.preview-workspace .terminal-dock.embedded { container: shelltab / inline-size; flex: 1; height: auto; min-height: 0; border-top: 0; box-shadow: none; z-index: auto; }
+.preview-workspace .terminal-dock.embedded .terminal-dock-header { height: 34px; padding: 0 6px; }
+.preview-workspace .terminal-dock.embedded .terminal-dock-body { padding: 6px; gap: 6px; }
+/* A narrow panel stacks the split instead of squeezing two terminals side by side. */
+@container shelltab (max-width: 560px) { .preview-workspace .terminal-dock.embedded.split .terminal-dock-body { flex-direction: column; } .preview-workspace .terminal-dock.embedded.split .terminal-dock-pane + .terminal-dock-pane { border-left: 0; border-top: 1px solid var(--line-strong); } }

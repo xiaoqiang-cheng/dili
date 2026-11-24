@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'smol-toml';
+import { parse as parseYaml } from 'yaml';
 import { AgentSetup, codexApiLogin } from './agent-setup.ts';
 import { StartupService, unitQuote } from './startup.ts';
 import { authorize } from './access.ts';
@@ -65,7 +66,72 @@ test('malformed configs, symlinks, insecure URLs and control characters fail wit
     for (const input of [{ baseUrl: 'http://api.example' }, { baseUrl: 'https://user:secret@api.example' }, { baseUrl: 'https://api.example?key=secret' }, { apiKey: 'line\nbreak' }, { model: 'x\u0000y' }]) await assert.rejects(f.setup.save('claude', input));
     await mkdir(join(f.home, '.claude')); await symlink(path, join(f.home, '.claude/settings.json'));
     await assert.rejects(f.setup.save('claude', { model: 'x' })); assert.equal(await readFile(path, 'utf8'), invalid);
-    await assert.rejects(f.setup.save('dsh', { apiKey: 'x' }), /原生 Web/);
+    await assert.rejects(f.setup.save('dsh', { apiKey: 'x', baseUrl: 'https://api.example/v1' }), /同时填写/);
+    await assert.rejects(f.setup.save('pi', { model: 'only-model' }), /同时填写/);
+    await assert.rejects(f.setup.save('pi', { apiKey: 'only-key' }), /同时填写/);
+    const dshPatch = join(f.home, '.dsh/profiles/web/cordis.patch.yml'); await mkdir(join(f.home, '.dsh/profiles/web'), { recursive: true }); await writeFile(dshPatch, 'not: [a patch list');
+    await assert.rejects(f.setup.save('dsh', { apiKey: 'must-not-land', baseUrl: 'https://api.example/v1', model: 'm' }), /格式/);
+    assert.equal(await readFile(dshPatch, 'utf8'), 'not: [a patch list'); await assert.rejects(readFile(join(f.home, '.dsh/.credentials.yaml')), /ENOENT/);
+    const piModels = join(f.home, '.pi/agent/models.json'); await mkdir(join(f.home, '.pi/agent'), { recursive: true }); await writeFile(piModels, '{"providers":[]}');
+    await assert.rejects(f.setup.save('pi', { apiKey: 'must-not-land', baseUrl: 'https://api.example/v1', model: 'm' }), /providers/);
+    await assert.rejects(readFile(join(f.home, '.pi/agent/auth.json')), /ENOENT/);
+  } finally { await f.clean(); }
+});
+
+
+test('DSH settings write the managed OpenAI-compatible provider and credential ref without exposing the key', async () => {
+  const f = await fixture();
+  try {
+    const profile = join(f.home, '.dsh/profiles/web'); await mkdir(profile, { recursive: true });
+    const patch = join(profile, 'cordis.patch.yml');
+    const credentials = join(f.home, '.dsh/.credentials.yaml');
+    await writeFile(patch, `# native patch\n- id: llm-pi-ai\n  name: "@deepseek-ai/dsh-llm-pi-ai"\n  config:\n    providers:\n      native:\n        displayName: Native\n        baseURL: https://native.example/v1\n- id: agent-default-model\n  name: "@deepseek-ai/dsh-agent-default-model"\n  config:\n    provider: native\n    model: native-model\n`);
+    await writeFile(credentials, 'version: 1\nrefs:\n  OTHER_API_KEY: keep-me\nrecords:\n  llm-pi-ai/native:\n    kind: api-key\n');
+    const result = await f.setup.save('dsh', { apiKey: 'dsh-private-key', baseUrl: 'https://api.example/v1', model: 'new-model' });
+    const entries = parseYaml(await readFile(patch, 'utf8')) as Array<Record<string, any>>;
+    const llm = entries.find(entry => entry.id === 'llm-pi-ai');
+    assert.deepEqual(llm?.config.providers.native, { displayName: 'Native', baseURL: 'https://native.example/v1' });
+    assert.deepEqual(llm?.config.providers.dili, { displayName: 'Dili custom API', apiKeyEnv: 'DILI_API_KEY', api: 'openai-completions', baseURL: 'https://api.example/v1', models: [{ id: 'new-model', name: 'new-model' }] });
+    assert.deepEqual(entries.find(entry => entry.id === 'agent-default-model')?.config, { provider: 'dili', model: 'new-model' });
+    const stored = parseYaml(await readFile(credentials, 'utf8')) as Record<string, any>;
+    assert.equal(stored.refs.OTHER_API_KEY, 'keep-me'); assert.equal(stored.refs.DILI_API_KEY, 'dsh-private-key');
+    assert.deepEqual(stored.records['llm-pi-ai/native'], { kind: 'api-key' });
+    assert.equal((await stat(patch)).mode & 0o777, 0o600); assert.equal((await stat(credentials)).mode & 0o777, 0o600);
+    assert.doesNotMatch(JSON.stringify(result), /dsh-private-key/); assert.equal(result.agent.configPath, patch);
+    assert.equal(result.agent.credentialPath, credentials); assert.equal(result.agent.baseUrl, 'https://api.example/v1');
+    assert.equal(result.agent.model, 'new-model'); assert.equal(result.agent.credentialPresent, true);
+    await f.setup.save('dsh', { apiKey: '', baseUrl: '', model: '' });
+    const reset = parseYaml(await readFile(patch, 'utf8')) as Array<Record<string, any>>;
+    assert.equal(reset.find(entry => entry.id === 'llm-pi-ai')?.config.providers.dili, undefined);
+    assert.equal(reset.find(entry => entry.id === 'agent-default-model'), undefined);
+    assert.equal((parseYaml(await readFile(credentials, 'utf8')) as Record<string, any>).refs.DILI_API_KEY, 'dsh-private-key');
+    assert.equal((await f.setup.info('dsh')).baseUrl, '');
+  } finally { await f.clean(); }
+});
+
+test('Pi settings write a managed provider to models.json and its key to auth.json while preserving native providers', async () => {
+  const f = await fixture();
+  try {
+    const dir = join(f.home, '.pi/agent'); await mkdir(dir, { recursive: true });
+    const models = join(dir, 'models.json'), auth = join(dir, 'auth.json');
+    await writeFile(models, JSON.stringify({ $schema: 'https://pi.dev/schemas/models.schema.json', providers: { native: { baseUrl: 'https://native.example/v1', api: 'openai-completions', models: [{ id: 'native-model' }] } } }, null, 2));
+    await writeFile(auth, JSON.stringify({ native: { type: 'api_key', key: 'native-private-key' } }, null, 2));
+    const result = await f.setup.save('pi', { apiKey: 'pi-private-key', baseUrl: 'https://api.example/v1', model: 'new-model' });
+    const config = JSON.parse(await readFile(models, 'utf8'));
+    assert.deepEqual(config.providers.native, { baseUrl: 'https://native.example/v1', api: 'openai-completions', models: [{ id: 'native-model' }] });
+    assert.deepEqual(config.providers.dili, { name: 'Dili custom API', baseUrl: 'https://api.example/v1', api: 'openai-completions', models: [{ id: 'new-model', name: 'new-model' }] });
+    const stored = JSON.parse(await readFile(auth, 'utf8'));
+    assert.deepEqual(stored.native, { type: 'api_key', key: 'native-private-key' }); assert.deepEqual(stored.dili, { type: 'api_key', key: 'pi-private-key' });
+    assert.equal((await stat(models)).mode & 0o777, 0o600); assert.equal((await stat(auth)).mode & 0o777, 0o600);
+    assert.doesNotMatch(JSON.stringify(result), /pi-private-key|native-private-key/);
+    assert.equal(result.agent.credentialPath, auth); assert.equal(result.agent.baseUrl, 'https://api.example/v1'); assert.equal(result.agent.model, 'new-model');
+    await f.setup.save('pi', { apiKey: 'pi-second-key' });
+    assert.equal(JSON.parse(await readFile(auth, 'utf8')).dili.key, 'pi-second-key');
+    assert.equal(JSON.parse(await readFile(models, 'utf8')).providers.dili.baseUrl, 'https://api.example/v1');
+    await f.setup.save('pi', { apiKey: '', baseUrl: '', model: '' });
+    assert.equal(JSON.parse(await readFile(models, 'utf8')).providers.dili, undefined);
+    assert.deepEqual(JSON.parse(await readFile(auth, 'utf8')).dili, { type: 'api_key', key: 'pi-second-key' });
+    assert.equal((await f.setup.info('pi')).baseUrl, '');
   } finally { await f.clean(); }
 });
 

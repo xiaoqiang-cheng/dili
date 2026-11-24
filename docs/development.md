@@ -98,6 +98,7 @@ SESSIONDECK_CLIENT_DIR="$dili_demo_root/client" npm run dev
 | `SESSIONDECK_CODEX_PORT` | `4319`，按需启动的 Codex app-server；`0` 自动选择空闲端口 |
 | `SESSIONDECK_CLAUDE_BIN` / `SESSIONDECK_CODEX_BIN` / `SESSIONDECK_DSH_BIN` | 可选原生程序绝对路径，未设置则从 `PATH` 查找 |
 | `SESSIONDECK_IDLE_SLEEP_MINUTES` | 未设置或 `0` 时关闭；开启后，连续空闲达到该分钟数的已启动会话会被停止（原生历史保留，可重新启动）。等待输入、等待审批、异常和 Fork 中的会话永不休眠 |
+| `SESSIONDECK_EDITOR_COMMAND` | 可选，替代资源管理器「在 VS Code 中打开当前工作区」默认查找的 `code`／`code-insiders`；填命令名或可执行文件绝对路径 |
 
 Codex app-server 只监听本机并使用随机访问令牌。令牌文件仅当前用户可读，正常关闭后删除；令牌不会发送给网页或出现在命令参数中。
 

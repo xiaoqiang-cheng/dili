@@ -1,12 +1,13 @@
 import GroupMemberRequests from './GroupMemberRequests';
+import GroupCostPanel from './GroupCostPanel';
 import type { ChatAttachment } from '../shared/attachments';
 import ImageAttachments from './ImageAttachments';
 import VoiceInput, { appendVoiceText } from './VoiceInput';
 import GroupImages from './GroupImages';
 import { lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Maximize2, Minimize2, FolderGit2, FolderOpen, FolderPlus, GitMerge, RotateCcw, Trash2, ArrowLeft, ArrowRight, AtSign, Check, ChevronDown, ChevronUp, Columns3, LoaderCircle, MessageSquare, Plus, Quote, Send, Settings2, Share2, UserMinus, UsersRound, X } from 'lucide-react';
+import { Eye, Hash, Pin, UserPlus, Maximize2, Minimize2, FolderGit2, FolderOpen, FolderPlus, GitMerge, RotateCcw, Trash2, ArrowLeft, ArrowRight, AtSign, Check, ChevronDown, ChevronUp, Columns3, LoaderCircle, MessageSquare, Plus, Quote, Send, Settings2, Share2, UserMinus, UsersRound, X } from 'lucide-react';
 import type { AgentChatSnapshot } from '../shared/chat';
-import type { Delivery, Group, GroupDetail, GroupMessage, Session, WorktreeStatus } from '../shared/types';
+import type { Delivery, Group, GroupDetail, GroupMessage, Session, TopicProposal, WorktreeStatus } from '../shared/types';
 import { api } from './api';
 import { BackendAvatar, StatusBadge } from './App';
 import { relativeTime } from './format';
@@ -17,6 +18,8 @@ import TerminalPane from './TerminalPane';
 import { useCompactLayout } from './useCompactLayout';
 import './group-chat.css';
 import { useInputHistory } from './input-history';
+import { continuesPrevious } from './topics';
+import { t } from '../shared/i18n';
 
 const AgentChatPane = lazy(() => import('./AgentChatPane'));
 
@@ -118,6 +121,20 @@ function MemberPlacement({ member, workspace, busy, onChanged, onError }: { memb
   </div>;
 }
 
+/** 嘀哩's proposal to add a participant: only the user can approve it. */
+function TopicProposalCard({ proposal, decide, busy }: { proposal: TopicProposal; decide: (approve: boolean) => Promise<void>; busy: boolean }) {
+  const [working, setWorking] = useState(false);
+  const act = async (approve: boolean) => { setWorking(true); try { await decide(approve); } finally { setWorking(false); } };
+  const target = proposal.fork ? t('coordinator.forkTarget', { name: proposal.fork.title }) : t('coordinator.createTarget', { name: proposal.create!.title, backend: proposal.create!.backend });
+  return <div className={`topic-proposal ${proposal.status}`}>
+    <div><strong>{target}</strong><small>{proposal.id}{proposal.create ? ` · ${proposal.create.cwd}` : ''}</small></div>
+    {proposal.status === 'pending' ? <span className="topic-proposal-actions">
+      <button type="button" className="button primary small-button" disabled={busy || working} onClick={() => void act(true)}>{working ? <LoaderCircle size={13} className="spin" /> : <Check size={13} />}{t('coordinator.approve')}</button>
+      <button type="button" className="button secondary small-button" disabled={busy || working} onClick={() => void act(false)}><X size={13} />{t('coordinator.reject')}</button>
+    </span> : <span className="topic-proposal-state">{t(`coordinator.status.${proposal.status}`)}{proposal.result ? ` · ${proposal.result}` : ''}</span>}
+  </div>;
+}
+
 /** One member's private session inside the split view, using its current executor. */
 function MemberPane({ member, chatCapable, open }: { member: Session; chatCapable: boolean; open: () => void }) {
   const noop = useCallback(() => {}, []);
@@ -131,7 +148,11 @@ function MemberPane({ member, chatCapable, open }: { member: Session; chatCapabl
   </section>;
 }
 
-export default function GroupChat({ active = true, onShare, group, detail, members, demo, busy, chatCapable, post, deliver, cancel, open, confirmReplace, loadOlder, loadingOlder, readSource, resolveDelivery, addMember, editGroup, editWorkspacePermissions, removeMember, markRead, back, openWorkspace, notify }: {
+export default function GroupChat({ variant = 'group', candidates = [], invite, active = true, onShare, group, detail, members, demo, busy, chatCapable, post, deliver, cancel, open, confirmReplace, loadOlder, loadingOlder, readSource, resolveDelivery, addMember, editGroup, editWorkspacePermissions, removeMember, markRead, back, openWorkspace, notify }: {
+  /** A topic: replies without @ go to every participant, and @ can fork in a contact. */
+  variant?: 'group' | 'topic';
+  candidates?: Session[];
+  invite?: (source: Session) => Promise<Session | null>;
   active?: boolean;
   onShare?: () => void;
   group: Group; detail: GroupDetail; members: Session[]; demo: boolean; busy: string | null;
@@ -158,6 +179,10 @@ export default function GroupChat({ active = true, onShare, group, detail, membe
   const [fullscreen, setFullscreen] = useState(false);
   const [phoneMember, setPhoneMember] = useState<string | null>(null);
   const [membersOpen, setMembersOpen] = useState(false);
+  // Topic channels: a persistent participant column and a pinned opening post.
+  const [membersAside, setMembersAside] = useState(() => { try { return localStorage.getItem('dili.topics.members') !== 'off'; } catch { return true; } });
+  const [postOpen, setPostOpen] = useState(false);
+  const [deliveryOpen, setDeliveryOpen] = useState<Set<string>>(() => new Set());
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   /** The "@query" being typed at the caret: its text and range in the draft. */
   const [mention, setMention] = useState<{ query: string; start: number; end: number } | null>(null);
@@ -181,6 +206,7 @@ export default function GroupChat({ active = true, onShare, group, detail, membe
   const currentDraftRef = useRef('');
   currentDraftRef.current = JSON.stringify({ attachments: images, text, kind: recipients.length ? 'task' : 'note', recipients, sourceMessageId, references });
   const messagesById = useMemo(() => new Map(detail.messages.map(message => [message.id, message])), [detail.messages]);
+  const openingId = variant === 'topic' && (!detail.page || detail.page.before === null) ? detail.messages[0]?.id : undefined;
   const messagePositions = useMemo(() => new Map(detail.messages.map((message, index) => [message.id, index])), [detail.messages]);
   const membersById = useMemo(() => new Map(members.map(member => [member.id, member])), [members]);
   const deliveriesByMessage = useMemo(() => {
@@ -278,7 +304,9 @@ export default function GroupChat({ active = true, onShare, group, detail, membe
     (message.kind === 'reply' || message.kind === 'result') && !message.failed && !message.briefing &&
     activeMembers.some(member => member.id === message.senderId));
   const defaultMember = activeMembers.find(member => member.id === lastReply?.senderId);
-  const deliveryRecipients = activeRecipients.length ? activeRecipients : defaultMember ? [defaultMember.id] : [];
+  const topic = variant === 'topic';
+  // In a topic a message that names nobody goes to 嘀哩, the topic's coordinator.
+  const deliveryRecipients = activeRecipients.length ? activeRecipients : topic ? [] : defaultMember ? [defaultMember.id] : [];
   const toggleRecipient = (id: string) => {
     const member = membersById.get(id);
     if (!member) return;
@@ -332,15 +360,31 @@ export default function GroupChat({ active = true, onShare, group, detail, membe
     setText(value); setMention(null);
     setRecipients(index === null ? draftRecipients.current : sentMessages[index]!.recipientIds);
   });
-  const mentionChoices = mention === null ? [] : activeMembers.filter(member => member.title.toLowerCase().includes(mention.query.toLowerCase()));
+  const memberIds = useMemo(() => new Set(activeMembers.map(member => member.id)), [activeMembers]);
+  const mentionChoices = mention === null ? [] : [...activeMembers, ...(topic && invite ? candidates.filter(item => !memberIds.has(item.id)) : [])]
+    .filter(member => member.title.toLowerCase().includes(mention.query.toLowerCase())).slice(0, 12);
   const selectedMentionIndex = Math.min(mentionIndex, Math.max(0, mentionChoices.length - 1));
   const selectedMentionId = mentionChoices[selectedMentionIndex]?.id;
   useEffect(() => {
     mentionMenuRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
   }, [selectedMentionId]);
-  const chooseMention = (member: Session) => {
+  const chooseMention = (choice: Session) => {
     const range = mention;
     if (!range) return;
+    // A contact outside the topic joins as a fork first; its new session is the one mentioned.
+    if (!memberIds.has(choice.id)) {
+      if (!invite) return;
+      setMention(null);
+      void invite(choice).then(joined => {
+        if (!joined) return;
+        const token = `@${joined.title} `;
+        setText(current => current.slice(0, range.start) + token + current.slice(range.end));
+        setRecipients(current => current.includes(joined.id) ? current : [...current, joined.id]);
+        requestAnimationFrame(() => { const field = composerRef.current; if (field) { field.focus(); field.setSelectionRange(range.start + token.length, range.start + token.length); } });
+      });
+      return;
+    }
+    const member = choice;
     const token = `@${member.title} `;
     setText(current => current.slice(0, range.start) + token + current.slice(range.end));
     setRecipients(current => current.includes(member.id) ? current : [...current, member.id]);
@@ -386,23 +430,52 @@ export default function GroupChat({ active = true, onShare, group, detail, membe
   const deliveryRow = (delivery: Omit<Delivery, 'text'>) => {
     const member = membersById.get(delivery.sessionId);
     const reply = delivery.replyMessageId ? messagesById.get(delivery.replyMessageId) : undefined;
-    return <div className="delivery-item" key={delivery.id}><span>{member ? <BackendAvatar backend={member.backend} small /> : <Send size={13} />}{member?.title || '群组成员'}</span>{delivery.status === 'pending' ? <div><span className="delivery-pending-note" title={delivery.lastError}>{delivery.lastError || '未发送'}</span><button className="text-button" disabled={!!busy || !member || member.archived} onClick={() => deliver(delivery.id, delivery.sessionId)}>{busy === `deliver:${delivery.id}` ? <LoaderCircle size={13} className="spin" /> : <ArrowRight size={13} />}{!demo && (member?.backend === 'dsh' || !!member && ['codex', 'claude'].includes(member.backend) && member.interactionMode === 'chat') ? '发送到会话' : '填入会话'}</button><button className="icon-button" disabled={!!busy} aria-label="取消投递" title="取消投递" onClick={() => cancel(delivery.id)}><X size={13} /></button></div>
+    return <div className="delivery-item" key={delivery.id}><span>{member ? <BackendAvatar backend={member.backend} small /> : <Send size={13} />}{member?.title || '群组成员'}</span>{delivery.status === 'pending' ? <div><span className="delivery-pending-note" title={delivery.lastError}>{delivery.lastError || '未发送'}</span><button className="text-button" disabled={!!busy || !member || member.archived} onClick={() => deliver(delivery.id, delivery.sessionId)}>{busy === `deliver:${delivery.id}` ? <LoaderCircle size={13} className="spin" /> : <ArrowRight size={13} />}{!demo && (member?.backend === 'dsh' || !!member && ['codex', 'claude', 'pi'].includes(member.backend) && member.interactionMode === 'chat') ? '发送到会话' : '填入会话'}</button><button className="icon-button" disabled={!!busy} aria-label="取消投递" title="取消投递" onClick={() => cancel(delivery.id)}><X size={13} /></button></div>
       : delivery.status === 'unknown' ? <div className="delivery-uncertain"><span title={delivery.lastError}>结果待确认，请核对原生会话</span><button className="text-button" onClick={() => open(delivery.sessionId, true)}>进入核对</button><button className="text-button" disabled={!!busy} onClick={() => resolveDelivery(delivery, 'confirmed')}>已核对，已收到</button><button className="text-button" disabled={!!busy} onClick={() => resolveDelivery(delivery, 'not_received')}>已核对，未收到</button><button className="text-button" disabled={!!busy} onClick={() => resolveDelivery(delivery, 'cancelled')}>关闭投递</button></div>
       : <span className="delivery-state">{reply ? <button className={`text-button${reply.failed ? ' delivery-failed' : ''}`} onClick={() => jumpToMessage(reply.id)}>{reply.failed ? '回复失败' : reply.pending ? '回复中' : '已回复'} <ArrowRight size={12} /></button> : delivery.status === 'sending' ? '投递中…' : delivery.status === 'sent' ? member?.status === 'running' ? '执行中…' : '已发送' : delivery.status === 'staged' ? '已填入 · 在私聊按回车发送' : '已取消'}{delivery.status === 'staged' && !reply && <button className="text-button" onClick={() => open(delivery.sessionId, true)}>进入 <ArrowRight size={12} /></button>}</span>}</div>;
   };
 
+  /** A channel shows one quiet status line per message. Anything that needs the
+   * user (not sent, result to confirm, staged in a terminal) stays expanded. */
+  const topicDeliveries = (messageId: string, deliveries: Omit<Delivery, 'text'>[]) => {
+    if (!deliveries.length) return null;
+    const replied = deliveries.filter(delivery => { const reply = delivery.replyMessageId ? messagesById.get(delivery.replyMessageId) : undefined; return reply && !reply.pending; }).length;
+    const working = deliveries.filter(delivery => delivery.status === 'sending' || (delivery.status === 'sent' && membersById.get(delivery.sessionId)?.status === 'running')).length;
+    const actionable = deliveries.some(delivery => delivery.status === 'pending' || delivery.status === 'unknown' || (delivery.status === 'staged' && !delivery.replyMessageId));
+    const shown = actionable || deliveryOpen.has(messageId);
+    return <div className="topic-delivery">
+      <button type="button" className="text-button topic-delivery-summary" aria-expanded={shown} aria-label={t('topic.deliveryDetails')} onClick={() => setDeliveryOpen(current => { const next = new Set(current); if (next.has(messageId)) next.delete(messageId); else next.add(messageId); return next; })}>
+        {shown ? <ChevronUp size={12} /> : <ChevronDown size={12} />}{t('topic.deliverySummary', { replied, total: deliveries.length })}{working > 0 && <span className="topic-delivery-working"><i />{t('topic.deliveryWorking', { count: working })}</span>}
+      </button>
+      {shown && <div className="delivery-list">{deliveries.map(deliveryRow)}</div>}
+    </div>;
+  };
+  const decideProposal = useCallback(async (id: string, approve: boolean) => {
+    try { await api(`/groups/${group.id}/proposals/${encodeURIComponent(id)}`, { approve }); notify(t(approve ? 'coordinator.approvedToast' : 'coordinator.rejectedToast')); }
+    catch (cause) { setLocalError(cause instanceof Error ? cause.message : t('coordinator.decideFailed')); }
+  }, [group.id, notify]);
   const messageList = useMemo(() => <div ref={historyRef} className="message-list group-timeline" onScroll={event => { const element = event.currentTarget; followBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80; }}>
     {totalMessages > 200 && <div className="history-range"><span>显示第 {earlierCount + 1}–{totalMessages} 条，共 {totalMessages} 条</span>{earlierCount > 0 && <button className="text-button" disabled={loadingOlder} onClick={showEarlier}>{loadingOlder ? '正在读取…' : `显示更早 ${Math.min(200, earlierCount)} 条`}</button>}</div>}
-    {visibleMessages.length ? visibleMessages.map(message => {
+    {visibleMessages.length ? visibleMessages.map((message, index) => {
       const sender = message.senderId ? membersById.get(message.senderId) : undefined;
+      const deliveries = deliveriesByMessage.get(message.id) ?? [];
+      // In a channel the opening post is pinned above; its place in the flow is one line.
+      if (topic && message.id === openingId) return <div id={`group-message-${message.id}`} tabIndex={-1} key={message.id} className="topic-opening-row">
+        <Hash size={14} /><span><strong>{message.senderName || '你'}</strong> {t('topic.published')}{message.recipientIds.length ? ` · ${t('topic.sentTo', { names: message.recipientIds.map(id => membersById.get(id)?.title ?? '…').join('、') })}` : ''}</span><time>{relativeTime(message.createdAt)}</time>
+        {topicDeliveries(message.id, deliveries)}
+      </div>;
+      const previous = visibleMessages[index - 1];
+      const continued = topic && previous?.id !== openingId && continuesPrevious(previous, message);
       const open_ = expanded.has(message.id);
       // Long agent answers fold to their first lines; the rest expands in place.
       const long = message.kind === 'reply' && (message.text.length > 900 || message.text.split('\n').length > 14);
       const isMember = message.kind === 'reply' || message.kind === 'result';
-      return <article id={`group-message-${message.id}`} tabIndex={-1} key={message.id} className={`group-message kind-${message.kind} ${message.senderId ? '' : 'mine'}${message.failed ? ' failed' : ''}${message.pending ? ' pending' : ''}`}>
-        {sender ? <button className="message-avatar member-avatar-link" aria-label={`打开 ${sender.title} 的私聊`} onClick={() => open(sender.id, true)}><BackendAvatar backend={sender.backend} small /></button> : <span className="message-avatar">{message.senderId ? <MessageSquare size={16} /> : '我'}</span>}
+      const agent = message.agent === 'coordinator';
+      if (agent && message.pending) return <div className="group-live coordinator-thinking" key={message.id} aria-live="polite"><span className="message-avatar coordinator-avatar" aria-hidden="true">嘀</span><div className="message-body"><div className="message-heading"><strong>{t('coordinator.name')}</strong><span className="message-kind">{t('coordinator.thinking')}</span></div><div className="bubble group-typing"><i /><i /><i /></div></div></div>;
+      return <article id={`group-message-${message.id}`} tabIndex={-1} key={message.id} className={`group-message kind-${message.kind}${agent ? ' coordinator' : ''}${continued ? ' continued' : ''} ${message.senderId || agent ? '' : 'mine'}${message.failed ? ' failed' : ''}${message.pending ? ' pending' : ''}`}>
+        {agent ? <span className="message-avatar coordinator-avatar" aria-hidden="true">嘀</span> : sender ? <button className="message-avatar member-avatar-link" aria-label={`打开 ${sender.title} 的私聊`} onClick={() => open(sender.id, true)}><BackendAvatar backend={sender.backend} small /></button> : <span className="message-avatar">{message.senderId ? <MessageSquare size={16} /> : '我'}</span>}
         <div className="message-body">
-          <div className="message-heading"><strong>{message.senderName || '我'}</strong><span className="message-kind">{message.kind === 'task' ? '任务' : message.failed ? '回复失败' : message.briefing ? '入群招呼' : message.pending ? '仍在工作…' : message.kind === 'reply' ? '回复' : message.kind === 'result' ? '结果' : '记录'}</span><time>{relativeTime(message.createdAt)}</time></div>
+          <div className="message-heading"><strong>{message.senderName || '我'}</strong><span className="message-kind">{agent ? (message.proposal ? t('coordinator.proposal') : message.kind === 'task' ? t('coordinator.dispatched') : message.failed ? t('coordinator.failed') : t('coordinator.role')) : topic && message.id === openingId ? '原帖' : message.via ? (message.kind === 'reply' ? '会话中的回复' : '在会话中') : message.kind === 'task' ? (topic ? '发言' : '任务') : message.failed ? '回复失败' : message.briefing ? '入群招呼' : message.pending ? '仍在工作…' : message.kind === 'reply' ? '回复' : message.kind === 'result' ? '结果' : topic ? '' : '记录'}</span>{message.via && message.kind !== 'reply' && <button className="text-button message-via" onClick={() => open(message.via!, true)}>{membersById.get(message.via)?.title ?? '参与者'} 的会话</button>}{message.channel && <span className="message-channel">{t(message.channel === 'weixin' ? 'im.fromWeixin' : 'im.fromFeishu')}</span>}<time>{relativeTime(message.createdAt)}</time></div>
           <div className="bubble">
             {message.sourceMessageId && <button className="message-source-link" onClick={() => jumpToMessage(message.sourceMessageId!)}><ArrowRight size={12} />{message.kind === 'reply' ? '回复' : '来源'}：{messagesById.get(message.sourceMessageId)?.senderName || '原消息'}<span>查看原消息</span></button>}
             {message.recipientIds.length > 0 && <div className="message-recipients">{message.recipientIds.map(id => <button key={id} onClick={() => open(id)}>@{membersById.get(id)?.title || '已移入垃圾桶的成员'}</button>)}</div>}
@@ -412,57 +485,64 @@ export default function GroupChat({ active = true, onShare, group, detail, membe
               ? <div className="group-reply"><div className={`group-reply-answer${long && !open_ ? ' folded' : ''}`}><Markdown text={message.text} /></div>
                 {long && <button className="text-button" aria-expanded={open_} onClick={() => setExpanded(current => { const next = new Set(current); if (next.has(message.id)) next.delete(message.id); else next.add(message.id); return next; })}>{open_ ? <ChevronUp size={13} /> : <ChevronDown size={13} />}{open_ ? '收起' : '展开全文'}</button>}</div>
               : <p>{message.text}</p>}
+            {message.proposal && <TopicProposalCard proposal={message.proposal} decide={approve => decideProposal(message.proposal!.id, approve)} busy={!!busy} />}
           </div>
-          <div className="delivery-list">{(deliveriesByMessage.get(message.id) ?? []).map(deliveryRow)}</div>
+          {topic ? topicDeliveries(message.id, deliveries) : <div className="delivery-list">{deliveries.map(deliveryRow)}</div>}
           <div className="message-actions">
             {message.failed && message.senderId && message.sourceMessageId && <button className="text-button" disabled={posting || !!busy} onClick={() => reassign(message)}><RotateCcw size={13} />重新指派</button>}
-            {isMember && !message.failed && <button className="text-button" disabled={posting} aria-pressed={references.includes(message.id)} onClick={() => quote(message)}><Quote size={13} />引用</button>}
-            {message.kind === 'reply' && message.senderId && <button className="text-button" onClick={() => open(message.senderId!, true)}><MessageSquare size={13} />在私聊中查看</button>}
-            <button className="text-button" disabled={posting || !!busy} onClick={() => forwardMessage(message)}><ArrowRight size={13} />转交为任务</button>
+            {isMember && !message.failed && !agent && <button className="text-button" disabled={posting} aria-pressed={references.includes(message.id)} onClick={() => quote(message)}><Quote size={13} />引用</button>}
+            {message.kind === 'reply' && message.senderId && !agent && <button className="text-button" onClick={() => open(message.senderId!, true)}><MessageSquare size={13} />在私聊中查看</button>}
+            {!topic && <button className="text-button" disabled={posting || !!busy} onClick={() => forwardMessage(message)}><ArrowRight size={13} />转交为任务</button>}
           </div>
         </div>
       </article>;
-    }) : <div className="board-empty"><p>{only ? '这位成员在当前加载的消息里还没有发言。' : '还没有群聊消息。@ 成员指派任务，他们的回复会自动出现在这里。'}</p></div>}
+    }) : <div className="board-empty"><p>{only ? '这位成员在当前加载的消息里还没有发言。' : topic ? '还没有回复。在下面回复话题，参与者的回答会自动出现在这里。' : '还没有群聊消息。@ 成员指派任务，他们的回复会自动出现在这里。'}</p></div>}
     {activeMembers.filter(member => member.interactionMode === 'chat' && (!only || member.id === only)).map(member => {
       const delivery = detail.deliveries.filter(item => item.sessionId === member.id && (item.status === 'sent' || item.status === 'staged') && item.tag).at(-1);
       return delivery?.tag ? <GroupMemberRequests key={`${member.id}:${delivery.tag}`} member={member} tag={delivery.tag} /> : null;
     })}
     {!only && streaming.map(member => <div className="group-live" key={member.id} aria-live="polite"><button className="message-avatar member-avatar-link" aria-label={`打开 ${member.title} 的私聊`} onClick={() => open(member.id, true)}><BackendAvatar backend={member.backend} small /></button><div className="message-body"><div className="message-heading"><strong>{member.title}</strong><span className="message-kind">正在回复…</span></div>{live[member.id] ? <div className="bubble group-live-text"><Markdown text={live[member.id]} /></div> : <div className="bubble group-typing"><i /><i /><i /></div>}</div></div>)}
     {!only && activeMembers.filter(member => member.status === 'running' && member.interactionMode !== 'chat' && detail.deliveries.some(delivery => delivery.sessionId === member.id && (delivery.status === 'sent' || delivery.status === 'staged') && openTask(detail)(delivery))).map(member => <div className="group-live" key={member.id}><button className="message-avatar member-avatar-link" aria-label={`打开 ${member.title} 的私聊`} onClick={() => open(member.id, true)}><BackendAvatar backend={member.backend} small /></button><div className="message-body"><div className="message-heading"><strong>{member.title}</strong><span className="message-kind">正在执行…</span></div><div className="bubble group-typing"><i /><i /><i /></div></div></div>)}
-  </div>, [totalMessages, earlierCount, loadingOlder, visibleMessages, messagesById, membersById, deliveriesByMessage, busy, posting, demo, open, deliver, cancel, resolveDelivery, jumpToMessage, forwardMessage, quote, reassign, showEarlier, expanded, references, only, streaming, live, activeMembers, detail.deliveries]);
+  </div>, [decideProposal, topic, openingId, deliveryOpen, totalMessages, earlierCount, loadingOlder, visibleMessages, messagesById, membersById, deliveriesByMessage, busy, posting, demo, open, deliver, cancel, resolveDelivery, jumpToMessage, forwardMessage, quote, reassign, showEarlier, expanded, references, only, streaming, live, activeMembers, detail.deliveries]);
 
   const splitMembers = activeMembers;
   const sharedMember = activeMembers.find(member => !member.worktree && (!group.workspace || member.cwd === group.workspace));
   const shownPhone = splitMembers.find(member => member.id === phoneMember) ?? splitMembers[0];
   // Same as private chats: Esc or Ctrl/⌘+Shift+Enter leaves fullscreen.
-  return <section className={`group-board group-chat${fullscreen ? ' group-fullscreen' : ''}`} onKeyDown={event => {
+  return <section className={`group-board group-chat${topic ? ' topic-channel-view' : ''}${fullscreen ? ' group-fullscreen' : ''}`} onKeyDown={event => {
     if (event.nativeEvent.isComposing || event.defaultPrevented) return;
     if (event.key === 'Escape' && fullscreen && !mention) { event.preventDefault(); setFullscreen(false); }
     else if (event.key === 'Enter' && event.shiftKey && (event.ctrlKey || event.metaKey)) { event.preventDefault(); setFullscreen(value => !value); }
   }}>
     <header className="group-chat-header">
       <button className="icon-button group-chat-back" aria-label="返回会话列表" onClick={back}><ArrowLeft size={18} /></button>
-      <div className="group-chat-title"><strong title={group.title}>{group.title}</strong>{group.goal && <p className="group-goal-line" title={group.goal}>目标：{group.goal}</p>}</div>
-      <div className="group-member-strip" role="toolbar" aria-label="群成员与只看">
+      <div className="group-chat-title"><strong title={group.title}>{topic && <Hash size={16} className="topic-title-mark" aria-hidden="true" />}{group.title}</strong>{group.goal && !topic && <p className="group-goal-line" title={group.goal}>目标：{group.goal}</p>}{topic && <p className="group-goal-line" title={group.goal || undefined}>{activeMembers.length ? t('topic.channelNote', { count: activeMembers.length }) : t('topic.noParticipants')}{group.goal.trim() && ` · ${group.goal.replace(/\s+/g, ' ').trim().slice(0, 80)}`}</p>}</div>
+      {!topic && <div className="group-member-strip" role="toolbar" aria-label="群成员与只看">
         {activeMembers.map(member => <button key={member.id} className={`group-member-chip${only === member.id ? ' selected' : ''}`} aria-pressed={only === member.id} title={`只看 ${member.title}`} aria-label={`只看 ${member.title}`} onClick={() => { setOnly(current => current === member.id ? null : member.id); setSplit(false); }}><BackendAvatar backend={member.backend} small />{member.status === 'running' && <i className="group-member-running" />}</button>)}
         <button className="icon-button" aria-label="添加成员" title="新建成员或 Fork 会话入群" onClick={addMember}><Plus size={15} /></button>
-      </div>
+      </div>}
       <div className="group-chat-actions">
         {onShare && <button className="icon-button" aria-label="分享群聊" title="分享群聊" onClick={onShare}><Share2 size={16} /></button>}
         <button className={`icon-button${fullscreen ? ' active' : ''}`} aria-pressed={fullscreen} aria-label={fullscreen ? '退出群聊全屏' : '全屏群聊'} title={fullscreen ? '退出全屏（Esc）' : '全屏群聊（Ctrl/⌘ + Shift + Enter）'} onClick={() => setFullscreen(value => !value)}>{fullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
         <button className="icon-button" aria-label="打开群工作区" title={group.workspace ? `群工作区：${group.workspace}` : '还没有群工作区'} disabled={!sharedMember} onClick={() => sharedMember && openWorkspace(sharedMember)}><FolderOpen size={16} /></button>
         <button className={`icon-button${split ? ' active' : ''}`} aria-pressed={split} aria-label={split ? '退出分栏' : '一键分栏'} title={split ? '退出分栏' : '每个成员一栏，同时查看'} disabled={!activeMembers.length} onClick={() => setSplit(value => !value)}><Columns3 size={16} /></button>
-        <button className={`icon-button${membersOpen ? ' active' : ''}`} aria-expanded={membersOpen} aria-label="群成员" title="群成员" onClick={() => setMembersOpen(value => !value)}><UsersRound size={16} /></button>
-        <button className="icon-button" aria-label="群设置" title="名称、目标与群 prompt" onClick={editGroup}><Settings2 size={16} /></button>
+        {topic && <button className="icon-button" aria-label={t('topic.add')} title={t('topic.addNote')} onClick={addMember}><UserPlus size={16} /></button>}
+        {topic && group.goal.trim() && <button className={`icon-button${postOpen ? ' active' : ''}`} aria-pressed={postOpen} aria-label={t(postOpen ? 'topic.hidePost' : 'topic.showPost')} title={t('topic.pinned')} onClick={() => setPostOpen(value => !value)}><Pin size={16} /></button>}
+        {topic && !compact ? <button className={`icon-button${membersAside ? ' active' : ''}`} aria-pressed={membersAside} aria-label={t('topic.membersToggle')} title={t('topic.membersToggle')} onClick={() => setMembersAside(value => { try { localStorage.setItem('dili.topics.members', value ? 'off' : 'on'); } catch { /* optional */ } return !value; })}><UsersRound size={16} /></button>
+          : <button className={`icon-button${membersOpen ? ' active' : ''}`} aria-expanded={membersOpen} aria-label={topic ? '参与者' : '群成员'} title={topic ? '参与者' : '群成员'} onClick={() => setMembersOpen(value => !value)}><UsersRound size={16} /></button>}
+        <button className="icon-button" aria-label={topic ? '编辑话题' : '群设置'} title={topic ? '标题与原帖' : '名称、目标与群 prompt'} onClick={editGroup}><Settings2 size={16} /></button>
       </div>
       {membersOpen && <div className="group-members-panel" role="dialog" aria-label="群成员">
         {editWorkspacePermissions && <button className="text-button" onClick={() => { setMembersOpen(false); editWorkspacePermissions(); }}><FolderPlus size={14} />群工作区权限</button>}
         {group.workspace && <div className="group-workspace-line" title={group.workspace}><FolderOpen size={13} />群工作区：{tail(group.workspace)}</div>}
         {activeMembers.map(member => <div className="group-members-row" key={member.id}><button className="member-avatar-link" aria-label={`打开 ${member.title} 的私聊`} onClick={() => { setMembersOpen(false); open(member.id, true); }}><BackendAvatar backend={member.backend} small /></button><div className="group-members-info"><div><strong>{member.title}</strong><StatusBadge session={member} /></div><MemberPlacement member={member} workspace={group.workspace} busy={!!busy} onChanged={notify} onError={setLocalError} /></div><button className="icon-button" aria-label={`打开 ${member.title} 的工作区`} title="在资源管理器中查看文件与改动" onClick={() => openWorkspace(member)}><FolderOpen size={14} /></button><button className="text-button" onClick={() => { setMembersOpen(false); open(member.id, true); }}>私聊</button><button className="icon-button" aria-label={`将 ${member.title} 移出群聊`} title="移出群聊（保留会话）" onClick={() => removeMember(member)}><UserMinus size={14} /></button></div>)}
-        <button className="text-button" onClick={() => { setMembersOpen(false); addMember(); }}><Plus size={14} />添加成员</button>
+        <button className="text-button" onClick={() => { setMembersOpen(false); addMember(); }}><Plus size={14} />{topic ? '添加参与者' : '添加成员'}</button>
       </div>}
     </header>
     {only && <div className="group-only-bar"><span>只看 {membersById.get(only)?.title}</span><button className="text-button" onClick={() => setOnly(null)}><X size={13} />查看全部</button></div>}
+    <GroupCostPanel cost={detail.cost} />
+    {topic && postOpen && group.goal.trim() && <div className="topic-pinned-post" role="region" aria-label={t('topic.pinned')}><div className="topic-pinned-label"><Pin size={12} />{t('topic.pinned')}</div><Markdown text={group.goal} /></div>}
+    <div className={topic ? 'topic-channel-columns' : 'board-columns'}>
     <div className="board-content">
       {split ? compact
         ? <div className="group-split phone"><div className="group-split-tabs" role="tablist">{splitMembers.map(member => <button key={member.id} role="tab" aria-selected={member.id === shownPhone?.id} onClick={() => setPhoneMember(member.id)}><BackendAvatar backend={member.backend} small />{member.title}</button>)}</div>{shownPhone && <MemberPane key={shownPhone.id} member={shownPhone} chatCapable={chatCapable(shownPhone)} open={() => open(shownPhone.id, true)} />}</div>
@@ -470,18 +550,18 @@ export default function GroupChat({ active = true, onShare, group, detail, membe
         : messageList}
       {sourcePreview && <ModalShell title="来源消息" subtitle={sourcePreview.senderName} close={() => setSourcePreview(null)}><div className="modal-fields"><p className="draft-replace-preview">{sourcePreview.text}</p></div><div className="modal-footer"><button className="button secondary" onClick={() => { forwardMessage(sourcePreview); setSourcePreview(null); }}>转交为任务</button><button className="button primary" onClick={() => setSourcePreview(null)}>返回群组</button></div></ModalShell>}
       <form className="message-composer group-composer" onSubmit={submit}>
-        <div className="recipient-picker"><span><AtSign size={13} />指派给</span>{activeMembers.map(member => <button type="button" disabled={posting} aria-pressed={recipients.includes(member.id)} key={member.id} className={recipients.includes(member.id) ? 'selected' : ''} onClick={() => toggleRecipient(member.id)}>{recipients.includes(member.id) && <Check size={12} />}<BackendAvatar backend={member.backend} small />{member.title}</button>)}{!activeMembers.length && <small>添加成员后，即可 @ 指派任务</small>}</div>
+        <div className="recipient-picker"><span><AtSign size={13} />{topic ? '只发给' : '指派给'}</span>{activeMembers.map(member => <button type="button" disabled={posting} aria-pressed={recipients.includes(member.id)} key={member.id} className={recipients.includes(member.id) ? 'selected' : ''} onClick={() => toggleRecipient(member.id)}>{recipients.includes(member.id) && <Check size={12} />}<BackendAvatar backend={member.backend} small />{member.title}</button>)}{!activeMembers.length && <small>{topic ? '添加参与者，或输入 @ 选择会话分叉加入' : '添加成员后，即可 @ 指派任务'}</small>}</div>
         {references.length > 0 && <div className="composer-references">{references.map(id => { const quoted = messagesById.get(id); return <span key={id} className="reference-chip"><Quote size={12} />{quoted?.senderName || '回答'}：{(quoted?.text || '').slice(0, 40)}<button type="button" className="icon-button" aria-label="取消引用" onClick={() => setReferences(current => current.filter(item => item !== id))}><X size={12} /></button></span>; })}</div>}
         {sourceMessageId && <div className="composer-source"><button type="button" className="text-button" onClick={() => jumpToMessage(sourceMessageId)}><Share2 size={13} />来源：{sourceMessage?.senderName || '原消息'}<span>查看原消息</span></button><button type="button" className="icon-button" disabled={posting} aria-label="解除转交来源" title="解除来源，保留内容" onClick={() => setSourceMessageId(null)}><X size={13} /></button></div>}
-        {mentionChoices.length > 0 && <div ref={mentionMenuRef} id={mentionMenuId} className="mention-menu" role="listbox" aria-label="选择要 @ 的成员">{mentionChoices.map((member, index) => <button type="button" role="option" id={`${mentionMenuId}-${index}`} aria-selected={index === selectedMentionIndex} key={member.id} onMouseEnter={() => setMentionIndex(index)} onMouseDown={event => event.preventDefault()} onClick={() => chooseMention(member)}><BackendAvatar backend={member.backend} small />{member.title}</button>)}</div>}
-        <ImageAttachments sessionId={group.id} scope="groups" actions={<><VoiceInput sessionId={group.id} scope="groups" disabled={posting || uploading} onActive={setVoiceActive} insert={speech => setText(current => appendVoiceText(current, speech))} /><span title="草稿保留在当前浏览器标签页；Enter 发送，Shift + Enter 换行">{activeRecipients.length ? `发送后立即投递给 ${activeRecipients.length} 位成员，回复会自动回到群里。` : defaultMember ? `未 @，默认发送给 ${defaultMember.title}。` : '尚无成员回复；可 @ 成员指派任务。'}{text && <small className="draft-note">草稿保留 · Enter 发送 · Shift + Enter 换行</small>}</span><button className="button primary small-button" disabled={!!busy || posting || uploading || voiceActive || (!text.trim() && !images.length)}>{busy === 'message' ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}{deliveryRecipients.length ? '发送任务' : '发送'}</button></>} items={images} onChange={update => {
+        {mentionChoices.length > 0 && <div ref={mentionMenuRef} id={mentionMenuId} className="mention-menu" role="listbox" aria-label="选择要 @ 的成员">{mentionChoices.map((member, index) => <button type="button" role="option" id={`${mentionMenuId}-${index}`} aria-selected={index === selectedMentionIndex} key={member.id} onMouseEnter={() => setMentionIndex(index)} onMouseDown={event => event.preventDefault()} onClick={() => chooseMention(member)}><BackendAvatar backend={member.backend} small />{member.title}{!memberIds.has(member.id) && <small className="mention-fork">分叉加入</small>}</button>)}</div>}
+        <ImageAttachments sessionId={group.id} scope="groups" actions={<><VoiceInput sessionId={group.id} scope="groups" disabled={posting || uploading} onActive={setVoiceActive} insert={speech => setText(current => appendVoiceText(current, speech))} /><span title="草稿保留在当前浏览器标签页；Enter 发送，Shift + Enter 换行">{activeRecipients.length ? `发送后立即投递给 ${activeRecipients.length} 位${topic ? '参与者' : '成员'}，回复会自动回到${topic ? '话题' : '群'}里。` : topic ? t('coordinator.hint') : defaultMember ? `未 @，默认发送给 ${defaultMember.title}。` : '尚无成员回复；可 @ 成员指派任务。'}{text && <small className="draft-note">草稿保留 · Enter 发送 · Shift + Enter 换行</small>}</span><button className="button primary small-button" disabled={!!busy || posting || uploading || voiceActive || (!text.trim() && !images.length)}>{busy === 'message' ? <LoaderCircle size={14} className="spin" /> : <Send size={14} />}{deliveryRecipients.length && !topic ? '发送任务' : '发送'}</button></>} items={images} onChange={update => {
           const saved = JSON.parse(currentDraftRef.current) as GroupDraft;
           saved.attachments = update(saved.attachments);
           currentDraftRef.current = JSON.stringify(saved);
           try { sessionStorage.setItem(`sessiondeck.group-draft.${group.id}`, currentDraftRef.current); } catch { /* Optional storage. */ }
           setImages(saved.attachments);
         }} onBusy={setUploading} disabled={posting}>
-        <textarea ref={composerRef} disabled={posting} aria-label="群组消息" aria-controls={mentionChoices.length ? mentionMenuId : undefined} aria-activedescendant={mentionChoices.length ? `${mentionMenuId}-${selectedMentionIndex}` : undefined} onKeyDown={event => {
+        <textarea ref={composerRef} disabled={posting} aria-label={topic ? '回复话题' : '群组消息'} aria-controls={mentionChoices.length ? mentionMenuId : undefined} aria-activedescendant={mentionChoices.length ? `${mentionMenuId}-${selectedMentionIndex}` : undefined} onKeyDown={event => {
           // Chinese IME candidate selection must never send or pick a member.
           if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
           // Delete a confirmed @ as one unit, including its separator.
@@ -512,10 +592,19 @@ export default function GroupChat({ active = true, onShare, group, detail, membe
           if (historyKeyDown(event)) return;
           // Enter sends, Shift+Enter inserts a newline, like private chats.
           if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); }
-        }} onSelect={event => { const field = event.currentTarget; if (mention && (field.selectionStart < mention.start || field.selectionStart > mention.end + 1)) setMention(null); }} placeholder={activeRecipients.length ? '描述任务；成员会收到群 prompt、任务和你引用的结论…' : defaultMember ? `发送给 ${defaultMember.title}，输入 @ 可切换成员…` : '输入 @ 指派成员，或直接记录想法…'} value={text} onChange={event => onText(event.target.value, event.target.selectionStart)} rows={3} maxLength={30000} />
+        }} onSelect={event => { const field = event.currentTarget; if (mention && (field.selectionStart < mention.start || field.selectionStart > mention.end + 1)) setMention(null); }} placeholder={topic ? (activeRecipients.length ? '只发给 @ 的参与者…' : t('topic.messageTo', { name: group.title })) : activeRecipients.length ? '描述任务；成员会收到群 prompt、任务和你引用的结论…' : defaultMember ? `发送给 ${defaultMember.title}，输入 @ 可切换成员…` : '输入 @ 指派成员，或直接记录想法…'} value={text} onChange={event => onText(event.target.value, event.target.selectionStart)} rows={3} maxLength={30000} />
         </ImageAttachments>
         {localError && <p role="alert" className="form-error">{localError}</p>}
       </form>
+    </div>
+    {topic && !compact && membersAside && <aside className="topic-members" aria-label={t('topic.members', { count: activeMembers.length })}>
+      <h3>{t('topic.members', { count: activeMembers.length })}</h3>
+      <ul>{activeMembers.map(member => <li key={member.id} className={only === member.id ? 'selected' : ''}>
+        <button className="topic-member" onClick={() => open(member.id, true)} title={`打开 ${member.title} 的会话`}><span className="topic-member-avatar"><BackendAvatar backend={member.backend} small /><i className={`presence ${member.status === 'running' ? 'working' : member.running ? 'online' : 'offline'}`} /></span><span className="topic-member-text"><strong>{member.title}</strong><StatusBadge session={member} /></span></button>
+        <button className="icon-button" aria-pressed={only === member.id} aria-label={`只看 ${member.title}`} title={`只看 ${member.title}`} onClick={() => { setOnly(current => current === member.id ? null : member.id); setSplit(false); }}><Eye size={13} /></button>
+      </li>)}</ul>
+      <button className="text-button" onClick={addMember}><Plus size={13} />{t('topic.add')}</button>
+    </aside>}
     </div>
   </section>;
 }

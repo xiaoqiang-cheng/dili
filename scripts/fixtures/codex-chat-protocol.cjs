@@ -70,7 +70,7 @@ if (args[0] !== 'app-server') {
       if (message.method === 'initialize') socket.clientName = params.clientInfo?.name;
       else if (message.method === 'thread/start') {
         thread = { id: crypto.randomUUID(), cwd: params.cwd, status: { type: 'idle' }, turns: [], forkedFromId: null, canAcceptDirectInput: true };
-        thread.settings = { model: 'fixture-model', approvalPolicy: params.approvalPolicy || 'on-request', approvalsReviewer: params.approvalsReviewer || 'user', sandbox: { type: 'workspaceWrite', writableRoots: [params.cwd], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: false } };
+        thread.settings = { model: 'fixture-model', reasoningEffort: null, approvalPolicy: params.approvalPolicy || 'on-request', approvalsReviewer: params.approvalsReviewer || 'user', sandbox: { type: 'workspaceWrite', writableRoots: [params.cwd], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: false } };
         threads.set(thread.id, thread); socket.threadId = thread.id; persist(); result = { thread, ...thread.settings };
       } else if (message.method === 'thread/resume' || message.method === 'thread/read') {
         thread = threads.get(params.threadId);
@@ -81,15 +81,20 @@ if (args[0] !== 'app-server') {
         if (message.method === 'thread/resume') socket.threadId = thread.id;
         result = { thread, ...thread.settings };
       } else if (message.method === 'model/list') {
-        result = { data: [{ model: 'fixture-model', displayName: 'Fixture Model' }, { model: 'fixture-alternative', displayName: 'Fixture Alternative' }, { model: 'fixture-denied', displayName: 'Native denied' }], nextCursor: null };
+        const efforts = ['low', 'medium', 'high', 'denied'].map(reasoningEffort => ({ reasoningEffort, description: 'Fixture ' + reasoningEffort }));
+        result = { data: [{ model: 'fixture-model', displayName: 'Fixture Model', defaultReasoningEffort: 'medium', supportedReasoningEfforts: efforts }, { model: 'fixture-alternative', displayName: 'Fixture Alternative', defaultReasoningEffort: 'high', supportedReasoningEfforts: [...efforts, { reasoningEffort: 'xhigh', description: 'Fixture xhigh' }] }, { model: 'fixture-denied', displayName: 'Native denied' }], nextCursor: null };
       } else if (message.method === 'thread/settings/update') {
         thread = threads.get(params.threadId);
         if (params.sandboxPolicy && fs.existsSync(dir + '/deny-workspace-update')) { send(socket, { id: message.id, error: { code: -1, message: 'Native workspace denied' } }); return; }
         if (params.model === 'fixture-denied') { send(socket, { id: message.id, error: { code: -1, message: 'Native policy denied model' } }); return; }
+        if (params.effort === 'denied') { send(socket, { id: message.id, error: { code: -1, message: 'Native policy denied effort' } }); return; }
         for (const field of ['model', 'approvalPolicy', 'approvalsReviewer']) if (params[field] !== undefined) thread.settings[field] = params[field];
+        if (params.effort !== undefined) thread.settings.reasoningEffort = params.effort;
         if (params.sandboxPolicy) thread.settings.sandbox = params.sandboxPolicy;
         persist();
-        emit(thread.id, 'thread/settings/updated', { threadSettings: thread.settings });
+        // Real ThreadSettings name the field effort; resume responses name it reasoningEffort.
+        const { reasoningEffort, ...threadSettings } = thread.settings;
+        emit(thread.id, 'thread/settings/updated', { threadSettings: { ...threadSettings, effort: reasoningEffort } });
       } else if (message.method === 'thread/name/set') {
         thread = threads.get(params.threadId); if (thread) { thread.name = params.name; persist(); }
       } else if (message.method === 'thread/turns/list') {

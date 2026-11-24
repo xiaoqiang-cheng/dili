@@ -73,7 +73,11 @@ test('Claude permission modes come from the installed CLI and launch args are sh
   const bypass = (await buildLaunch({ ...contact, nativeSettings: { permission: 'bypassPermissions' } })).args;
   assert.ok(bypass.includes('--allow-dangerously-skip-permissions'), 'a bypass contact can launch even before capability detection');
   const plain = (await buildLaunch({ ...contact, nativeSettings: undefined })).args;
-  assert.ok(!plain.includes('--permission-mode') && !plain.includes('--model') && !plain.includes('--allow-dangerously-skip-permissions'));
+  assert.ok(!plain.includes('--permission-mode') && !plain.includes('--model') && !plain.includes('--allow-dangerously-skip-permissions') && !plain.includes('--effort'));
+  const effort = { ...contact, nativeSettings: { effort: 'xhigh' } };
+  const withEffort = (await buildLaunch(effort, undefined, { ...caps, effortOption: true })).args;
+  assert.equal(withEffort[withEffort.indexOf('--effort') + 1], 'xhigh');
+  assert.ok(!(await buildLaunch(effort, undefined, caps)).args.includes('--effort'), 'a CLI without --effort must still start');
 });
 
 test('Auto launch opts in per contact for Claude and Codex and never injects a dsh overlay', async t => {
@@ -127,7 +131,7 @@ test('discovery reads heterogeneous native metadata and avoids ambiguous new-ses
     insert.run(randomUUID(), dir, 'archived', null, 1, 1, 1);
     await writeFile(join(claudeHome, 'projects', 'project', `${claudeId}.jsonl`), [JSON.stringify({type:'user',cwd:dir,timestamp:new Date(timestamp).toISOString(),message:{content:'First request'}}), JSON.stringify({type:'custom-title',customTitle:'Custom Claude title'})].join('\n'));
     await writeFile(join(dshHome, 'storages', 'session_projcache.json'), JSON.stringify({tables:{sessions:{[dshId]:{identity:{cwd:dir,createdAt:timestamp},rows:{title:{val:'DeepSeek title'},sessionListMetadata:{val:{lastPromptAt:timestamp}}}}}}}));
-    const paths = {codexHome,claudeHome,dshHome};
+    const paths = {codexHome,claudeHome,dshHome,piHome:join(dir,"pi")};
     const rows = await discoverSessions(undefined,paths);
     assert.equal(rows.length,3);
     assert.equal(rows.find(row=>row.backend==='codex')?.title,'Renamed');
@@ -379,4 +383,38 @@ test('dsh 0.2 sessions are created with bare UUIDs and 0.1 ids stay distinguisha
   // uuid may be handed to dsh-tui --resume on 0.2.
   assert.equal(validateNativeId('dsh', bare), bare);
   assert.equal(validateNativeId('dsh', legacy), legacy);
+});
+
+test('Pi discovery reads the native session header and latest rename, and launch arrays never use a shell', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'deck-pi-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const folder = join(home, 'sessions', '--tmp--');
+  await mkdir(folder, { recursive: true });
+  // Pi mints UUIDv7; discovery must not be limited to the v4 shape.
+  const id = '018f4f8a-7b3c-7c9e-8a2f-1234567890ab';
+  const file = join(folder, `2026-01-02T03-04-05-000Z_${id}.jsonl`);
+  await writeFile(file, [
+    JSON.stringify({ type: 'session', version: 3, id, timestamp: '2026-01-02T03:04:05.000Z', cwd: home }),
+    JSON.stringify({ type: 'session_info', name: 'Native Pi title' }),
+  ].join('\n') + '\n');
+  const saved = process.env.PI_CODING_AGENT_SESSION_DIR;
+  delete process.env.PI_CODING_AGENT_SESSION_DIR;
+  try {
+    const rows = await discoverSessions('pi', { piHome: home });
+    assert.deepEqual(rows.map(row => [row.backend, row.nativeSessionId, row.title, row.cwd]), [['pi', id, 'Native Pi title', home]]);
+  } finally { if (saved === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR; else process.env.PI_CODING_AGENT_SESSION_DIR = saved; }
+  assert.equal(validateNativeId('pi', id), id);
+  assert.throws(() => validateNativeId('pi', `session-${id}`));
+  const savedBin = process.env.SESSIONDECK_PI_BIN;
+  process.env.SESSIONDECK_PI_BIN = process.execPath;
+  try {
+    const resume = await buildLaunch(makeSession({ backend: 'pi', nativeSessionId: id }));
+    assert.deepEqual(resume.args, ['--session-id', id]);
+    const fresh = await buildLaunch(makeSession({ backend: 'pi', title: 'A title' }));
+    assert.deepEqual(fresh.args.slice(0, 1), ['--session-id']);
+    assert.match(fresh.nativeSessionId!, /^[a-f\d-]{36}$/i);
+    const fork = await buildLaunch(makeSession({ backend: 'pi', nativeSessionId: id, forkPending: true }));
+    assert.deepEqual(fork.args.slice(0, 4), ['--fork', id, '--session-id', fork.nativeSessionId!]);
+    assert.notEqual(fork.nativeSessionId, id);
+  } finally { if (savedBin === undefined) delete process.env.SESSIONDECK_PI_BIN; else process.env.SESSIONDECK_PI_BIN = savedBin; }
 });

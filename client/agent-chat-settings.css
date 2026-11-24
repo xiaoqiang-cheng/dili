@@ -13,7 +13,7 @@
 .agent-chat-composer .codex-composer-footer > div { justify-content:flex-end; gap:5px; margin-left:auto; }
 .resizable-composer .agent-chat-composer .image-composer { flex:1 1 auto; min-height:44px; overflow:auto; }
 .agent-chat-composer .codex-composer-footer > span { font-size:10px; }
-.agent-chat-quick-button { display:inline-flex; align-items:center; flex:0 1 auto; gap:5px; min-width:0; max-width:calc((100% - 6px)/2); min-height:27px; padding:3px 8px; border:1px solid var(--line); border-radius:6px; background:var(--subtle); color:var(--muted); font-size:11px; cursor:pointer; }
+.agent-chat-quick-button { display:inline-flex; align-items:center; flex:0 1 auto; gap:5px; min-width:0; max-width:calc((100% - 12px)/3); min-height:27px; padding:3px 8px; border:1px solid var(--line); border-radius:6px; background:var(--subtle); color:var(--muted); font-size:11px; cursor:pointer; }
 .agent-chat-quick-button > svg,.agent-chat-quick-button > span { flex-shrink:0; }
 .agent-chat-quick-button:hover,.agent-chat-quick-button[aria-expanded="true"] { border-color:var(--line-strong); background:var(--hover); color:var(--text); }
 .agent-chat-quick-button strong { min-width:0; max-width:min(190px,28vw); overflow:hidden; color:var(--text); font-weight:500; text-overflow:ellipsis; white-space:nowrap; }
@@ -36,7 +36,7 @@
 .agent-chat-command-copy strong small { color:var(--muted); font-size:11px; font-weight:400; }
 .agent-chat-command-copy em { color:var(--muted); font-size:10px; font-style:normal; }
 .agent-chat-command > svg { flex:none; color:var(--muted); }
-@media(max-width:420px) { .agent-chat-quick-settings { gap:4px; }.agent-chat-quick-button { gap:4px; padding:3px 6px; }.agent-chat-quick-button strong { max-width:24vw; } }
+@media(max-width:420px) { .agent-chat-quick-settings { gap:4px; }.agent-chat-quick-button { gap:4px; padding:3px 6px; }.agent-chat-quick-button strong { max-width:16vw; } }
 .claude-terminal-settings { display:flex; align-items:center; gap:6px; min-width:0; flex:0 1 auto; margin-right:auto; }
 .claude-terminal-settings .agent-chat-quick-settings { padding:0; }
 .claude-terminal-restart { max-width:none; color:var(--accent); border-color:var(--accent); }

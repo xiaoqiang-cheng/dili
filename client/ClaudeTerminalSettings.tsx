@@ -5,7 +5,7 @@ import { api } from './api';
 import AgentChatQuickSettings from './AgentChatQuickSettings';
 import { useAgentChatSettings } from './useAgentChatSettings';
 
-/** The same contact-level model and permission controls as the graphical
+/** The same contact-level model, permission and effort controls as the graphical
  * composer. A terminal process keeps its launch settings, so a saved change
  * offers an explicit, confirmed restart that resumes the same native session. */
 export default function ClaudeTerminalSettings({ session, readOnly }: { session: Session; readOnly?: boolean }) {

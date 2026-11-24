@@ -42,11 +42,15 @@ npm 包和源码启动使用同一数据格式，不能同时使用同一数据�
 
 ## Agent
 
-Claude Code、Codex、DeepSeek Harness 独立安装，使用原生登录和配置。Dili 只管理本机具体会话，不代替 Agent 的账号、付费和权限体系。在「连接与能力」可以点击安装、账号登录，在底部交互终端完成操作。安装需要网络和 npm 全局目录写权限；失败时在终端查看错误，不会自动提权。已有后端仍可以使用自己的官方安装方法。安装／登录后刷新检测；可在其他终端直接运行同名命令。
+Claude Code、Codex、DeepSeek Harness 和 Pi 独立安装，使用原生登录和配置。Dili 只管理本机具体会话，不代替 Agent 的账号、付费和权限体系。在「连接与能力」可以点击安装、账号登录，在底部交互终端完成操作。安装需要网络和 npm 全局目录写权限；失败时在终端查看错误，不会自动提权。已有后端仍可以使用自己的官方安装方法。安装／登录后刷新检测；可在其他终端直接运行同名命令。
 
-Claude 和 Codex 的「配置 API」将设置写到其用户原生配置路径（尊重 `CLAUDE_CONFIG_DIR` / `CODEX_HOME`），保存前备份已有文件，文件权限为 0600。密钥留空保留已有凭据，地址／模型留空恢复默认；新启动的会话读取。Codex API Key 通过原生登录命令的 stdin 保存，自定义地址需兼容 Responses API。TOML 会规范化格式，注释保存在备份中。已有 OAuth 和 API 认证的优先级遵循原生 Agent，请用原生登录状态检查。
+四个后端都可在设置页点击「配置 API」保存地址、密钥和模型，保存前备份已有文件，文件权限为 0600，接口不返回密钥。密钥留空保留已有凭据；新启动的会话读取原生配置。
 
-DeepSeek Harness 点击「原生配置引导」启动 `dsh web`，按终端提示打开本机地址，在其设置中配置提供商、API Key 和模型。它的 Web 配置由 Harness 自己维护；安装引导会同时安装 `@deepseek-ai/dsh` 和 Dili 原生终端所需的 `@deepseek-harness-tui/dsh-tui`。远程页面只查看引导，安装和配置操作必须在本机完成。
+- **Claude / Codex**：写入用户原生配置（尊重 `CLAUDE_CONFIG_DIR` / `CODEX_HOME`）。地址／模型留空恢复默认；Codex API Key 通过原生登录命令的 stdin 保存，自定义地址需兼容 Responses API。TOML 会规范化格式，注释保存在备份中。已有 OAuth 和 API 认证的优先级遵循原生 Agent，请用原生登录状态检查。
+- **DeepSeek Harness**：写入 `$DSH_HOME/profiles/web/cordis.patch.yml`；若已有 `dsh-tui` profile，同时更新其 patch。Dili 创建名为 `dili` 的 OpenAI Chat Completions 兼容 provider，默认模型指向该 provider，密钥以 `DILI_API_KEY` 引用写入 `$DSH_HOME/.credentials.yaml`。API 地址和模型需同时填写；清空二者会移除托管 provider，已保存的密钥保留。
+- **Pi**：写入 `$PI_CODING_AGENT_DIR/models.json` 的 `dili` provider，并把密钥写入同目录 `auth.json`。地址和模型需同时填写；清空二者移除托管 provider，已保存的密钥保留。内置 provider 的账号/OAuth 仍由 `pi` 的 `/login` 或 `pi auth login <provider>` 维护。
+
+Pi 的提供商、模型、工具和扩展也可继续由 Pi 原生配置维护。点击安装／登录引导会打开 `pi`。DeepSeek Harness 的「原生配置引导」仍启动 `dsh web`，安装和配置操作必须在本机完成；远程页面只查看引导。
 
 ## 自动启动
 

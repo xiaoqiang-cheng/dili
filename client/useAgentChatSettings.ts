@@ -1,20 +1,24 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import type { AgentChatSettings, AgentChatSettingsUpdate } from '../shared/chat';
+import { t } from '../shared/i18n';
 import { api } from './api';
 
 export type SettingField = AgentChatSettingsUpdate['field'];
-export const settingLabel = (field: SettingField) => field === 'model' ? '模型' : '权限';
-export const settingChoices = (settings: AgentChatSettings, field: SettingField) => field === 'model' ? settings.models : settings.permissions;
-export const settingReason = (settings: AgentChatSettings, field: SettingField) => field === 'model' ? settings.modelReason : settings.permissionReason;
+export const SETTING_FIELDS = ['model', 'permission', 'effort'] as const satisfies readonly SettingField[];
+export const settingLabel = (field: SettingField) => field === 'model' ? '模型' : field === 'permission' ? '权限' : t('settings.effort');
+export const settingChoices = (settings: AgentChatSettings, field: SettingField) => field === 'model' ? settings.models : field === 'permission' ? settings.permissions : settings.efforts ?? [];
+// A backend that predates effort reports no effort fields at all.
+export const settingReason = (settings: AgentChatSettings, field: SettingField) => field === 'model' ? settings.modelReason : field === 'permission' ? settings.permissionReason : settings.effortReason ?? (settings.efforts ? undefined : t('settings.effortUnreported'));
 export function settingValue(settings: AgentChatSettings, field: SettingField) {
   return settingChoices(settings, field).find(choice => choice.id === settings[field])?.label
-    || settings[field] || (field === 'permission' ? settings.permissionLabel : undefined) || '原生未报告当前值';
+    || settings[field] || (field === 'permission' ? settings.permissionLabel : field === 'effort' ? settings.effortLabel : undefined) || '原生未报告当前值';
 }
+const emptySelection = { model: '', permission: '', effort: '' };
 
 /** One native read/write state for the composer shortcuts and the full settings panel. */
 export function useAgentChatSettings(sessionId: string, identity: string, busy: boolean) {
   const [settings, setSettings] = useState<AgentChatSettings | null>(null);
-  const [selection, setSelection] = useState({ model: '', permission: '' });
+  const [selection, setSelection] = useState(emptySelection);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -27,13 +31,13 @@ export function useAgentChatSettings(sessionId: string, identity: string, busy: 
   useLayoutEffect(() => {
     context.current.alive = true;
     operation.current = null;
-    setSettings(null); setSelection({ model: '', permission: '' });
+    setSettings(null); setSelection(emptySelection);
     setLoading(false); setSaving(false); setError(''); setNotice('');
     return () => { context.current.alive = false; operation.current = null; };
   }, [identity]);
 
   function accept(next: AgentChatSettings) {
-    setSettings(next); setSelection({ model: next.model ?? '', permission: next.permission ?? '' });
+    setSettings(next); setSelection({ model: next.model ?? '', permission: next.permission ?? '', effort: next.effort ?? '' });
   }
 
   const read = useCallback(async () => {

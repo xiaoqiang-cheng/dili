@@ -39,7 +39,7 @@ const fs = require('node:fs');
 const { WebSocketServer } = require(${JSON.stringify(wsModule)});
 const args = process.argv.slice(2), id = ${JSON.stringify(id)};
 ${options.stubborn ? "process.on('SIGTERM', () => {});" : ''}
-let running = false, history = [], holdReplay = false, muxConnections = 0, holdList = false, releaseList = null;
+let running = false, history = [], holdReplay = false, muxConnections = 0, holdList = false, releaseList = null, selection = null;
 const pending = new Map(), paused = new Set();
 const modern = ${!!options.modern};
 if (modern) fs.writeFileSync(process.env.SESSIONDECK_DSH_AUTH_FILE, ${options.invalidAuth ? "'http://127.0.0.1:1/?token=fixture-token'" : "process.env.SESSIONDECK_DSH_BASE_URL+'/?token=fixture-token'"});
@@ -62,8 +62,9 @@ const server = http.createServer(async (request, response) => {
   const input = JSON.parse(body);
   if (modern && request.url.startsWith('/api/')) {
     const method = input.method;
-    const direct = method === 'userQuestions/answer', remoteResult = method === '$events/result';
-    if (!request.url.endsWith(method) || method.includes('.') || !input.payload.args || (method === 'session/list' ? !input.payload.args._request : method === 'commands/execute' ? input.payload.args.agentId !== id : direct ? input.payload.args.agentId !== id || !input.payload.args.callId : remoteResult ? !input.payload.args.eventId : !input.payload.args.request)) { response.writeHead(400); response.end(); return; }
+    const direct = method === 'userQuestions/answer', remoteResult = method === '$events/result', catalog = method === 'session/modelCatalog' || method === 'permissionPresets/catalog';
+    if (!request.url.endsWith(method) || method.includes('.') || !input.payload.args || (method === 'session/list' ? !input.payload.args._request : method === 'commands/execute' ? input.payload.args.agentId !== id : direct ? input.payload.args.agentId !== id || !input.payload.args.callId : remoteResult ? !input.payload.args.eventId : catalog ? false : !input.payload.args.request)) { response.writeHead(400); response.end(); return; }
+    if (method === 'session/selectModel') fs.appendFileSync(${JSON.stringify(join(dir, 'native-model-selections'))}, JSON.stringify(input.payload.args.request) + '\\n');
     if (method === 'session/prompt' && !input.payload.args.request.requestId) { response.writeHead(400); response.end(); return; }
     // dsh 0.2 takes the requested id as a direct argument, not inside a request.
     if (method === 'session/create') {
@@ -117,7 +118,15 @@ const server = http.createServer(async (request, response) => {
   if (input.method === 'session.list' && holdList) await new Promise(resolve => { releaseList = resolve; });
   if (input.method === 'session.history') value = { events: history.map(event => ({event})), hasMore: false };
   if (modern && input.method === 'commands.execute') value = {result:{kind:'success'}};
-  if (modern && input.method === 'fixture.projections') value = {asOfSeq: history.at(-1)?.seq ?? -1, values:{}};
+  if (modern && input.method === 'fixture.projections') value = {asOfSeq: history.at(-1)?.seq ?? -1, values: selection ? {modelSelection:{lastUsed:null,pending:selection}} : {}};
+  if (modern && input.method === 'session.modelCatalog') value = {default:{provider:'fixture',model:'flash'},routableProviders:['fixture'],failures:[],groups:[{id:'fixture',name:'Fixture',models:[{id:'flash',name:'Flash',reasoning:{efforts:[{id:'off',name:'Off'},{id:'high',name:'High'},{id:'unconfirmed',name:'Unconfirmed'}],defaultEffort:'off'}},{id:'pro',name:'Pro',reasoning:{efforts:[{id:'high',name:'High'},{id:'max',name:'Max'}]}},{id:'plain',name:'Plain'}]}]};
+  if (modern && input.method === 'permissionPresets.catalog') value = {options:[{value:'workspace-write',name:'Workspace'}]};
+  if (modern && input.method === 'session.selectModel') {
+    // Models the native Host: an absent effort resets to the model default; 'unconfirmed' is dropped.
+    const { provider, model, reasoningEffort } = input.payload.args.request;
+    selection = { provider, model, ...(reasoningEffort && reasoningEffort !== 'unconfirmed' ? { reasoningEffort } : {}) };
+    value = { selected: selection };
+  }
   if (modern && input.method === 'session.history') value = {records: history.map(event => ({type:'event',event})),hasMore:false};
   if (modern && input.method === 'userQuestions.answer') value = true;
   if (modern && input.method === '$events/result') value = true;
@@ -527,6 +536,32 @@ test('dsh 0.2 authenticates RPC and read-only mux, tracks approvals/questions an
   assert.match(await readFile(join(directory, 'native-answers'), 'utf8'), /"callId":"question"/);
 });
 
+
+test('dsh effort uses the native catalog of the current model, keeps it across compatible model switches and requires confirmation', { timeout: 10_000 }, async t => {
+  const { bridge, id, directory } = await fixture(t, { modern: true });
+  await bridge.start();
+  const first = await bridge.readChatSettings(id);
+  assert.equal(first.model, 'fixture/flash');
+  assert.equal(first.effort, null, 'No explicit native effort means the model default');
+  assert.equal(first.defaultEffort, 'off');
+  assert.deepEqual(first.efforts.map(choice => choice.id), ['off', 'high', 'unconfirmed']);
+  await bridge.updateChatSettings(id, 'effort', 'high');
+  assert.equal((await bridge.readChatSettings(id)).effort, 'high');
+  await bridge.updateChatSettings(id, 'model', 'fixture/pro');
+  const pro = await bridge.readChatSettings(id);
+  assert.equal(pro.effort, 'high', 'A model that offers the current effort keeps it');
+  assert.deepEqual(pro.efforts.map(choice => choice.id), ['high', 'max']);
+  await bridge.updateChatSettings(id, 'model', 'fixture/plain');
+  const plain = await bridge.readChatSettings(id);
+  assert.equal(plain.effort, null);
+  assert.deepEqual(plain.efforts, []);
+  await assert.rejects(bridge.updateChatSettings(id, 'effort', 'high'), /不在当前模型/);
+  await bridge.updateChatSettings(id, 'model', 'fixture/flash');
+  await assert.rejects(bridge.updateChatSettings(id, 'effort', 'unconfirmed'), /未确认/);
+  const selections = (await readFile(join(directory, 'native-model-selections'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(selections.map(row => [row.model, row.reasoningEffort ?? null]), [['flash', 'high'], ['pro', 'high'], ['plain', null], ['flash', null], ['flash', 'unconfirmed']]);
+  assert.ok(selections.every(row => row.sessionId === id));
+});
 
 test('dsh answers live blocking questions through forwarded Remote Events, not the timed projection', { timeout: 10_000 }, async t => {
   const { bridge, id, configure, directory, waitStatus } = await fixture(t, { modern: true });

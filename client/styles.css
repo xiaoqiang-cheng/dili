@@ -199,6 +199,7 @@ select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--line-stro
 .avatar-wrap .backend-avatar.coral { background: var(--avatar-coral-bg); color: var(--avatar-coral-text); }
 .avatar-wrap .backend-avatar.green { background: var(--avatar-green-bg); color: var(--avatar-green-text); }
 .avatar-wrap .backend-avatar.blue { background: var(--avatar-blue-bg); color: var(--avatar-blue-text); }
+.avatar-wrap .backend-avatar.purple { background: var(--avatar-purple-bg, #ece5ff); color: var(--avatar-purple-text, #7250c8); }
 .unread-badge { position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 9px; border: 2px solid var(--bg); box-sizing: content-box; background: var(--red); color: #fff; font-size: 10px; font-weight: 600; line-height: 16px; text-align: center; font-variant-numeric: tabular-nums; }
 .card-title { flex: 1; min-width: 0; }
 .card-title-row { display: flex; align-items: center; min-width: 0; padding-right: 46px; }
@@ -225,6 +226,7 @@ select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--line-stro
 .backend-avatar.coral { background: linear-gradient(180deg, #ff9f6e, #e8683a); color: #fff; }
 .backend-avatar.green { background: linear-gradient(180deg, #5bd08a, #25a45e); color: #fff; }
 .backend-avatar.blue { background: linear-gradient(180deg, #6aa8ff, #2f6fe6); color: #fff; }
+.backend-avatar.purple { background: linear-gradient(180deg, #b69aff, #7c4dff); color: #fff; }
 .status-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .status-badge>i { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
 .status-badge.running { color: var(--green); } .status-badge.running>i { background: var(--green); box-shadow: 0 0 0 3px #34c75933; }
@@ -861,6 +863,10 @@ select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--line-stro
 }
 
 .invite-pairing { display: grid; gap: 12px; margin: 12px 0 18px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; }
+.invite-request-panel { display: grid; gap: 10px; margin: -6px 0 18px; padding: 12px 16px; border: 1px dashed var(--border); border-radius: 12px; font-size: 13px; }
+.invite-request-panel summary { display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--accent); }
+.invite-request-panel p { margin: 0; }
+.invite-request-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; align-items: end; }
 .invite-pairing textarea { width: 100%; box-sizing: border-box; resize: vertical; font: inherit; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface, white); color: inherit; }
 .invite-pairing .share-created a { min-width: 0; overflow-wrap: anywhere; flex: 1; font-size: 12px; }
 .invite-actions { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
@@ -886,6 +892,7 @@ select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--line-stro
 .backend-avatar.coral,.avatar-wrap .backend-avatar.coral { background:var(--avatar-coral-bg); color:#cf7a5b; }
 .backend-avatar.green,.avatar-wrap .backend-avatar.green { background:var(--subtle); color:var(--text); }
 .backend-avatar.blue,.avatar-wrap .backend-avatar.blue { background:var(--avatar-blue-bg); color:#6580ff; }
+.backend-avatar.purple,.avatar-wrap .backend-avatar.purple { background:var(--avatar-purple-bg,#ece5ff); color:var(--avatar-purple-text,#7250c8); }
 
 /* ——— Touch screens (iPhone Safari first) ———
    1. iOS zooms the page when a focused field's text is under 16px and never
@@ -968,3 +975,12 @@ select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--line-stro
 /* Shared pages are stacked workspaces, never a horizontal title rail. */
 .app-shell.share-shell { flex-direction: column; }
 .share-shell > .app-body { flex: 1; min-height: 0; }
+.im-settings h3 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.im-login { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; margin: 8px 0 14px; }
+.im-qr { width: 168px; height: 168px; padding: 6px; border-radius: 10px; background: #fff; flex-shrink: 0; }
+.im-qr svg { width: 100%; height: 100%; }
+.im-pair-code { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 8px; background: var(--subtle); font-size: 13px; }
+.im-binding { margin: 4px 0 12px; }
+.im-help { margin-top: 8px; font-size: 12.5px; }
+.im-help ol { margin: 6px 0 0 18px; display: grid; gap: 4px; color: var(--muted); }
+.im-commands { line-height: 1.7; }

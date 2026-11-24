@@ -198,3 +198,14 @@
   .group-share-shell .share-guest-name { display: none; }
   .group-share-shell .share-topbar .connection-indicator { width: 12px; flex-shrink: 0; }
 }
+
+/* Group cost is read-only native usage, listed per task; it never hides an unknown row. */
+.group-cost { flex-shrink: 0; border-bottom: 1px solid var(--border); background: var(--surface-muted, transparent); }
+.group-cost > summary { display: flex; gap: 8px; align-items: baseline; padding: 4px 18px; font-size: 12px; cursor: pointer; color: var(--text-muted); }
+.group-cost > summary .usage-value { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-cost-tasks { list-style: none; margin: 0; padding: 0 18px 4px; max-height: 180px; overflow-y: auto; font-size: 12px; }
+.group-cost-tasks li { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; padding: 2px 0; }
+.group-cost-tasks code { font-size: 11px; color: var(--text-muted); }
+.group-cost-note { margin: 0; padding: 0 18px 6px; font-size: 11px; color: var(--text-muted); }
+.usage-tight { color: var(--warning, #b45309); }
+.usage-hint { margin-left: 6px; font-size: 11px; color: var(--warning, #b45309); }

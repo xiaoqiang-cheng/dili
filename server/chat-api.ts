@@ -191,7 +191,7 @@ export function registerAgentChat(app: express.Express, options: Dependencies) {
   app.post('/api/sessions/:id/chat/settings', async (req, res) => {
     const item = settingsTarget(String(req.params.id)), identity = item.nativeSessionId!;
     const { version, field, value } = req.body;
-    if (typeof version !== 'string' || version.length > 100 || !version || (field !== 'model' && field !== 'permission') || typeof value !== 'string' || !value || value.length > 200 || /[\x00-\x1f]/.test(value)) fail('设置参数无效');
+    if (typeof version !== 'string' || version.length > 100 || !version || (field !== 'model' && field !== 'permission' && field !== 'effort') || typeof value !== 'string' || !value || value.length > 200 || /[\x00-\x1f]/.test(value)) fail('设置参数无效');
     const settings = await bridgeFor(item).updateChatSettings(identity, { version, field, value }).catch(cause => {
       const error = cause instanceof Error ? cause : new Error('原生设置修改失败，请刷新确认');
       throw Object.assign(error, { status: (cause as { status?: number })?.status ?? 409 });

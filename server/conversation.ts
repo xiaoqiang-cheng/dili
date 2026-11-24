@@ -10,6 +10,7 @@ import type { SessionUsage } from '../shared/usage.js';
 import type { AgentChatHistoryPage } from '../shared/chat.ts';
 import { validateNativeId } from './adapters.ts';
 import { parseUsage } from './usage.ts';
+import { piEntryMessages } from './pi-session.ts';
 
 export type ConversationSession = Pick<Session, 'backend' | 'nativeSessionId' | 'forkPending' | 'cwd'>;
 export interface DshHistory { events?: { event?: unknown }[]; hasMore?: boolean }
@@ -17,6 +18,7 @@ export interface ConversationOptions {
   claudeHome?: string;
   codexHome?: string;
   dshHome?: string;
+  piHome?: string;
   /** Must be read-only; undefined means the native service is not already running. */
   dshHistory?: (id: string) => Promise<DshHistory | undefined>;
   cacheMs?: number;
@@ -201,7 +203,7 @@ function dshMessages(events: unknown[], nativeId: string): ConversationMessage[]
 
 function nativeMessages(rows: Line[], session: ConversationSession): ConversationMessage[] {
   const id = session.nativeSessionId!;
-  return session.backend === 'claude' ? claudeMessages(rows, id) : session.backend === 'codex' ? codexMessages(rows, id) : dshMessages(rows.map(row => row.value), id);
+  return session.backend === 'claude' ? claudeMessages(rows, id) : session.backend === 'codex' ? codexMessages(rows, id) : session.backend === 'pi' ? piEntryMessages(rows.map(row => row.value), id).messages : dshMessages(rows.map(row => row.value), id);
 }
 
 export function decodeDshFrames(buffer: Buffer, maxOutput: number): { text: string; truncated: boolean } {
@@ -238,7 +240,7 @@ export function conversationPreview(transcript: ConversationTranscript): { text:
 
 /** Bounded, portable context for continuing a conversation in another agent. */
 export function handoffPrompt(source: Pick<Session, 'backend' | 'title' | 'cwd' | 'id'>, transcript: ConversationTranscript, target: Backend, customSummary?: string): string {
-  const label: Record<Backend, string> = { claude: 'Claude Code', codex: 'Codex', dsh: 'DeepSeek Harness' };
+  const label: Record<Backend, string> = { claude: 'Claude Code', codex: 'Codex', dsh: 'DeepSeek Harness', pi: 'Pi' };
   const messages = transcript.messages.slice(-20);
   const body = messages.map(item => `### ${item.role === 'user' ? '用户' : 'Agent'}\n${item.text.slice(0, 6000)}`).join('\n\n');
   const summary = customSummary?.trim() || '请先检查当前工作区和文件状态，再继续完成原任务。';
@@ -249,6 +251,7 @@ export function handoffPrompt(source: Pick<Session, 'backend' | 'title' | 'cwd' 
  * no prompt is submitted, and no transcript is copied into SessionDeck's DB. */
 export class ConversationReader {
   private readonly homes: Record<Backend, string>;
+  private readonly piRoot: string;
   private readonly options: ConversationOptions;
   private readonly cache = new Map<string, Cached>();
   private readonly pending = new Map<string, Promise<ConversationTranscript>>();
@@ -261,7 +264,9 @@ export class ConversationReader {
       claude: resolve(options.claudeHome ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')),
       codex: resolve(options.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex')),
       dsh: resolve(options.dshHome ?? process.env.DSH_HOME ?? join(homedir(), '.dsh')),
+      pi: resolve(options.piHome ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), '.pi', 'agent')),
     };
+    this.piRoot = resolve(process.env.PI_CODING_AGENT_SESSION_DIR ?? join(this.homes.pi, 'sessions'));
   }
 
   async read(session: ConversationSession): Promise<ConversationTranscript> {
@@ -511,12 +516,12 @@ export class ConversationReader {
 
   private async safePath(backend: Backend, path: string): Promise<string | undefined> {
     try {
-      const root = await realpath(this.homes[backend]);
+      const root = await realpath(backend === 'pi' ? this.piRoot : this.homes[backend]);
       const absolute = resolve(path);
       const resolved = await realpath(absolute);
       // Refuse final and intermediate symlinks, including native metadata that
       // points to a path outside the configured native home.
-      if (resolved !== absolute && resolved !== join(root, relative(this.homes[backend], absolute))) return;
+      if (resolved !== absolute && resolved !== join(root, relative(backend === 'pi' ? this.piRoot : this.homes[backend], absolute))) return;
       const part = relative(root, resolved);
       if (!part || part.startsWith('..') || isAbsolute(part)) return;
       return absolute;
@@ -555,7 +560,7 @@ export class ConversationReader {
 
   private async scan(backend: Backend): Promise<Index> {
     const home = this.homes[backend], result: Index = { checked: Date.now(), paths: new Map(), databases: [] };
-    const folders = backend === 'claude' ? [{ path: join(home, 'projects'), depth: 0 }] : backend === 'codex' ? [{ path: home, depth: -1 }] : [{ path: join(home, 'sessions'), depth: 0 }];
+    const folders = backend === 'claude' ? [{ path: join(home, 'projects'), depth: 0 }] : backend === 'codex' ? [{ path: home, depth: -1 }] : backend === 'pi' ? [{ path: this.piRoot, depth: 0 }] : [{ path: join(home, 'sessions'), depth: 0 }];
     let budget = 12_000, directoryBudget = 1500;
     const deadline = Date.now() + 2000;
     while (folders.length && budget > 0 && directoryBudget-- > 0 && Date.now() < deadline) {
@@ -574,9 +579,10 @@ export class ConversationReader {
             let id: string | undefined;
             if (backend === 'claude') id = entry.name.match(new RegExp(`^(${UUID})\\.jsonl$`, 'i'))?.[1];
             else if (backend === 'codex') id = entry.name.match(new RegExp(`(?:^|-)(${UUID})(?:_${UUID})?\\.jsonl$`, 'i'))?.[1];
+            else if (backend === 'pi') id = entry.name.match(new RegExp(`_(${UUID})\\.jsonl$`, 'i'))?.[1];
             // dsh 0.1: sessions/<slug>/session-<uuid>/session.jsonl(.zstd);
             // dsh 0.2 / dsh-tui: sessions/<slug>/<uuid>/session.v4.jsonl.zstd.
-            else if (/^session(?:\.v\d+)?\.jsonl(?:\.zstd)?$/.test(entry.name) && new RegExp(`^(?:session-)?${UUID}$`, 'i').test(basename(dirname(path)))) id = basename(dirname(path));
+            else if (backend === 'dsh' && /^session(?:\.v\d+)?\.jsonl(?:\.zstd)?$/.test(entry.name) && new RegExp(`^(?:session-)?${UUID}$`, 'i').test(basename(dirname(path)))) id = basename(dirname(path));
             if (id) {
               const previous = result.paths.get(id);
               // Codex segment names start with their creation timestamp; the

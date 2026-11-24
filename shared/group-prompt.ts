@@ -12,6 +12,16 @@ export const DEFAULT_GROUP_PROMPT = `你是群聊「{{group}}」中的成员「{
 - 不要尝试联系其他成员；需要协作时，在回答中写明需要谁做什么。
 - 你对任务的最后回答会自动显示在群里。`;
 
+/** A topic is one focused discussion; participants keep their own directories. */
+export const DEFAULT_TOPIC_PROMPT = `你是话题「{{group}}」的参与者「{{member}}」。这个话题是 Dili 话题群里一条独立的讨论线。
+
+{{workspace}}
+
+协作规则：
+- 以「【话题】」开头的消息来自这个话题；你在本会话中的其他上下文仍然有效。
+- 你对每条话题消息的最后回答会自动显示在话题里。用户也可能直接在本会话里和你对话，这些对话同样会同步到话题。
+- 话题里还有其他参与者；需要他们配合时，在回答中写明需要谁做什么，不要假设他们已经完成了没有写明的工作。`;
+
 const TAG = /^T-[0-9a-f]{4,8}$/;
 export const isTaskTag = (value: string) => TAG.test(value);
 export const taskTagLine = (tag: string) => `任务编号：${tag}`;
@@ -26,13 +36,16 @@ export function workspaceRule(workspace?: MemberWorkspace): string {
   return `工作区：所有成员共用工作目录 ${workspace.cwd}。开始前先查看当前文件和 git 状态，其他成员可能已经修改了文件；不要覆盖或回退他人未提交的改动。`;
 }
 
-type GroupSettings = Pick<Group, 'title' | 'goal' | 'prompt'>;
+type GroupSettings = Pick<Group, 'title' | 'goal' | 'prompt'> & Partial<Pick<Group, 'kind'>>;
 
 /** The group prompt with placeholders filled. A custom prompt without the
  * workspace placeholder still tells the member where it works. */
 export function groupRules(group: GroupSettings, member: string, workspace?: MemberWorkspace): string {
-  const template = group.prompt?.trim() || DEFAULT_GROUP_PROMPT;
-  const rule = workspaceRule(workspace);
+  const topic = group.kind === 'topic';
+  const template = group.prompt?.trim() || (topic ? DEFAULT_TOPIC_PROMPT : DEFAULT_GROUP_PROMPT);
+  // Topic participants are forks that keep their own directories; only an
+  // isolated worktree is worth pointing out.
+  const rule = topic && !workspace?.branch ? '' : workspaceRule(workspace);
   return (template.includes('{{workspace}}') ? template : rule ? `${template}\n\n{{workspace}}` : template)
     .replaceAll('{{group}}', group.title).replaceAll('{{goal}}', group.goal.trim() || '见群聊讨论').replaceAll('{{member}}', member)
     .replaceAll('{{workspace}}', rule).replace(/\n{3,}/g, '\n\n');
@@ -81,22 +94,29 @@ export interface GroupTaskInput {
   references?: Pick<GroupMessage, 'senderName' | 'text'>[];
   /** The member never received the current rules (new format, or settings changed). */
   includeRules?: boolean;
+  /** Topic only, with the rules: the opening post and latest answers for a late joiner. */
+  history?: Pick<GroupMessage, 'senderName' | 'text'>[];
 }
 
 const MAX_REFERENCE = 8000;
 
 /** What a member receives when @-assigned: a short task header, the quoted
  * answers and the task. The full rules ride along only when they changed. */
-export function buildGroupTask({ group, member, task, tag, references = [], workspace, includeRules = false }: GroupTaskInput): string {
-  const header = [`【群聊任务】${taskTagLine(tag)} · 群「${group.title}」`];
+export function buildGroupTask({ group, member, task, tag, references = [], workspace, includeRules = false, history = [] }: GroupTaskInput): string {
+  const topic = group.kind === 'topic';
+  const header = [topic ? `【话题】${taskTagLine(tag)} · 话题「${group.title}」` : `【群聊任务】${taskTagLine(tag)} · 群「${group.title}」`];
   // Members working outside the shared workspace get reminded every time.
-  if (!includeRules && workspace && (workspace.branch || (workspace.shared && workspace.shared !== workspace.cwd))) header.push(workspaceRule(workspace));
+  if (!includeRules && workspace && (workspace.branch || (!topic && workspace.shared && workspace.shared !== workspace.cwd))) header.push(workspaceRule(workspace));
   const quoted = references.map(reference => `### ${reference.senderName} 的回答\n${clip(reference.text, MAX_REFERENCE)}${reference.text.trim().length > MAX_REFERENCE ? '\n（内容过长已截断，完整回答见群聊）' : ''}`);
+  const background = includeRules && topic && history.length
+    ? ['## 话题至今的讨论（仅供了解背景，不是给你的任务）', ...history.map(entry => `### ${entry.senderName}\n${clip(entry.text, MAX_RECENT)}`)]
+    : [];
   return [
     header.join('\n'),
-    ...(includeRules ? ['## 群说明（已更新）', groupRules(group, member, workspace)] : []),
+    ...(includeRules ? [topic ? '## 话题说明' : '## 群说明（已更新）', groupRules(group, member, workspace)] : []),
+    ...background,
     ...(quoted.length ? ['## 引用的回答', ...quoted] : []),
-    '## 你的任务', task.trim(),
+    topic ? '## 话题消息' : '## 你的任务', task.trim(),
   ].join('\n\n');
 }
 

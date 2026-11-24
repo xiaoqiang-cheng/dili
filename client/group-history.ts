@@ -18,6 +18,8 @@ function merge(previous: GroupDetail, page: GroupDetail, older = false): GroupDe
     group: page.group.updatedAt >= previous.group.updatedAt ? page.group : previous.group,
     messages: [...messages.values()].sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0)), deliveries,
     revision: older ? previous.revision : page.revision,
+    // Cost is recomputed from the same deliveries on every page, so the newest read wins.
+    cost: page.cost ?? previous.cost ?? null,
     page: page.page && { total: Math.max(previous.page?.total ?? 0, page.page.total), before: older ? page.page.before : previous.page?.before ?? null },
   };
 }

@@ -36,6 +36,7 @@
 - 启动原生 CLI 一律使用参数数组（`execFile`/spawn 无 shell），不拼接命令字符串。
 - 来自用户的工作目录、会话名、群消息不得进入 shell；需要展示命令时只做转义显示。
 - `scripts/*.test.ts` 与 `server/adapters.test.ts` 覆盖“参数数组、无 shell、无注入”的回归；`server/shell-quote.ts` 的引号函数由 `server/security-boundaries.test.ts` 通过真实 `sh` 验证。
+- 启动本机桌面程序（`server/editor.ts` 的「在 VS Code 中打开工作区」）是同一类边界：目录作为单个 argv 传入，不拼 shell、不写临时脚本；命令来自 `SESSIONDECK_EDITOR_COMMAND` 或 `PATH` 中的 `code`/`code-insiders`，按可执行文件检查解析，不用 `spawn` 试探；detached + unref，不继承 Dili 的 stdio，且只对所有者开放（分享视为启动宿主程序，一律拒绝，`full` 档也不例外）。演示实例直接拒绝，避免测试在宿主上真的拉起编辑器。`server/editor.test.ts` 用含空格、引号、`$(...)` 与 `;` 的目录名验证“只当参数、不会被解释执行”。
 
 ## 远程与中继
 

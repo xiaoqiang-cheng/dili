@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { Session, Group, GroupMessage, Delivery, DeliveryAttempt, Activity, GroupDetail } from '../shared/types.ts';
+import type { Session, Group, GroupMessage, Delivery, DeliveryAttempt, Activity, GroupDetail, TopicProposal } from '../shared/types.ts';
 import { briefingVersion, buildGroupTask, buildJoinBriefing, replyPreview } from '../shared/group-prompt.ts';
 
 /** A member state the group view cannot resolve: the user must act in its chat. */
@@ -96,9 +96,9 @@ export class Store {
     if (!session) throw new Error('会话不存在');
     return this.put('sessions', { ...session, ...patch, id, updatedAt: now() });
   }
-  /** Permanently remove Dili's own contact record. Native history, group
+  /** Permanently remove Dili's own session record. Native history, group
    * messages and worktree files stay where they are; only undelivered tasks
-   * targeting this contact are discarded. */
+   * targeting this session are discarded. */
   removeSession(id: string): Session {
     return this.transaction(() => {
       const session = this.session(id);
@@ -110,9 +110,9 @@ export class Store {
       return session;
     });
   }
-  addGroup(title: string, goal: string): Group {
+  addGroup(title: string, goal: string, kind?: Group['kind']): Group {
     const date = now();
-    return this.put('groups', { id: randomUUID(), title, goal, createdAt: date, updatedAt: date });
+    return this.put('groups', { id: randomUUID(), ...(kind ? { kind } : {}), title, goal, createdAt: date, updatedAt: date });
   }
   updateGroup(id: string, patch: Partial<Pick<Group, 'title' | 'goal' | 'prompt' | 'workspace' | 'pinned' | 'archived' | 'unread' | 'lastMessage'>>): Group {
     const group = this.group(id);
@@ -163,13 +163,21 @@ export class Store {
         if (this.session(id)?.groupId !== input.groupId || this.session(id)?.archived) throw new Error('接收成员无效或已移入垃圾桶');
       }
       const preview = replyPreview(input.text || (input.attachments?.length ? '[图片]' : ''));
-      const group = this.updateGroup(input.groupId, {
+      // The coordinator's placeholder while it thinks is neither news nor a preview;
+      // it counts once settled (updateCoordinatorMessage).
+      const thinking = input.agent === 'coordinator' && input.pending;
+      const group = this.updateGroup(input.groupId, thinking ? {} : {
         lastMessage: { text: preview, senderName: input.senderName, at: now() },
         // Only member replies are new to the user; their own messages are already read.
-        ...(input.kind === 'reply' ? { unread: (this.group(input.groupId)!.unread ?? 0) + 1 } : {}),
+        // A turn mirrored from the member's own session was read there already.
+        ...(input.kind === 'reply' && !input.via ? { unread: (this.group(input.groupId)!.unread ?? 0) + 1 } : {}),
       });
       const message = this.put('messages', { ...input, recipientIds, ...(references.length ? { references: references.map(item => item.id) } : { references: undefined }), id: randomUUID(), createdAt: now(), revision: Date.parse(group.updatedAt) });
       const quoted = [...(source && (source.kind === 'reply' || source.kind === 'result') && !references.some(item => item.id === source.id) ? [source] : []), ...references];
+      // A topic participant receiving the rules for the first time (a late
+      // joiner) also gets the opening post and the latest answers as background.
+      let history: Pick<GroupMessage, 'senderName' | 'text'>[] | undefined;
+      const topicHistory = () => history ??= this.topicHistory(group.id, message.id);
       for (const sessionId of recipientIds) {
         const member = this.session(sessionId)!;
         const workspace = { shared: group.workspace, cwd: member.cwd, branch: member.worktree?.branch };
@@ -179,13 +187,71 @@ export class Store {
         const includeRules = member.groupBriefing !== version;
         this.put<Delivery>('deliveries', {
           id: randomUUID(), messageId: message.id, sessionId, tag,
-          text: buildGroupTask({ group, member: member.title, task: input.text, tag, references: quoted, workspace, includeRules }),
+          text: buildGroupTask({ group, member: member.title, task: input.text, tag, references: quoted, workspace, includeRules, ...(includeRules && group.kind === 'topic' ? { history: topicHistory() } : {}) }),
           status: 'pending', createdAt: now(), sentAt: null,
         });
         if (includeRules) this.updateSession(sessionId, { groupBriefing: version });
       }
       return message;
     }
+  }
+  /** The opening post and the five latest answers of a topic, oldest first. */
+  private topicHistory(groupId: string, exclude: string): Pick<GroupMessage, 'senderName' | 'text'>[] {
+    const first = this.db.prepare("SELECT data FROM messages WHERE json_extract(data, '$.groupId') = ? ORDER BY rowid LIMIT 1").get(groupId);
+    const opening = first ? JSON.parse(String(first.data)) as GroupMessage : undefined;
+    const latest = this.db.prepare("SELECT data FROM messages WHERE json_extract(data, '$.groupId') = ? ORDER BY rowid DESC LIMIT 200").all(groupId)
+      .map(row => JSON.parse(String(row.data)) as GroupMessage)
+      .filter(item => item.id !== exclude && item.id !== opening?.id && (item.kind === 'reply' || item.kind === 'result') && !item.failed && !item.pending && item.text.trim())
+      .slice(0, 5).reverse();
+    return [...(opening && opening.id !== exclude && opening.text.trim() ? [{ senderName: `${opening.senderName}（原帖）`, text: opening.text }] : []), ...latest];
+  }
+  /** A turn the user typed directly in a topic participant's own session: the
+   * prompt and the member's answer appear in the topic as if posted there.
+   * Keyed by the native user turn, so each turn is mirrored once; a later call
+   * with a changed answer updates it until the turn is closed. */
+  mirrorTurn(sessionId: string, turn: { userId: string; userText: string; replyText: string; closed: boolean }): boolean {
+    return this.transaction(() => {
+      const member = this.session(sessionId);
+      const group = member?.groupId ? this.group(member.groupId) : undefined;
+      if (!member || group?.kind !== 'topic') return false;
+      const existing = this.db.prepare("SELECT data FROM messages WHERE json_extract(data, '$.groupId') = ? AND json_extract(data, '$.via') = ? AND json_extract(data, '$.nativeMessageId') = ?").get(group.id, sessionId, turn.userId);
+      if (existing) {
+        const prompt = JSON.parse(String(existing.data)) as GroupMessage;
+        const reply = this.db.prepare("SELECT data FROM messages WHERE json_extract(data, '$.groupId') = ? AND json_extract(data, '$.kind') = 'reply' AND json_extract(data, '$.sourceMessageId') = ?").get(group.id, prompt.id);
+        if (!reply) return false;
+        return !!this.updateReplyInPlace(JSON.parse(String(reply.data)) as GroupMessage, { text: turn.replyText, pending: false, closed: turn.closed });
+      }
+      const prompt = this.insertMessage({ groupId: group.id, kind: 'note', senderId: null, senderName: '你', recipientIds: [], text: turn.userText, via: sessionId, nativeMessageId: turn.userId });
+      this.insertMessage({ groupId: group.id, kind: 'reply', senderId: member.id, senderName: member.title, recipientIds: [], text: turn.replyText, sourceMessageId: prompt.id, via: sessionId, ...(turn.closed ? { closedAt: now() } : {}) });
+      return true;
+    });
+  }
+  /** A message by its position in the topic, as the coordinator cites it ([#12]). */
+  messageAt(groupId: string, sequence: number): (GroupMessage & { sequence: number }) | undefined {
+    const row = this.db.prepare("SELECT rowid, data FROM messages WHERE rowid = ? AND json_extract(data, '$.groupId') = ?").get(sequence, groupId);
+    return row ? { ...JSON.parse(String(row.data)) as GroupMessage, sequence: Number(row.rowid) } : undefined;
+  }
+  /** The coordinator's own message in a topic: an answer (kind reply, so it
+   * counts as new to the user) or a proposal. Starts pending while it thinks. */
+  addCoordinatorMessage(groupId: string, input: { text: string; pending?: boolean; proposal?: TopicProposal; sourceMessageId?: string | null }): GroupMessage {
+    return this.transaction(() => {
+      if (this.group(groupId)?.kind !== 'topic') throw new Error('嘀哩只在话题中发言');
+      return this.insertMessage({ groupId, kind: 'reply', agent: 'coordinator', senderId: null, senderName: '嘀哩', recipientIds: [], text: input.text,
+        ...(input.pending ? { pending: true } : {}), ...(input.proposal ? { proposal: input.proposal } : {}), ...(input.sourceMessageId ? { sourceMessageId: input.sourceMessageId } : {}) });
+    });
+  }
+  /** Settles or rewrites a coordinator message (its answer, or a proposal's state). */
+  updateCoordinatorMessage(id: string, patch: { text?: string; pending?: boolean; failed?: boolean; proposal?: TopicProposal; awaitSummary?: boolean }): GroupMessage | null {
+    return this.transaction(() => {
+      const message = this.get<GroupMessage>('messages', id);
+      if (!message || message.agent !== 'coordinator') return null;
+      const settled = message.pending && patch.pending === false;
+      const group = this.updateGroup(message.groupId, settled && patch.text ? { lastMessage: { text: replyPreview(patch.text), senderName: message.senderName, at: now() }, unread: (this.group(message.groupId)!.unread ?? 0) + 1 } : {});
+      const { pending: _pending, failed: _failed, ...rest } = message;
+      const pending = patch.pending ?? message.pending, failed = patch.failed ?? message.failed;
+      return this.put('messages', { ...rest, ...(patch.text !== undefined ? { text: patch.text } : {}), ...(pending ? { pending: true } : {}), ...(failed ? { failed: true } : {}),
+        ...(patch.proposal ? { proposal: patch.proposal } : {}), ...(patch.awaitSummary !== undefined ? { awaitSummary: patch.awaitSummary || undefined } : {}), revision: Date.parse(group.updatedAt) });
+    });
   }
   /** Queues the one-time join briefing for a new member: full rules, the roster,
    * and the five latest answers marked as other members' work. */
@@ -266,13 +332,18 @@ export class Store {
   updateReply(messageId: string, reply: { text: string; failed?: boolean; pending: boolean; closed?: boolean }): GroupMessage | null {
     return this.transaction(() => {
       const message = this.get<GroupMessage>('messages', messageId);
-      if (!message || message.kind !== 'reply' || message.closedAt) return null;
+      return message ? this.updateReplyInPlace(message, reply) : null;
+    });
+  }
+  private updateReplyInPlace(message: GroupMessage, reply: { text: string; failed?: boolean; pending: boolean; closed?: boolean }): GroupMessage | null {
+    {
+      if (message.kind !== 'reply' || message.closedAt) return null;
       const closing = !!(reply.closed || reply.failed);
       if (message.text === reply.text && !!message.pending === reply.pending && !!message.failed === !!reply.failed && !closing) return null;
       const group = this.updateGroup(message.groupId, reply.pending ? {} : { lastMessage: { text: replyPreview(reply.text), senderName: message.senderName, at: now() } });
       const { pending: _pending, failed: _failed, ...rest } = message;
       return this.put('messages', { ...rest, text: reply.text, ...(reply.failed ? { failed: true } : {}), ...(reply.pending ? { pending: true } : {}), ...(closing ? { closedAt: now() } : {}), revision: Date.parse(group.updatedAt) });
-    });
+    }
   }
   /** The member resumed on its own: its settled answer is shown as working again. */
   reopenReply(messageId: string): GroupMessage | null {

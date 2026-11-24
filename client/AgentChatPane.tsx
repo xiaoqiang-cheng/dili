@@ -79,7 +79,7 @@ export default function AgentChatPane(props: { session: Session; allowTerminal?:
 
 function ChatSession({ session, allowTerminal = true, onTerminal, onSelection }: { session: Session; allowTerminal?: boolean; onTerminal: () => void; onSelection?: (text: string) => void }) {
   const chrome = useSessionChrome();
-  const agentName = session.backend === 'claude' ? 'Claude' : session.backend === 'dsh' ? 'DeepSeek' : 'Codex';
+  const agentName = session.backend === 'claude' ? 'Claude' : session.backend === 'dsh' ? 'DeepSeek' : session.backend === 'pi' ? 'Pi' : 'Codex';
   const nativeLabel = session.backend === 'dsh' ? '原生界面' : '原生终端';
   // dsh's structured prompt is text-only today; image paste stays in the native UI.
   const supportsImages = session.backend !== 'dsh';
@@ -343,7 +343,10 @@ function ChatSession({ session, allowTerminal = true, onTerminal, onSelection }:
     const current = active.current ? draftRef.current : readDraft(session.id);
     if (current.pending?.requestId !== pending.requestId) return;
     updateDraft({ text: !pending.queueId && current.text === pending.text ? '' : current.text, attachments: pending.queueId ? current.attachments : current.attachments.filter(item => !pending.attachments?.some(sent => sent.id === item.id)), pending: null, queue:current.queue?.filter(item=>item.id!==pending.queueId) });
-    if (active.current) { if (turnId) setAwaitingTurnId(turnId); setCheckNotice(''); setCheckedUnknown(false); void readSnapshot.current(); }
+    // Pi's optimistic items do not carry a native turn id after hydration; a
+    // very fast turn can finish before this response, so use its live status
+    // instead of leaving an unmatched "waiting" placeholder.
+    if (active.current) { if (turnId && sessionRef.current.backend !== 'pi' && !snapshotRef.current?.activeTurnId) setAwaitingTurnId(turnId); setCheckNotice(''); setCheckedUnknown(false); void readSnapshot.current(); }
   }
   async function checkSubmission() {
     const pending = draftRef.current.pending;
@@ -363,11 +366,12 @@ function ChatSession({ session, allowTerminal = true, onTerminal, onSelection }:
   async function send(event?: FormEvent, queued?: QueuedMessage) {
     event?.preventDefault();
     const source=queued || draftRef.current, text = source.text;
-    if (!queued && !source.attachments.length && /^\/(settings|model|permissions)$/.test(text.trim())) {
+    if (!queued && !source.attachments.length && /^\/(settings|model|permissions|effort)$/.test(text.trim())) {
       openCommand(text.trim().slice(1) as ChatCommand); return;
     }
     if (dshTuiOwner) { setError('当前输入由 dsh-tui 持有；请先接管图形对话，再发送消息。'); return; }
-    if (!verified || (!text.trim() && !source.attachments.length) || voiceActive || uploading || settingsController.saving || busyRef.current || draftRef.current.pending || !transport || session.archived || snapshotRef.current?.requests.length || (session.running && !snapshotRef.current?.connected)) return;
+    const piTerminalOwner = sessionRef.current.backend === 'pi' && sessionRef.current.running && sessionRef.current.interactionMode !== 'chat';
+    if (!verified || (!text.trim() && !source.attachments.length) || voiceActive || uploading || settingsController.saving || busyRef.current || draftRef.current.pending || !transport || session.archived || snapshotRef.current?.requests.length || (sessionRef.current.running && !snapshotRef.current?.connected && !piTerminalOwner)) return;
     if (!queued && session.backend === 'claude' && snapshotRef.current?.activeTurnId) { enqueue(); return; }
     const expectedTurnId = snapshotRef.current?.activeTurnId;
     if (!supportsImages && source.attachments.length) { setError('DeepSeek Harness 图形对话暂不支持图片；请使用原生界面粘贴图片。'); return; }
@@ -375,7 +379,13 @@ function ChatSession({ session, allowTerminal = true, onTerminal, onSelection }:
     let pending: Pending | undefined;
     try {
       if(queued && queued.identity!==`${snapshotRef.current?.instanceId}:${snapshotRef.current?.nativeSessionId}`) throw new Error('原生连接已变化；排队消息已暂停，请编辑后重新加入队列');
-      if (!sessionRef.current.running || sessionRef.current.interactionMode !== 'chat') await api(`/sessions/${session.id}/start`, { mode: 'chat' });
+      if (!sessionRef.current.running || sessionRef.current.interactionMode !== 'chat') {
+        // A Pi terminal cannot report its task state. Sending from the chat view
+        // is an explicit handoff, but the user still confirms before the PTY is stopped.
+        const piHandoff = sessionRef.current.backend === 'pi' && sessionRef.current.running;
+        if (piHandoff && !window.confirm('Pi 原生终端不会报告任务状态；发送会关闭终端并切换到图形对话，可能中断仍在运行的任务。继续？')) { busyRef.current = false; if (active.current) setBusy(false); return; }
+        await api(`/sessions/${session.id}/start`, { mode: 'chat', ...(piHandoff ? { handoff: true } : {}) });
+      }
       if (!active.current) return;
       pending = { requestId: requestId(), text, attachments: [...source.attachments],...(queued ? {queueId:queued.id} : {}) };
       const next = { ...draftRef.current, pending };
@@ -419,7 +429,7 @@ function ChatSession({ session, allowTerminal = true, onTerminal, onSelection }:
   const settingsController = useAgentChatSettings(session.id, `${snapshot?.instanceId}:${snapshot?.nativeSessionId}:${snapshot?.connected}`, !verified || hasTurn || busy || dshTuiOwner || !!snapshot?.requests.length || !!draft.pending || session.archived || !transport || (session.running && !snapshot?.connected));
   function openCommand(command: ChatCommand) {
     updateDraft({ ...draftRef.current, text: '' });
-    setSettingsField(command === 'model' ? 'model' : command === 'permissions' ? 'permission' : undefined);
+    setSettingsField(command === 'model' ? 'model' : command === 'permissions' ? 'permission' : command === 'effort' ? 'effort' : undefined);
     setSettingsOpen(true);
   }
   useEffect(() => {
@@ -431,7 +441,10 @@ function ChatSession({ session, allowTerminal = true, onTerminal, onSelection }:
     : !transport || !snapshot?.connected || !session.running ? null
     : hasTurn ? activeItems.some(item => item.type === 'assistant' && item.text) ? 'replying' : activeItems.some(item => ['command', 'tool', 'fileChange'].includes(item.type)) ? 'working' : 'thinking'
     : awaitingTurnId && !snapshot.items.some(item => item.turnId === awaitingTurnId) ? 'waiting' : null;
-  const nativeAvailable = !session.running || !!snapshot?.connected;
+  // Pi's TUI has no status channel. Allow composing from the chat view, but
+  // sending is an explicit handoff and asks before the PTY is stopped.
+  const piTerminalHandoff = session.backend === 'pi' && session.running && session.interactionMode !== 'chat';
+  const nativeAvailable = !session.running || !!snapshot?.connected || piTerminalHandoff;
   useAutoGrow(textarea, draft.text, compact);
   const canSend = verified && (!!draft.text.trim() || supportsImages && !!draft.attachments.length) && !voiceActive && !uploading && !busy && !settingsController.saving && !draft.pending && transport && nativeAvailable && !dshTuiOwner && !snapshot?.requests.length && !session.archived;
   const olderCurrent = older?.identity === snapshot?.nativeSessionId && older?.instanceId === snapshot?.instanceId ? older : null;
@@ -444,12 +457,12 @@ function ChatSession({ session, allowTerminal = true, onTerminal, onSelection }:
   return <section ref={pane} className="codex-chat-pane" aria-label={`${agentName} 图形会话`} onKeyDown={event => {
     if (outlineOpen && event.key === 'Escape' && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); closeOutline(); }
   }}>
-    <SessionToolbar className="codex-chat-toolbar"><span className="pane-connection" title="图形会话连接状态"><i className={transport && nativeAvailable ? 'online' : ''} /><span className="pane-connection-label">{!transport ? '连接中' : snapshot?.requests.length ? '需要你回复' : hasTurn ? '正在处理' : session.running ? nativeAvailable ? '已连接' : '原生未连接' : '尚未启动'}</span></span><div><button ref={outlineButton} className="icon-button" type="button" aria-label="对话目录" title="对话目录" aria-expanded={outlineOpen} aria-controls={outlineOpen ? outlineId : undefined} onClick={() => outlineOpen ? closeOutline() : setOutlineOpen(true)}><List size={15} /></button><PaneToolOverflow><button type="button" className="icon-button" aria-label="会话设置" title="会话设置" onClick={() => { setSettingsField(undefined); setSettingsOpen(true); }}><Settings2 size={14} /><span>会话设置</span></button><button className="icon-button" type="button" aria-label="刷新对话" title="刷新对话" onClick={() => void readSnapshot.current()}><RefreshCw size={14} /><span>刷新对话</span></button>{allowTerminal && !chrome && <button type="button" className="icon-button" aria-label={nativeLabel} title={nativeLabel} onClick={onTerminal}><TerminalSquare size={14} /><span>{nativeLabel}</span></button>}</PaneToolOverflow></div></SessionToolbar>
+    <SessionToolbar className="codex-chat-toolbar"><span className="pane-connection" title="图形会话连接状态"><i className={transport && nativeAvailable ? 'online' : ''} /><span className="pane-connection-label">{!transport ? '连接中' : snapshot?.requests.length ? '需要你回复' : hasTurn ? '正在处理' : session.running ? piTerminalHandoff ? '原生终端' : snapshot?.connected ? '已连接' : '原生未连接' : '尚未启动'}</span></span><div><button ref={outlineButton} className="icon-button" type="button" aria-label="对话目录" title="对话目录" aria-expanded={outlineOpen} aria-controls={outlineOpen ? outlineId : undefined} onClick={() => outlineOpen ? closeOutline() : setOutlineOpen(true)}><List size={15} /></button><PaneToolOverflow><button type="button" className="icon-button" aria-label="会话设置" title="会话设置" onClick={() => { setSettingsField(undefined); setSettingsOpen(true); }}><Settings2 size={14} /><span>会话设置</span></button><button className="icon-button" type="button" aria-label="刷新对话" title="刷新对话" onClick={() => void readSnapshot.current()}><RefreshCw size={14} /><span>刷新对话</span></button>{allowTerminal && !chrome && <button type="button" className="icon-button" aria-label={nativeLabel} title={nativeLabel} onClick={onTerminal}><TerminalSquare size={14} /><span>{nativeLabel}</span></button>}</PaneToolOverflow></div></SessionToolbar>
     {!!snapshot?.requests.length && <div className="codex-request-alert" role="alert"><CircleAlert size={15} /><span>{snapshot.requests.length === 1 ? snapshot.requests[0].title : `${snapshot.requests.length} 项请求需要处理`}</span><button type="button" className="text-button" onClick={() => jumpToRequest(snapshot.requests[0].id)}>定位到请求</button></div>}
     {loading && snapshot && <div className="codex-chat-banner" role="status"><LoaderCircle size={13} className="spin" />正在同步最新对话…</div>}
     {!transport && !loading && <div className="codex-chat-banner" role="status">与本地服务的连接已中断，正在重连。草稿已保留。</div>}
     {error && <div className="codex-chat-error" role="alert"><span>{error}</span><button type="button" className="text-button" onClick={() => { setError(''); void readSnapshot.current(); }}>重新读取</button></div>}
-    {!loading && session.running && snapshot && !snapshot.connected && <div className="codex-chat-banner codex-native-retry" role="status"><span>{session.backend === 'claude' && session.executionTransport !== 'structured' ? '当前由原生终端运行；本轮结束后可切换到流式图形对话。' : '历史记录可查看，原生输入连接尚未就绪。'}</span><button type="button" className="text-button" disabled={reconnecting || !transport} onClick={() => void reconnectNative()}>{reconnecting ? '正在重新连接…' : session.backend === 'claude' && session.executionTransport !== 'structured' ? '切换到流式对话' : '重新连接原生会话'}</button></div>}
+    {!loading && session.running && snapshot && !snapshot.connected && !piTerminalHandoff && <div className="codex-chat-banner codex-native-retry" role="status"><span>{session.backend === 'claude' && session.executionTransport !== 'structured' ? '当前由原生终端运行；本轮结束后可切换到流式图形对话。' : '历史记录可查看，原生输入连接尚未就绪。'}</span><button type="button" className="text-button" disabled={reconnecting || !transport} onClick={() => void reconnectNative()}>{reconnecting ? '正在重新连接…' : session.backend === 'claude' && session.executionTransport !== 'structured' ? '切换到流式对话' : '重新连接原生会话'}</button></div>}
     {dshTuiOwner && <div className="codex-chat-banner codex-native-retry" role="status"><span>当前输入由 dsh-tui 持有，图形对话只能阅读。接管会退出终端进程，并从同一份原生会话恢复。</span><button type="button" className="text-button" disabled={takingOver || dshTuiBusy || !transport} onClick={() => void takeOverDshTerminal()}>{takingOver ? '正在接管…' : dshTuiBusy ? '任务结束后可接管' : '接管图形对话'}</button></div>}
     <NoticeToasts scope={'codex.' + session.id + '.' + (snapshot?.nativeSessionId ?? session.nativeSessionId ?? '')} notices={[
       ...(snapshot?.notice ? [{ id: 'native:' + snapshot.notice, text: snapshot.notice }] : []),
@@ -485,8 +498,8 @@ function ChatSession({ session, allowTerminal = true, onTerminal, onSelection }:
         if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) { event.preventDefault(); if (canSend) void send(); }
       }} />
       </ImageAttachments>
-      <AgentChatQuickSettings key={settingsOpen ? 'modal' : 'inline'} controller={settingsController} blockedReason={session.archived ? '恢复会话后可修改设置。' : dshTuiOwner ? dshTuiBusy ? '当前任务结束后接管图形对话，再修改原生设置。' : '先接管图形对话，再修改原生设置。' : !transport || !nativeAvailable ? '连接原生会话后可修改设置。' : undefined} />
-      <div className="chat-composer-footer codex-composer-footer"><span className="composer-hint" data-actionable={busy || !!draft.pending || !transport || !nativeAvailable || undefined}>{busy ? '正在发送…' : draft.pending ? '请先核对上一条消息的发送结果' : dshTuiOwner ? '当前输入由 dsh-tui 持有 · 先接管图形对话' : !transport ? '正在连接本地服务，草稿已保留' : !nativeAvailable ? '请使用上方的重新连接按钮恢复输入' : hasTurn ? session.backend === 'claude' ? '生成中发送会加入队列 · 本轮结束后继续' : session.backend === 'dsh' ? '生成中发送会排到本轮之后 · 不停止生成' : '生成中发送会补充当前任务 · 不停止生成' : 'Enter 发送 · Shift + Enter 换行'}</span><div><VoiceInput sessionId={session.id} disabled={session.archived || busy || !!draft.pending} onActive={setVoiceActive} insert={text => { const next = { ...draftRef.current, text: appendVoiceText(draftRef.current.text, text) }; if (!saveDraft(session.id, next)) throw new Error("草稿保存失败，识别文字保留在下方"); updateDraft(next); }} /><button type="button" className="text-button composer-preview-toggle" aria-pressed={preview} onClick={() => setPreview(value => !value)}>Markdown 预览</button>{hasTurn && <button type="button" className="button secondary small-button composer-stop" disabled={!transport || interrupting} onClick={async () => {
+      <AgentChatQuickSettings key={settingsOpen ? 'modal' : 'inline'} controller={settingsController} blockedReason={session.archived ? '恢复会话后可修改设置。' : dshTuiOwner ? dshTuiBusy ? '当前任务结束后接管图形对话，再修改原生设置。' : '先接管图形对话，再修改原生设置。' : piTerminalHandoff ? '切换图形对话后可修改 Pi 原生设置。' : !transport || !nativeAvailable ? '连接原生会话后可修改设置。' : undefined} />
+      <div className="chat-composer-footer codex-composer-footer"><span className="composer-hint" data-actionable={busy || !!draft.pending || !transport || !nativeAvailable || undefined}>{busy ? '正在发送…' : draft.pending ? '请先核对上一条消息的发送结果' : dshTuiOwner ? '当前输入由 dsh-tui 持有 · 先接管图形对话' : !transport ? '正在连接本地服务，草稿已保留' : piTerminalHandoff ? 'Pi 原生终端运行中 · 发送会先确认切换图形对话' : !nativeAvailable ? '请使用上方的重新连接按钮恢复输入' : hasTurn ? session.backend === 'claude' ? '生成中发送会加入队列 · 本轮结束后继续' : session.backend === 'pi' ? '生成中发送会排到当前任务之后 · 不停止生成' : session.backend === 'dsh' ? '生成中发送会排到本轮之后 · 不停止生成' : '生成中发送会补充当前任务 · 不停止生成' : 'Enter 发送 · Shift + Enter 换行'}</span><div><VoiceInput sessionId={session.id} disabled={session.archived || busy || !!draft.pending} onActive={setVoiceActive} insert={text => { const next = { ...draftRef.current, text: appendVoiceText(draftRef.current.text, text) }; if (!saveDraft(session.id, next)) throw new Error("草稿保存失败，识别文字保留在下方"); updateDraft(next); }} /><button type="button" className="text-button composer-preview-toggle" aria-pressed={preview} onClick={() => setPreview(value => !value)}>Markdown 预览</button>{hasTurn && <button type="button" className="button secondary small-button composer-stop" disabled={!transport || interrupting} onClick={async () => {
         updateDraft({...draftRef.current,queue:draftRef.current.queue?.map(item=>({...item,paused:true}))});
         setInterrupting(true); setError('');
         try { await api(`/sessions/${session.id}/chat/interrupt`, {}); await readSnapshot.current(); }

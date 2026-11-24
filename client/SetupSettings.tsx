@@ -3,6 +3,7 @@ import { Download, ExternalLink, LoaderCircle, Power, RefreshCw, TerminalSquare 
 import type { AgentSetupInfo, SetupAction, StartupStatus } from '../shared/setup';
 import type { ShellTerminal } from '../shared/shell';
 import { api } from './api';
+import { t } from '../shared/i18n';
 
 export function AgentSetupControls({ info, local, onTerminal, refresh }: {
   info?: AgentSetupInfo; local: boolean; onTerminal: (id: string) => void; refresh: () => Promise<void>;
@@ -14,8 +15,9 @@ export function AgentSetupControls({ info, local, onTerminal, refresh }: {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   if (!info) return null;
+  const managedProvider = info.id === 'dsh' || info.id === 'pi';
   const launch = async (action: SetupAction) => {
-    if (action === 'install' && !window.confirm(`将在底部终端执行：\n${info.installCommand}\n\n安装到当前用户的 npm 全局目录，不会自动使用 sudo。是否继续？`)) return;
+    if (action === 'install' && !window.confirm(`将在终端面板执行：\n${info.installCommand}\n\n安装到当前用户的 npm 全局目录，不会自动使用 sudo。是否继续？`)) return;
     setBusy(true); setMessage('');
     try { const shell = await api<ShellTerminal>(`/setup/agents/${info.id}/terminal`, { action }); onTerminal(shell.id); }
     catch (error) { setMessage(error instanceof Error ? error.message : '无法打开引导终端'); }
@@ -31,23 +33,23 @@ export function AgentSetupControls({ info, local, onTerminal, refresh }: {
   };
   return <div className="agent-setup-controls">
     <p className="backend-note">{info.note}</p>
-    {info.id !== 'dsh' && <small className="muted">{info.credentialPresent ? '检测到凭据配置（有效性未验证）' : '可使用原生账号登录或配置 API Key'}</small>}
+    <small className="muted">{info.credentialPresent ? '检测到凭据配置（有效性未验证）' : '可使用原生账号登录或配置 API Key'}</small>
     <div className="setup-actions">
       <button className="button secondary small-button" disabled={busy || !local} onClick={() => void launch('install')}><Download size={14} />{info.executable ? '安装 / 更新' : '安装后端'}</button>
       <button className="button secondary small-button" disabled={busy || !local || !info.executable} onClick={() => void launch('login')}><TerminalSquare size={14} />{info.id === 'dsh' ? '原生配置引导' : '原生账号登录'}</button>
-      {info.id !== 'dsh' && <button className="button secondary small-button" disabled={busy || !local || !!info.error} onClick={() => { setKey(''); setBaseUrl(info.baseUrl); setModel(info.model); setMessage(''); setEditing(!editing); }}>{editing ? '收起 API 配置' : '配置 API'}</button>}
+      <button className="button secondary small-button" disabled={busy || !local || !!info.error} onClick={() => { setKey(''); setBaseUrl(info.baseUrl); setModel(info.model); setMessage(''); setEditing(!editing); }}>{editing ? '收起 API 配置' : '配置 API'}</button>
       <a className="text-button" href={info.docsUrl} target="_blank" rel="noreferrer">官方说明<ExternalLink size={12} /></a>
     </div>
     {!local && <p className="backend-note">安装、登录和配置请在运行 Dili 的电脑上操作。</p>}
     {info.error && <p role="alert" className="setup-message">{info.error}</p>}
     {editing && <form className="setup-form" onSubmit={event => { event.preventDefault(); void save(); }}>
       <label>API Key<input type="password" autoComplete="new-password" value={key} onChange={event => setKey(event.target.value)} placeholder="留空保留已有凭据" maxLength={4096} disabled={busy} /></label>
-      <label>API 地址<input type="url" value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="留空使用原生默认地址" maxLength={500} disabled={busy} /></label>
-      <label>模型<input value={model} onChange={event => setModel(event.target.value)} placeholder="留空使用原生默认模型" maxLength={500} disabled={busy} /></label>
-      <p className="backend-note">写入原生设置，自动备份旧文件。API Key 留空会保留凭据；地址和模型留空会恢复默认。新会话生效，保存时不调用模型。</p>
+      <label>API 地址<input type="url" value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder={managedProvider ? t('setup.managedApiUrl') : '留空使用原生默认地址'} maxLength={500} disabled={busy} /></label>
+      <label>模型<input value={model} onChange={event => setModel(event.target.value)} placeholder={managedProvider ? t('setup.managedModel') : '留空使用原生默认模型'} maxLength={500} disabled={busy} /></label>
+      <p className="backend-note">{managedProvider ? t('setup.managedApiNote') : '写入原生设置，自动备份旧文件。API Key 留空会保留凭据；地址和模型留空会恢复默认。新会话生效，保存时不调用模型。'}</p>
       <div className="setup-actions"><button className="button primary small-button" disabled={busy}>{busy && <LoaderCircle size={13} className="spin" />}保存原生配置</button><button type="button" className="text-button" disabled={busy} onClick={() => { setKey(''); setEditing(false); }}>取消</button></div>
     </form>}
-    <details><summary>在其他终端使用</summary><code>{info.installCommand}</code><code>{info.loginCommand}</code><code>{info.nativeCommand}</code><small className="muted">原生配置：{info.configPath}</small></details>
+    <details><summary>在其他终端使用</summary><code>{info.installCommand}</code><code>{info.loginCommand}</code><code>{info.nativeCommand}</code><small className="muted">原生配置：{info.configPath}{info.credentialPath ? `；${t('setup.credentialPath', { path: info.credentialPath })}` : ''}</small></details>
     {message && <p className="setup-message" role="status">{message}</p>}
   </div>;
 }

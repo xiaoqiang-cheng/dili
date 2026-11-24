@@ -19,7 +19,7 @@ import './conversation.css';
 type Snapshot = { identity: string; transcript: ConversationTranscript; syncedAt: Date };
 type ScrollAnchor = { id: string; offset: number };
 
-const backendName = { claude: 'Claude Code', codex: 'Codex', dsh: 'DeepSeek Harness' };
+const backendName = { claude: 'Claude Code', codex: 'Codex', dsh: 'DeepSeek Harness', pi: 'Pi' };
 /** A long native history mounts progressively; the newest page is the useful one. */
 export const MESSAGE_RENDER_LIMIT = 200;
 
@@ -243,8 +243,8 @@ export default function ConversationPane({ session, onTerminal, onSelection, all
     </SessionToolbar>
     <NoticeToasts scope={'conversation.' + identity} notices={transcript?.notice ? [{ id: 'native:' + transcript.notice, text: transcript.notice }] : transcript?.truncated ? [{ id: 'history-window', text: '最近部分，完整上下文请在原生终端中查看' }] : []} />
     {error && <div className="conversation-error codex-chat-error" role="alert"><span>{error}</span><button className="text-button" disabled={refreshing} onClick={() => refresh.current(true)}>重试读取</button></div>}
-    {nativeQuestionPending && <div className="conversation-question-notice" role="status"><span>{session.backend === 'claude' ? 'Claude 正在等待原生终端中的输入。' : 'DeepSeek Harness 正在等待原生界面中的问题回答。'}</span>{allowTerminal && <button className="text-button" onClick={onTerminal}>{session.backend === 'dsh' ? '前往原生界面处理' : '前往原生终端处理'}</button>}</div>}
-    {allowInput && session.running && session.status === 'waiting_approval' && <div className="conversation-error" role="status"><span>原生会话正在等待审批</span>{allowTerminal && <button className="text-button" onClick={onTerminal}>前往原生终端处理</button>}</div>}
+    {nativeQuestionPending && <div className="conversation-question-notice" role="status"><span>{session.backend === 'claude' ? 'Claude 正在等待原生终端中的输入。' : session.backend === 'pi' ? 'Pi 正在等待确认；请切换到图形对话处理。' : 'DeepSeek Harness 正在等待原生界面中的问题回答。'}</span>{allowTerminal && session.backend !== 'pi' && <button className="text-button" onClick={onTerminal}>{session.backend === 'dsh' ? '前往原生界面处理' : '前往原生终端处理'}</button>}</div>}
+    {allowInput && session.running && session.status === 'waiting_approval' && <div className="conversation-error" role="status"><span>{session.backend === 'pi' ? 'Pi 正在等待确认；请切换到图形对话处理' : '原生会话正在等待审批'}</span>{allowTerminal && session.backend !== 'pi' && <button className="text-button" onClick={onTerminal}>前往原生终端处理</button>}</div>}
     <div className="conversation-body codex-chat-body"><div className="conversation-primary codex-chat-primary"><div className="chat-scroll conversation-scroller codex-chat-scroll" ref={scroller} onTouchMove={dismissKeyboard} tabIndex={0} aria-label="会话消息" onScroll={(event) => {
       const element = event.currentTarget;
       const next = element.scrollHeight - element.scrollTop - element.clientHeight < 64;
@@ -273,6 +273,6 @@ export default function ConversationPane({ session, onTerminal, onSelection, all
     <ConversationOutline id={outlineId} open={outlineOpen} compact={compactOutline} entries={transcript?.messages.filter(message => message.role === 'user') ?? []} selectedId={selectedInput} truncated={transcript?.truncated ?? false} close={closeOutline} select={jumpToInput} />
     </div>
     <ChatActivity phase={activityPhase} />
-    {allowInput && session.backend !== 'codex' && <NativeInputComposer key={session.id} session={session} onTerminal={onTerminal} onActivityChange={phase => setSubmissionActivity(previous => phase === 'sending' ? { identity, key: activityKey, phase } : phase === 'accepted' && previous?.identity === identity ? { ...previous, phase } : null)} onPendingChange={pending => setPendingSend(pending ? { identity, text: pending.text } : null)} onSent={() => { followBottom.current = true; refresh.current(); }} />}
+    {allowInput && session.backend !== 'codex' && session.backend !== 'pi' && <NativeInputComposer key={session.id} session={session} onTerminal={onTerminal} onActivityChange={phase => setSubmissionActivity(previous => phase === 'sending' ? { identity, key: activityKey, phase } : phase === 'accepted' && previous?.identity === identity ? { ...previous, phase } : null)} onPendingChange={pending => setPendingSend(pending ? { identity, text: pending.text } : null)} onSent={() => { followBottom.current = true; refresh.current(); }} />}
   </section>;
 }

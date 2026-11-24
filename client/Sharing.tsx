@@ -8,6 +8,7 @@ import type { AuthDevice, AuthStatus, RemoteSettings, RemoteStatus, Share, Share
 import { api } from './api';
 import { copyToClipboard } from './clipboard';
 import ModalShell from './Modal';
+import InviteRequestPanel from './InviteRequestPanel';
 
 const when = (value: string | null) => value ? new Date(value).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '永久';
 const device = (agent: string) => /iPhone|iPad|Android/i.test(agent) ? '手机' : /Mac/i.test(agent) ? 'Mac' : /Windows/i.test(agent) ? 'Windows' : /Linux/i.test(agent) ? 'Linux' : '浏览器';
@@ -144,6 +145,7 @@ export function SecuritySettings({ auth, notify }: { auth: Extract<AuthStatus, {
       <div className="invite-actions"><button className="button primary small-button" disabled={!!busy || !passwordSet || !invite.trim() || !deviceName.trim()}>{busy === 'pair' ? <LoaderCircle size={13} className="spin" /> : <Link2 size={13} />}{busy === 'pair' ? '正在配对…' : '配对并生成链接'}</button><a href="https://dili.discoverpaw.com/connect/" target="_blank" rel="noreferrer">打开中继管理页</a></div>
       {(busy === 'pair' || remote?.pairingStage) && <p className="form-note" role="status">{remote?.pairingStage === 'redeeming' ? '正在兑换邀请码…' : remote?.pairingStage === 'connecting' ? '正在启动远程连接…' : '正在准备中继客户端，下载最多等待 90 秒；失败后可重试，邀请码不会被消耗。'}</p>}
     </form>}
+    {local && remote?.pairing === null && <InviteRequestPanel onInvite={code => { setInvite(code); notify(t('invite.filled')); }} />}
     {(!remote?.pairing || remote.settings.mode !== 'invite') && <details className="security-caddy" open={remote?.settings.enabled && remote.settings.mode !== 'invite'}><summary>高级：手动 SSH 连接</summary>
     <p className="form-note">Dili 从这台电脑通过 SSH 连到你的服务器，服务器上的 Caddy 用你的域名提供 HTTPS。电脑不需要公网 IP。</p>
     <div className="security-grid">

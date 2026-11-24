@@ -54,7 +54,7 @@ function SessionShareApp({ status }: { status: ShareStatus }) {
 
   const session: Session | undefined = state?.sessions.find(item => item.id === status.sessionId);
   const backend = session ? state?.backends.find(item => item.id === session.backend) : undefined;
-  const chatAvailable = !!session && ['codex', 'claude', 'dsh'].includes(session.backend) && !state?.demo && !!backend?.capabilities.graphicalChat;
+  const chatAvailable = !!session && ['codex', 'claude', 'dsh', 'pi'].includes(session.backend) && !state?.demo && !!backend?.capabilities.graphicalChat;
   const dshWebOnly = !chatAvailable && session?.backend === 'dsh' && !state?.demo && !backend?.capabilities.terminal;
   // Pick a sensible first view per backend; a read-only viewer cannot type into chat.
   useEffect(() => {
@@ -70,7 +70,8 @@ function SessionShareApp({ status }: { status: ShareStatus }) {
       const executionMode = mode;
       if (writable && chatAvailable && session.running && executionMode !== 'conversation' && session.interactionMode !== executionMode) {
         if (session.backend === 'claude' && !window.confirm('切换将退出当前 Claude 进程，并从同一份已保存会话恢复。当前任务和审批必须先处理完成。继续切换？')) return;
-        await api(`/sessions/${session.id}/start`, { mode: executionMode, handoff: session.backend === 'claude' });
+        if (session.backend === 'pi' && !window.confirm('切换将退出当前 Pi 进程，并从同一份已保存会话恢复。Pi 原生终端不会报告任务状态；请先确认终端已空闲，切换可能中断仍在运行的任务。继续切换？')) return;
+        await api(`/sessions/${session.id}/start`, { mode: executionMode, handoff: session.backend === 'claude' || session.backend === 'pi' });
       }
       setView(mode);
     } catch (cause) { setError(cause instanceof Error ? cause.message : '切换失败'); }
@@ -113,7 +114,7 @@ function SessionShareApp({ status }: { status: ShareStatus }) {
             : view === 'chat' && chatAvailable ? <Suspense fallback={<div className="loading-state"><LoaderCircle size={22} className="spin" /></div>}><AgentChatPane key={session.id} session={session} allowTerminal={status.mode === 'full'} onTerminal={() => void switchView('terminal')} onSelection={ignoreSelection} /></Suspense>
             : view === 'conversation' ? <ConversationPane key={session.id} session={session} allowTerminal={status.mode === 'full'} allowInput={false} onTerminal={() => void switchView('terminal')} onSelection={ignoreSelection} />
             : session.backend === 'codex' && chatAvailable && session.running && session.interactionMode === 'chat' ? <div className="terminal-empty"><h3>会话正在图形对话中运行</h3><p>{writable ? '切换到图形对话继续。' : '切换到对话记录查看进展。'}</p></div>
-            : <TerminalPane key={session.id} sessionId={session.id} running={session.running} status={session.status} allowImages={writable && ['codex','claude','dsh'].includes(session.backend) && !state.demo} readOnly={!writable} onSelection={ignoreSelection} />}
+            : <TerminalPane key={session.id} sessionId={session.id} running={session.running} status={session.status} allowImages={writable && ['codex','claude','dsh','pi'].includes(session.backend) && !state.demo} readOnly={!writable} onSelection={ignoreSelection} />}
         </div>
       </section></div>
       {explorer && writable && <SharePreview key={session.id} session={session} close={() => setExplorer(false)} />}

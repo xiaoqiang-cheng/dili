@@ -2,7 +2,7 @@ import type { Session, ConversationTranscript } from '../shared/types.ts';
 import { formatTokens } from '../shared/usage.ts';
 
 const ROLE_LABEL = { user: '用户', assistant: 'Agent' } as const;
-const BACKEND_LABEL = { claude: 'Claude Code', codex: 'Codex', dsh: 'DeepSeek Harness' } as const;
+const BACKEND_LABEL = { claude: 'Claude Code', codex: 'Codex', dsh: 'DeepSeek Harness', pi: 'Pi' } as const;
 
 /** Every native string is untrusted: escape before it reaches the document. */
 export function escapeHtml(value: string): string {

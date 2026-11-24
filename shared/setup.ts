@@ -5,6 +5,8 @@ export interface AgentSetupInfo {
   id: Backend;
   executable: string | null;
   configPath: string;
+  /** Path of the native credential file, when the backend separates it from config. */
+  credentialPath?: string;
   credentialPresent: boolean;
   baseUrl: string;
   model: string;

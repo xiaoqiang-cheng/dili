@@ -53,6 +53,17 @@ test('purging a trashed session is owner-only', () => {
   assert.deepEqual(allowed(null, 'DELETE', '/api/sessions/s1'), { allowed: false, status: 401, error: '请先登录' });
 });
 
+test('handing a workspace to a desktop editor is owner-only', () => {
+  for (const path of ['/api/sessions/s1/workspace/open-editor', '/api/groups/g1/workspace/open-editor', '/api/workspaces/w1/workspace/open-editor']) {
+    assert.equal(allowed(owner, 'POST', path).allowed, true);
+    // Starting a program on the host is never a share capability, writable or not.
+    for (const mode of ['read', 'write', 'full'] as const) {
+      assert.deepEqual(allowed(share({ mode }), 'POST', path), { allowed: false, status: 403, error: '分享链接无权执行此操作' });
+    }
+    assert.equal(allowed(null, 'POST', path).allowed, false);
+  }
+});
+
 test('diagnostics are owner-only even for a writable share', () => {
   assert.equal(allowed(owner, 'GET', '/api/debug').allowed, true);
   assert.deepEqual(allowed(share({ mode: 'write' }), 'GET', '/api/debug'), { allowed: false, status: 403, error: '分享链接无权执行此操作' });

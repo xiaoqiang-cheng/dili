@@ -5,10 +5,11 @@ import type { AgentSetupInfo } from '../shared/setup';
 const agents: AgentSetupInfo[] = [
   { id: 'claude', executable: null, configPath: '/home/test/.claude/settings.json', credentialPresent: false, baseUrl: '', model: '', installCommand: 'npm install -g @anthropic-ai/claude-code', loginCommand: 'claude auth login', nativeCommand: 'claude', docsUrl: 'https://code.claude.com/docs/en/setup', note: '使用原生配置，其他终端也能运行。' },
   { id: 'codex', executable: '/usr/bin/codex', configPath: '/home/test/.codex/config.toml', credentialPresent: true, baseUrl: 'https://example.com/v1', model: 'model-a', installCommand: 'npm install -g @openai/codex', loginCommand: 'codex login --device-auth', nativeCommand: 'codex', docsUrl: 'https://developers.openai.com/codex/cli/', note: '使用原生配置，其他终端也能运行。' },
-  { id: 'dsh', executable: '/usr/bin/dsh', configPath: '/home/test/.dsh/cordis.patch.yml', credentialPresent: false, baseUrl: '', model: '', installCommand: 'npm install -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui', loginCommand: 'dsh web', nativeCommand: 'dsh web', docsUrl: 'https://github.com/deepseek-ai/deepseek-harness', note: '在原生 Web 设置中配置 API Key。' },
+  { id: 'dsh', executable: '/usr/bin/dsh', configPath: '/home/test/.dsh/profiles/web/cordis.patch.yml', credentialPath: '/home/test/.dsh/.credentials.yaml', credentialPresent: false, baseUrl: '', model: '', installCommand: 'npm install -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui', loginCommand: 'dsh web', nativeCommand: 'dsh web', docsUrl: 'https://github.com/deepseek-ai/deepseek-harness', note: '在原生 Web 设置中配置 API Key。' },
+  { id: 'pi', executable: '/usr/bin/pi', configPath: '/home/test/.pi/agent/models.json', credentialPath: '/home/test/.pi/agent/auth.json', credentialPresent: false, baseUrl: '', model: '', installCommand: 'npm install -g @earendil-works/pi-coding-agent', loginCommand: 'pi', nativeCommand: 'pi', docsUrl: 'https://github.com/earendil-works/pi', note: '使用 Pi 原生配置。' },
 ];
 
-test('native API setup keeps keys out of browser storage, preserves empty keys, and guides DeepSeek natively', async ({ page }) => {
+test('native API setup keeps keys out of browser storage, preserves empty keys, and configures dsh/Pi managed APIs', async ({ page }) => {
   await page.route('**/api/setup/agents', route => route.fulfill({ json: agents }));
   let saved: unknown;
   await page.route('**/api/setup/agents/codex/config', route => { saved = route.request().postDataJSON(); return route.fulfill({ json: { note: '已保存原生配置并备份原文件' } }); });
@@ -29,7 +30,19 @@ test('native API setup keeps keys out of browser storage, preserves empty keys, 
   expect(saved).toEqual({ baseUrl: 'https://example.com/v1', model: 'model-a' });
   const dsh = page.locator('.backend-setting-card').filter({ has: page.getByRole('heading', { name: 'DeepSeek Harness', exact: true }) });
   await expect(dsh.getByRole('button', { name: '原生配置引导' })).toBeEnabled();
-  await expect(dsh.getByRole('button', { name: '配置 API', exact: true })).toHaveCount(0);
+  await expect(dsh.getByRole('button', { name: '配置 API', exact: true })).toBeEnabled();
+  let dshSaved: unknown;
+  await page.route('**/api/setup/agents/dsh/config', route => { dshSaved = route.request().postDataJSON(); return route.fulfill({ json: { note: '已写入 DSH profile 配置' } }); });
+  await dsh.getByRole('button', { name: '配置 API', exact: true }).click();
+  await expect(dsh.locator('.setup-form')).toBeVisible();
+  await dsh.getByLabel('API Key', { exact: true }).fill('dsh-browser-key');
+  await dsh.getByLabel('API 地址', { exact: true }).fill('https://dsh.example/v1');
+  await dsh.getByLabel('模型', { exact: true }).fill('dsh-model');
+  await dsh.getByRole('button', { name: '保存原生配置' }).click();
+  await expect(dsh.getByRole('status')).toContainText('DSH profile');
+  expect(dshSaved).toEqual({ apiKey: 'dsh-browser-key', baseUrl: 'https://dsh.example/v1', model: 'dsh-model' });
+  const pi = page.locator('.backend-setting-card').filter({ has: page.getByRole('heading', { name: 'Pi', exact: true }) });
+  await expect(pi.getByRole('button', { name: '配置 API', exact: true })).toBeEnabled();
 });
 
 test('auto-start toggle changes only future startup and mobile settings do not overflow', async ({ page }) => {
@@ -72,7 +85,7 @@ test('installation guide opens the returned terminal and keeps it interactive wi
     await page.goto('/#/backends');
     const claude = page.locator('.backend-setting-card').filter({ has: page.getByRole('heading', { name: 'Claude Code', exact: true }) });
     await claude.getByRole('button', { name: '安装后端', exact: true }).click();
-    const dock = page.getByRole('region', { name: '底部终端面板' });
+    const dock = page.getByRole('region', { name: '终端面板' });
     await expect(dock.getByRole('tab', { name: shell.title, exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(dock.locator('.terminal-connection.connected')).toHaveCount(1);
     expect(action).toEqual({ action: 'install' });

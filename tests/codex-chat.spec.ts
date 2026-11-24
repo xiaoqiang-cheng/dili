@@ -865,13 +865,13 @@ for (const backend of ['codex', 'claude'] as const) test(`${backend} unified nat
   await expect(dialog.getByLabel('模型', { exact: true })).toBeDisabled();
 });
 
-for (const backend of ['codex', 'claude'] as const) test(`${backend} composer exposes independent native model and permission controls`, async ({ page }) => {
+for (const backend of ['codex', 'claude'] as const) test(`${backend} composer exposes independent native model, permission and effort controls`, async ({ page }) => {
   const app = await fixture(page, backend);
-  let nativeSettings = { nativeSessionId: 'exact-native-thread', version: 'quick-1', model: 'native-model', models: [{ id: 'native-model', label: 'Native Model' }, { id: 'native-other', label: 'Native Other' }], permission: 'native-default', permissions: [{ id: 'native-default', label: 'Native Default' }, { id: 'native-plan', label: 'Native Plan' }], scope: '当前原生执行器的设置' };
+  let nativeSettings = { nativeSessionId: 'exact-native-thread', version: 'quick-1', model: 'native-model', models: [{ id: 'native-model', label: 'Native Model' }, { id: 'native-other', label: 'Native Other' }], permission: 'native-default', permissions: [{ id: 'native-default', label: 'Native Default' }, { id: 'native-plan', label: 'Native Plan' }], effort: null as string | null, effortLabel: '模型默认：中（medium）', efforts: [{ id: 'medium', label: '中（medium）' }, { id: 'high', label: '高（high）', description: 'Native high effort' }], scope: '当前原生执行器的设置' };
   const updates: { version: string; field: string; value: string }[] = [];
   await page.route(`**/api/sessions/${app.contact.id}/chat/settings`, async route => {
     if (route.request().method() === 'GET') return route.fulfill({ json: nativeSettings });
-    const body = route.request().postDataJSON() as { version: string; field: 'model' | 'permission'; value: string };
+    const body = route.request().postDataJSON() as { version: string; field: 'model' | 'permission' | 'effort'; value: string };
     updates.push(body);
     nativeSettings = { ...nativeSettings, version: `quick-${updates.length + 1}`, [body.field]: body.value };
     return route.fulfill({ json: nativeSettings });
@@ -893,6 +893,18 @@ for (const backend of ['codex', 'claude'] as const) test(`${backend} composer ex
   await permissionPopover.getByRole('button', { name: '应用权限' }).click();
   await expect(permissionPopover).toContainText('原生设置已确认');
   expect(updates[1]).toEqual({ version: 'quick-2', field: 'permission', value: 'native-plan' });
+  const effortButton = page.getByRole('button', { name: '选择原生推理强度', exact: true });
+  await expect(effortButton).toContainText('模型默认：中（medium）');
+  await effortButton.click();
+  const effortPopover = page.getByRole('group', { name: '原生推理强度设置' });
+  await effortPopover.getByLabel('原生推理强度', { exact: true }).selectOption('high');
+  await expect(effortPopover).toContainText('Native high effort');
+  await effortPopover.getByRole('button', { name: '应用推理强度' }).click();
+  await expect(effortPopover).toContainText('原生设置已确认');
+  expect(updates[2]).toEqual({ version: 'quick-3', field: 'effort', value: 'high' });
+  await expect(effortButton).toContainText('高（high）');
+  await effortPopover.getByRole('button', { name: '关闭快捷设置' }).click();
+  await page.getByRole('button', { name: /选择原生权限/ }).click();
   await expect(input).toHaveValue('草稿需要完整保留');
   await permissionPopover.getByRole('button', { name: '关闭快捷设置' }).click();
   await expect(page.getByRole('button', { name: '选择原生权限', exact: true })).toBeFocused();
@@ -939,8 +951,9 @@ for (const backend of ['codex', 'claude'] as const) test(`${backend} slash comma
   const input = page.getByLabel(`给 ${backend === 'claude' ? 'Claude' : 'Codex'} 发送消息`);
   await input.fill('/');
   const menu = page.getByRole('listbox', { name: '原生会话命令' });
-  await expect(menu.getByRole('option')).toHaveCount(3);
+  await expect(menu.getByRole('option')).toHaveCount(4);
   await expect(menu).toContainText('选择当前会话使用的模型');
+  await expect(menu).toContainText('调整当前模型的推理强度');
   await input.press('ArrowDown');
   await expect(menu.getByRole('option', { selected: true })).toContainText('/model');
   await expect(input).toBeFocused();

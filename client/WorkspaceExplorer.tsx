@@ -2,9 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { ChevronDown, ChevronRight, FileDiff, FileText, Folder, PanelLeftClose, PanelLeftOpen, LoaderCircle, RefreshCw, X } from 'lucide-react';
 import { workspaceBase, EntryIcon, formatSize, gitStatusClass, gitStatusLabel, htmlPath, mediaKind, type Entry, type Tree, type FileResult, type DiffResult, type GitStatus, type Preview } from './workspace-files';
 import WorkspaceFilePreview, { WorkspacePreviewContent } from './WorkspacePreview';
+import VscodeLogo from './VscodeLogo';
 import type { FileSelection } from './usePreviewWorkspace';
 import type { Session } from '../shared/types';
+import { t } from '../shared/i18n';
 import { api } from './api';
+import { copyToClipboard } from './clipboard';
 import { readLocalPreference, writeLocalPreference } from './ui';
 import { interfaceScale, viewportWidth } from './zoom';
 
@@ -67,7 +70,9 @@ export function Splitter({ label, value, min, max, onChange, onCommit, direction
     onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={finish} onPointerCancel={finish} onLostPointerCapture={finish} onKeyDown={keyDown}><span /></div>;
 }
 
-type ExplorerProps = { groupId?: string; session: Session; close: () => void; picker?: ReactNode; root?: string; embedded?: boolean; selection?: FileSelection; treeCollapsed?: boolean; onTreeCollapsed?: (value: boolean) => void; onSelectFile?: (selection?: FileSelection) => void };
+type ExplorerProps = { groupId?: string; session: Session; close: () => void; picker?: ReactNode; root?: string; embedded?: boolean; selection?: FileSelection; treeCollapsed?: boolean; onTreeCollapsed?: (value: boolean) => void; onSelectFile?: (selection?: FileSelection) => void;
+  /** Only the host owner can start a desktop editor on the machine running Dili. */
+  canOpenEditor?: boolean };
 
 export default function WorkspaceExplorer(props: ExplorerProps) {
   // Remount immediately when switching workspaces; pending responses from the
@@ -75,7 +80,7 @@ export default function WorkspaceExplorer(props: ExplorerProps) {
   return <WorkspaceExplorerPanel key={`${props.session.id}:${props.root ?? props.session.cwd}`} {...props} />;
 }
 
-function WorkspaceExplorerPanel({ groupId, session, close, picker, root, embedded, selection, treeCollapsed = false, onTreeCollapsed, onSelectFile }: ExplorerProps) {
+function WorkspaceExplorerPanel({ groupId, session, close, picker, root, embedded, selection, treeCollapsed = false, onTreeCollapsed, onSelectFile, canOpenEditor }: ExplorerProps) {
   const [tab, setTab] = useState<'files' | 'git'>(() => selection?.kind === 'diff' ? 'git' : 'files');
   const [trees, setTrees] = useState<Record<string, Tree>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']));
@@ -105,6 +110,28 @@ function WorkspaceExplorerPanel({ groupId, session, close, picker, root, embedde
   const sequence = useRef(0);
   const requests = useRef(new Map<string, number>());
   const base = workspaceBase(session.id, root, groupId);
+  const [editorNote, setEditorNote] = useState<{ kind: 'note' | 'error'; text: string } | null>(null);
+  /** Asks the host to start VS Code for this directory. The result is reported
+   * as the CLI reported it: "requested" until VS Code itself says nothing. */
+  const openEditor = () => {
+    setEditorNote(null);
+    void (async () => {
+      try {
+        const result = await api<{ command: string; path: string; state: 'exited' | 'running' }>(`${base}/open-editor`, {}, 'POST');
+        setEditorNote({ kind: 'note', text: result.state === 'running'
+          ? t('editor.requested', { command: result.command })
+          : t('editor.opened', { command: result.command, path: result.path }) });
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : t('editor.failed');
+        // The editor's own URL scheme needs nothing from the server, so a failed
+        // launch still leaves the user a way in instead of a dead end.
+        const cwd = root || session.cwd;
+        await copyToClipboard(`vscode://file${cwd.startsWith('/') ? '' : '/'}${cwd}`)
+          .then(() => setEditorNote({ kind: 'error', text: `${message} ${t('editor.copied')}` }))
+          .catch(() => setEditorNote({ kind: 'error', text: message }));
+      }
+    })();
+  };
 
   // Each tree, Git status and the single preview have their own request scope.
   // An older completion cannot clear a newer request's loading/error state.
@@ -221,12 +248,14 @@ function WorkspaceExplorerPanel({ groupId, session, close, picker, root, embedde
     {embedded && <div className="workspace-combined-toolbar">
       <button className="icon-button" aria-label={treeCollapsed ? '展开目录' : '收起目录'} title={treeCollapsed ? '展开目录' : '收起目录'} aria-expanded={!treeCollapsed} onClick={() => onTreeCollapsed?.(!treeCollapsed)}>{treeCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}</button>
       {picker || <span title={root || session.cwd}><bdi>{root || session.cwd}</bdi></span>}
+      {canOpenEditor && <button className="icon-button" aria-label={t('editor.open')} title={t('editor.open')} onClick={openEditor}><VscodeLogo /></button>}
       <button className="icon-button" aria-label="刷新资源管理器" title="刷新目录" onClick={refresh}><RefreshCw size={14} /></button>
       {selection && <><button className="icon-button" aria-label="重新读取文件" title="重新读取文件" onClick={() => setPreviewRevision(value => value + 1)}><RefreshCw size={14} /></button><button className="icon-button" aria-label="关闭文件预览" title="关闭文件预览" onClick={clearPreview}><X size={14} /></button></>}
     </div>}
+    {editorNote && <p className={editorNote.kind === 'error' ? 'workspace-error' : 'workspace-note'} role={editorNote.kind === 'error' ? 'alert' : 'status'}>{editorNote.text}</p>}
     <div className="workspace-explorer-body">
     <div className="workspace-list-pane" hidden={embedded && treeCollapsed}>
-      {!embedded && <header className="workspace-explorer-header">{picker || <div><strong>资源管理器</strong><small title={root || session.cwd}><bdi>{root || session.cwd}</bdi></small></div>}<button className="icon-button" aria-label="刷新资源管理器" title="刷新" onClick={refresh}><RefreshCw size={14} /></button><button className="icon-button" aria-label="关闭资源管理器" title="关闭" onClick={close}><X size={16} /></button></header>}
+      {!embedded && <header className="workspace-explorer-header">{picker || <div><strong>资源管理器</strong><small title={root || session.cwd}><bdi>{root || session.cwd}</bdi></small></div>}{canOpenEditor && <button className="icon-button" aria-label={t('editor.open')} title={t('editor.open')} onClick={openEditor}><VscodeLogo /></button>}<button className="icon-button" aria-label="刷新资源管理器" title="刷新" onClick={refresh}><RefreshCw size={14} /></button><button className="icon-button" aria-label="关闭资源管理器" title="关闭" onClick={close}><X size={16} /></button></header>}
       <nav className="workspace-tabs" aria-label="资源管理器视图"><button className={tab === 'files' ? 'active' : ''} aria-pressed={tab === 'files'} onClick={() => selectTab('files')}><Folder size={14} />文件</button><button className={tab === 'git' ? 'active' : ''} aria-pressed={tab === 'git'} onClick={() => selectTab('git')}><FileDiff size={14} />Git diff{!!git?.entries.length && <b>{git.entries.length}</b>}</button></nav>
       {visibleErrors.filter(([scope]) => scope !== 'preview').map(([scope, message]) => <div key={scope} className="workspace-error" role="alert">{message}</div>)}
       {loading && <div className="workspace-loading" role="status"><LoaderCircle size={14} className="spin" />读取中…</div>}

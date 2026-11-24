@@ -15,7 +15,8 @@ export default function GroupWorkspacePermissions({ group, members, backends, cl
   group: Group; members: Session[]; backends: BackendInfo[]; close: () => void; refresh: () => Promise<unknown>;
 }) {
   const unavailable = (member: Session) => member.archived ? '已移入垃圾桶，请先恢复会话' : member.backend === 'dsh'
-    ? 'DeepSeek 原生沙箱暂不支持追加目录' : !backends.find(item => item.id === member.backend)?.capabilities.additionalDirectories
+    ? 'DeepSeek 原生沙箱暂不支持追加目录' : member.backend === 'pi'
+    ? 'Pi 目录由原生工具配置决定，Dili 未接入 --add-dir' : !backends.find(item => item.id === member.backend)?.capabilities.additionalDirectories
       ? '当前 CLI 不支持追加目录，请升级后刷新检测' : '';
   const [path, setPath] = useState(group.workspace ?? '');
   const [selected, setSelected] = useState(() => members.filter(member => !unavailable(member)).map(member => member.id));
