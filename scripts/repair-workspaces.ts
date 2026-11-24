@@ -176,7 +176,7 @@ export function main(argv: string[]): number {
   console.log(`改写规则：${from} → ${to}`);
   if (isDirectory(from)) console.log(`注意：旧目录仍然存在（${from}）——如果这不是重命名，请确认要把旧路径改成新目录。`);
   console.log('');
-  for (const change of plan.sessions) console.log(`会话${change.archived ? '（已归档）' : ''}「${change.title}」${change.id.slice(0, 8)}\n${describe(change).join('\n')}`);
+  for (const change of plan.sessions) console.log(`会话${change.archived ? '（垃圾桶）' : ''}「${change.title}」${change.id.slice(0, 8)}\n${describe(change).join('\n')}`);
   for (const change of plan.groups) console.log(`群组「${change.title}」${change.id.slice(0, 8)}\n${describe(change).join('\n')}`);
   if (!plan.sessions.length && !plan.groups.length) console.log('没有需要修复的路径。');
 

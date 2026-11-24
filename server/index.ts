@@ -1064,7 +1064,7 @@ app.patch('/api/sessions/:id', async (req, res) => {
     // must never slip between native shutdown and the archived flag.
     return res.json(await stopSession(item.id, () => store.updateSession(item.id, {
       ...patch, status: 'stopped', running: false, errorCode: null,
-      statusSource: 'process', statusDetail: '已停止并归档，原生会话历史保留',
+      statusSource: 'process', statusDetail: '已停止并移入垃圾桶，原生会话历史保留',
     })));
   }
   if ('archived' in patch && (starting.has(item.id) || stopping.has(item.id))) fail('会话正在连接或停止，请稍后重试', 409);
@@ -1078,7 +1078,7 @@ async function appendSessionDirectory(id: string, path: string): Promise<{ sessi
   const item = session(id);
   if (item.backend === 'dsh') fail('当前 DeepSeek Harness 原生沙箱只支持单工作区，暂不支持追加目录权限', 409);
   if (!info(item.backend).capabilities.additionalDirectories) fail('当前 CLI 不支持附加目录，请更新后刷新后端检测', 409);
-  if (item.archived) fail('请先恢复归档联系人', 409);
+  if (item.archived) fail('请先从垃圾桶恢复会话', 409);
   if (starting.has(item.id) || stopping.has(item.id) || terminals.isStopping(item.id)) fail('会话正在连接或停止，请稍后重试', 409);
   const directories = item.additionalDirectories ?? [];
   if ([item.cwd, ...directories].some(value => {
@@ -1181,7 +1181,7 @@ async function startSession(id: string, body: { mode?: unknown; restart?: unknow
   if (requested !== 'terminal' && requested !== 'chat') fail('未知会话交互方式');
   const mode = requested as 'terminal' | 'chat';
   if (mode === 'chat' && (demo || !info(item.backend).capabilities.graphicalChat)) fail('这个后端目前不支持原生图形化聊天');
-  if (item.archived) fail('请先恢复归档联系人');
+  if (item.archived) fail('请先从垃圾桶恢复会话');
   if (stopping.has(item.id) || terminals.isStopping(item.id)) fail('会话正在停止，请稍后再启动', 409);
   if (starting.has(item.id)) fail('会话正在连接，请稍后重试', 409);
   // Claude cannot attach its TUI to stream-json. A confirmed, idle handoff
@@ -1454,7 +1454,7 @@ app.post('/api/groups/:id/directories', async (req, res) => {
   const groupId = String(req.params.id);
   const group = store.group(groupId);
   if (!group) fail('群组不存在', 404);
-  if (group!.archived) fail('请先恢复归档群组', 409);
+  if (group!.archived) fail('请先从垃圾桶恢复群组', 409);
   const path = realpathSync(directory(req.body?.path));
   const ids: unknown = req.body?.sessionIds;
   if (!Array.isArray(ids) || !ids.length || ids.length > 100 || ids.some(id => typeof id !== 'string' || !id)) fail('请选择 1–100 个群成员');
@@ -1534,7 +1534,7 @@ async function deliverNow(id: string, options: { autoStart?: boolean } = {}) {
   const delivery = store.delivery(id) || fail('投递记录不存在', 404);
   if (delivery.status !== 'pending' || deliveryLocks.has(id)) fail('消息已处理或正在处理');
   let target = session(delivery.sessionId);
-  if (target.archived) fail('目标成员已归档');
+  if (target.archived) fail('目标成员已删除，请先从垃圾桶恢复');
   if (!target.running && options.autoStart && !demo && info(target.backend).capabilities.graphicalChat && !starting.has(target.id)) target = await startSession(target.id, { mode: 'chat' });
   if (!target.running) fail('请先进入并启动目标会话');
   if (stopping.has(target.id) || terminals.isStopping(target.id)) fail('目标会话正在停止');

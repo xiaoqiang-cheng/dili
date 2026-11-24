@@ -146,7 +146,7 @@ export class Store {
         return quoted;
       });
       for (const id of recipientIds) {
-        if (this.session(id)?.groupId !== input.groupId || this.session(id)?.archived) throw new Error('接收成员无效或已归档');
+        if (this.session(id)?.groupId !== input.groupId || this.session(id)?.archived) throw new Error('接收成员无效或已删除');
       }
       const preview = replyPreview(input.text || (input.attachments?.length ? '[图片]' : ''));
       const group = this.updateGroup(input.groupId, {

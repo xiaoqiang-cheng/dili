@@ -162,7 +162,7 @@ test('terminal transport reconnects after a simulated service outage and replays
 
 for (const backend of ['codex', 'claude', 'dsh'] as const) test(`${backend} running contacts automatically stop on archive, and restore does not restart`, async ({ page }) => {
   const state = await readState(page.request);
-  const session = await mutate<Session>(page.request, '/sessions', { backend, title: `${backend} 自动停止归档回归`, cwd: state.defaultCwd });
+  const session = await mutate<Session>(page.request, '/sessions', { backend, title: `${backend} 自动停止删除回归`, cwd: state.defaultCwd });
   await mutate(page.request, `/sessions/${session.id}/start`);
   try {
     await page.goto('/');
@@ -170,15 +170,15 @@ for (const backend of ['codex', 'claude', 'dsh'] as const) test(`${backend} runn
     await expect(page.getByRole('button', { name: '置顶会话', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Fork 会话', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '分享会话', exact: true })).toBeVisible();
-    await page.getByRole('button', { name: '归档会话', exact: true }).click();
+    await page.getByRole('button', { name: '删除会话', exact: true }).click();
     await expect(page.getByRole('button', { name: `进入 ${session.title} 的会话`, exact: true })).not.toBeVisible();
     let current = (await readState(page.request)).sessions.find(item => item.id === session.id)!;
     expect(current.archived).toBe(true); expect(current.running).toBe(false); expect(current.status).toBe('stopped');
     const nativeSessionId = current.nativeSessionId;
     await page.goto(`/#/archive?session=${session.id}`);
-    await expect(page.getByRole('button', { name: '已归档 · 恢复会话', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '已删除 · 恢复会话', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '启动原生会话', exact: true })).toBeDisabled();
-    await page.getByRole('button', { name: '已归档 · 恢复会话', exact: true }).click();
+    await page.getByRole('button', { name: '已删除 · 恢复会话', exact: true }).click();
     await expect(page.getByRole('button', { name: '启动原生会话', exact: true })).toBeEnabled();
     current = (await readState(page.request)).sessions.find(item => item.id === session.id)!;
     expect(current.archived).toBe(false); expect(current.running).toBe(false);

@@ -30,7 +30,7 @@ export default function WorkspacePermissions({ session, backend, close, refresh 
         <p className="form-note">沿用原生审批、沙箱和网络策略。只追加指定目录；此处不提供权限撤销。</p>
       </>}
       {session.directoriesPending && <p className="form-note" role="status">已保存，待下次恢复原生会话后生效。</p>}
-      {session.archived && <p className="form-note">请先恢复归档会话。</p>}
+      {session.archived && <p className="form-note">请先从垃圾桶恢复会话。</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
       </div>
       <div className="modal-footer"><button type="button" className="button secondary" disabled={busy} onClick={close}>完成</button>{supported && <button className="button primary" disabled={busy || session.archived || !path.trim()}>{busy ? <LoaderCircle size={15} className="spin" /> : <Plus size={15} />}添加工作区</button>}</div>

@@ -68,7 +68,7 @@ test('recipient validation rejects missing, foreign and archived contacts withou
   const { store, group, member, message } = groupFixture(t);
   const otherGroup = store.addGroup('其他群组', '另一个目标');
   const foreign = store.addSession({ backend: 'dsh', title: '其他成员', cwd: '/tmp', groupId: otherGroup.id });
-  const archived = store.addSession({ backend: 'claude', title: '已归档', cwd: '/tmp', groupId: group.id, archived: true });
+  const archived = store.addSession({ backend: 'claude', title: '已删除', cwd: '/tmp', groupId: group.id, archived: true });
   const originalGroup = store.group(group.id);
 
   for (const invalidId of ['missing-session', foreign.id, archived.id]) {
