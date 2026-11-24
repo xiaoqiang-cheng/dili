@@ -67,6 +67,8 @@ select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--line-stro
 .rail { position: relative; z-index: 20; display: flex; flex-shrink: 0; flex-direction: column; width: 64px; padding: 10px 8px calc(10px + var(--safe-bottom)); background: var(--rail-bg); border-right: 1px solid var(--line); transition: width .16s ease; }
 .rail.expanded { width: 208px; }
 .rail .brand, .rail-primary, .rail-groups { overflow: hidden; }
+.rail-head { display: flex; align-items: center; margin: 0 0 6px 4px; }
+.rail-head .rail-toggle { width: 40px; height: 40px; padding: 0; justify-content: center; border-radius: 10px; flex-shrink: 0; }
 .rail .brand { margin: 0 0 12px 4px; }
 .rail-primary, .rail-groups { display: flex; flex-direction: column; gap: 2px; }
 .rail-groups { flex: 1; min-height: 0; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); overflow-y: auto; scrollbar-width: none; }
@@ -95,6 +97,7 @@ select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--line-stro
 .rail-footer .more-menu { position: static; }
 .rail-footer { position: relative; }
 .rail-toggle { color: var(--muted); }
+.rail-footer .rail-machine-return { margin-top: 4px; }
 .rail-footer .icon-button { width: 40px; height: 40px; border-radius: 10px; }
 .topbar-title { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; }
 .topbar-title h1 { font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -656,7 +659,7 @@ select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--line-stro
   .app-shell { flex-direction: column; height: var(--ui-viewport-height, 100dvh); min-height: 0; }
   .app-column { order: 0; }
   .rail { order: 1; flex-direction: row; align-items: center; width: 100% !important; height: calc(48px + var(--safe-bottom)); padding: 0 6px var(--safe-bottom); border-right: 0; border-top: 1px solid var(--line); transition: none; }
-  .rail .brand, .rail-groups, .rail-footer .connection-indicator, .rail-toggle { display: none; }
+  .rail-head, .rail .brand, .rail-groups, .rail-footer .connection-indicator, .rail-toggle { display: none; }
   .rail-primary { flex: 1; flex-direction: row; justify-content: space-around; gap: 0; }
   .rail button { flex: 1; flex-direction: column; justify-content: center; gap: 3px; width: auto; height: 44px; padding: 0 2px; font-size: 10.5px; border-radius: 8px; }
   .rail button>b { right: auto; left: calc(50% + 6px); top: 4px; }

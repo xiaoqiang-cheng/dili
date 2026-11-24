@@ -638,7 +638,9 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
         content carries what acts on the current view. On phones the rail
         becomes a bottom tab bar and the toolbar stays on top. */}
     <nav className={`rail ${railOpen ? 'expanded' : ''}`} aria-label="工作空间导航" inert={!!modal}>
-      {machineHome() && <a className="rail-machine-return" href={machineHome()} aria-label="返回机器列表" title="返回机器列表"><ArrowLeft size={20} /></a>}
+      <div className="rail-head">
+        <button className="icon-button rail-toggle" aria-label={railOpen ? '收起侧栏' : '展开侧栏'} title={railOpen ? '收起侧栏' : '展开侧栏'} aria-expanded={railOpen} onClick={toggleRail}>{railOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}</button>
+      </div>
       <a className="brand" href="#" aria-label="Dili 嘀哩工作台" title="Dili 嘀哩工作台" onClick={(event) => { event.preventDefault(); navigate('contacts'); }}><span className="brand-mark"><BrandMark /></span><span className="brand-wordmark">Dili</span></a>
       <div className="rail-primary primary-nav">
         {tab('contacts', <MessageSquare size={18} />, '会话列表', personal.length)}
@@ -649,7 +651,6 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
         {tab('archive', <Trash2 size={18} />, '垃圾桶', archived.length + (state?.groups.filter(group => group.archived && !isTopic(group)).length ?? 0))}
       </div>
       <div className="rail-footer">
-        <button className="icon-button rail-toggle" aria-label={railOpen ? '收起侧栏' : '展开侧栏'} title={railOpen ? '收起侧栏' : '展开侧栏'} aria-expanded={railOpen} onClick={toggleRail}>{railOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}</button>
         <span className="connection-indicator" title={connectionLabel}><span className={`connection-dot ${connected ? 'online' : ''}`} /><span className="sr-only">{connectionLabel}</span></span>
         <MoreMenu items={[
           { label: '资源管理器', icon: <Folder size={14} />, phoneOnly: true, disabled: !explorerSession, active: workspaceOpen, onSelect: () => { if (explorerSession) preview.openExplorer(explorerSession); } },
@@ -661,6 +662,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
           { label: '运行诊断', icon: <Activity size={14} />, onSelect: () => setModal({ type: 'debug' }) },
           { label: '使用说明与快捷键', icon: <CircleHelp size={14} />, onSelect: () => setModal({ type: 'help' }) },
         ]} />
+        {machineHome() && <a className="rail-machine-return" href={machineHome()} aria-label="返回机器列表" title="返回机器列表"><ArrowLeft size={20} /></a>}
       </div>
     </nav>
     <div className="app-column">
