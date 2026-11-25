@@ -16,7 +16,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import {
   ArrowDownToLine, ArrowLeft, ArrowRight, ArrowRightLeft, ArchiveRestore, Bell, BellOff, Check, CheckCheck, Trash2,
   CircleHelp, Clock3, Command, Copy, Ellipsis, ExternalLink, Folder,
-  GitFork, Globe2, LoaderCircle, MessageSquare, Pencil, Pin, PinOff, Play, Plus,
+  GitFork, Globe2, LoaderCircle, MessageSquare, Monitor, Pencil, Pin, PinOff, Play, Plus,
   Radio, Search, Settings2, Share2, SlidersHorizontal, Square, UsersRound, X,
   Volume2, VolumeX, TerminalSquare, Link2, PanelLeftOpen, PanelLeftClose,
   FilePenLine, Palette, Maximize2, Minimize2, PanelRightOpen, Activity, Download, Hash,
@@ -661,7 +661,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
           { label: '运行诊断', icon: <Activity size={14} />, onSelect: () => setModal({ type: 'debug' }) },
           { label: '使用说明与快捷键', icon: <CircleHelp size={14} />, onSelect: () => setModal({ type: 'help' }) },
         ]} />
-        {machineHome() && <a className="rail-machine-return" href={machineHome()} aria-label="返回机器列表" title="返回机器列表"><ArrowLeft size={20} /></a>}
+        {machineHome() && <a className="rail-machine-return" href={machineHome()} aria-label="返回机器列表" title="返回机器列表"><Monitor size={19} /></a>}
       </div>
     </nav>
     <div className="app-column">
