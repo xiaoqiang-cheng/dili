@@ -149,6 +149,7 @@ select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--line-stro
 .more-menu .dropdown-menu { right: 0; left: auto; top: 38px; }
 .more-menu .dropdown-menu button.active { color: var(--accent); }
 .connection-indicator { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 30px; }
+.topbar-title .connection-indicator { width: 12px; height: 20px; flex-shrink: 0; }
 .connection-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); }
 .connection-dot.online { background: var(--green); }
 .demo-badge { font-size: 11.5px; color: var(--warning-text); background: var(--warning-bg); padding: 3px 7px; border-radius: 6px; white-space: nowrap; margin: 0 4px; }
@@ -659,7 +660,7 @@ select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--line-stro
   .app-shell { flex-direction: column; height: var(--ui-viewport-height, 100dvh); min-height: 0; }
   .app-column { order: 0; }
   .rail { order: 1; flex-direction: row; align-items: center; width: 100% !important; height: calc(48px + var(--safe-bottom)); padding: 0 6px var(--safe-bottom); border-right: 0; border-top: 1px solid var(--line); transition: none; }
-  .rail-head, .rail .brand, .rail-groups, .rail-footer .connection-indicator, .rail-toggle { display: none; }
+  .rail-head, .rail .brand, .rail-groups, .rail-toggle { display: none; }
   .rail-primary { flex: 1; flex-direction: row; justify-content: space-around; gap: 0; }
   .rail button { flex: 1; flex-direction: column; justify-content: center; gap: 3px; width: auto; height: 44px; padding: 0 2px; font-size: 10.5px; border-radius: 8px; }
   .rail button>b { right: auto; left: calc(50% + 6px); top: 4px; }

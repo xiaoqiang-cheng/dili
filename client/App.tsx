@@ -651,7 +651,6 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
         {tab('archive', <Trash2 size={18} />, '垃圾桶', archived.length + (state?.groups.filter(group => group.archived && !isTopic(group)).length ?? 0))}
       </div>
       <div className="rail-footer">
-        <span className="connection-indicator" title={connectionLabel}><span className={`connection-dot ${connected ? 'online' : ''}`} /><span className="sr-only">{connectionLabel}</span></span>
         <MoreMenu items={[
           { label: '资源管理器', icon: <Folder size={14} />, phoneOnly: true, disabled: !explorerSession, active: workspaceOpen, onSelect: () => { if (explorerSession) preview.openExplorer(explorerSession); } },
           { label: '终端', icon: <TerminalSquare size={14} />, phoneOnly: true, disabled: !state, active: terminalPanelOpen, onSelect: () => openTerminalPanel(selected?.id) },
@@ -668,7 +667,7 @@ export default function App({ auth = { kind: 'owner', remote: false, passwordSet
     <div className="app-column">
     <header className="topbar" inert={!!modal}>
       <div className="topbar-row">
-        <div className="topbar-title"><h1 aria-label={title || pageTitle} title={title || pageTitle}>{title}</h1><AppVersion /><MachineSwitcher />{currentGroup && <button className="icon-button" aria-label={isTopic(currentGroup) ? '编辑话题' : '编辑群组'} title={isTopic(currentGroup) ? '编辑话题标题与原帖' : '编辑群组名称与目标'} onClick={() => setModal(isTopic(currentGroup) ? { type: 'topic', mode: { type: 'edit', topic: currentGroup } } : { type: 'group', group: currentGroup })}><Pencil size={14} /></button>}{state?.demo && <span className="demo-badge" title="演示模式 · 示例数据">演示</span>}</div>
+        <div className="topbar-title"><h1 aria-label={title || pageTitle} title={title || pageTitle}>{title}</h1><span className="connection-indicator" title={connectionLabel}><span className={`connection-dot ${connected ? 'online' : ''}`} /><span className="sr-only">{connectionLabel}</span></span><AppVersion /><MachineSwitcher />{currentGroup && <button className="icon-button" aria-label={isTopic(currentGroup) ? '编辑话题' : '编辑群组'} title={isTopic(currentGroup) ? '编辑话题标题与原帖' : '编辑群组名称与目标'} onClick={() => setModal(isTopic(currentGroup) ? { type: 'topic', mode: { type: 'edit', topic: currentGroup } } : { type: 'group', group: currentGroup })}><Pencil size={14} /></button>}{state?.demo && <span className="demo-badge" title="演示模式 · 示例数据">演示</span>}</div>
         <div className="topbar-actions">
           {listView && <><label className="search-field"><Search size={15} /><input id="session-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={topicView ? '搜索话题' : '搜索'} aria-label={topicView ? '搜索话题' : '搜索会话'} /><kbd>{/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'} K</kbd></label>
             {!topicView && <FilterMenu active={backendFilter !== 'all' || statusFilter !== 'all'} reset={() => { setBackendFilter('all'); setStatusFilter('all'); }}>
