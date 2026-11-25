@@ -92,7 +92,7 @@ select { height: 34px; padding: 0 28px 0 10px; border: 1px solid var(--line-stro
 .rail.expanded .group-count { opacity: 1; }
 .rail .group-unread-dot { position: absolute; left: 30px; top: 8px; }
 .rail-add-group { color: var(--faint) !important; }
-.rail-footer { display: flex; flex-direction: column; align-items: center; gap: 2px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.rail-footer { display: flex; flex-direction: column; align-items: center; gap: 2px; margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line); }
 .rail-footer .more-menu .dropdown-menu { left: 48px; right: auto; top: auto; bottom: 0; z-index: 60; }
 .rail-footer .more-menu { position: static; }
 .rail-footer { position: relative; }
